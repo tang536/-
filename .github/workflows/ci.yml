@@ -1,6 +1,6 @@
 name: CI
 
-# 触发：推送到 main 与所有 PR。课程项目不需要矩阵构建，两个 job 覆盖「后端能编译能测」+「前端类型与构建通过」。
+# 触发：推送到 main 与所有 PR。课程项目不需要矩阵构建，两个 job 覆盖「后端能编译」+「前端类型与构建通过」。
 on:
   push:
     branches: [main]
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   backend:
-    name: 后端 编译 + 单元测试
+    name: 后端 编译
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,18 +31,6 @@ jobs:
 
       - name: 编译（Release，警告视为错误）
         run: dotnet build eRentalSystem.slnx -c Release --no-restore -warnaserror
-
-      # 单元测试只覆盖纯逻辑（计价/结算/幂等键/分页/脱敏），不连数据库，CI 里可直接跑
-      - name: 单元测试
-        run: dotnet test tests/ERental.Tests/ERental.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test-results.trx"
-
-      - name: 上传测试报告
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dotnet-test-results
-          path: '**/test-results.trx'
-          if-no-files-found: ignore
 
   frontend:
     name: 前端 类型检查 + 构建

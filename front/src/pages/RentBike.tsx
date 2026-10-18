@@ -243,11 +243,11 @@ export default function RentBike() {
             <Icon name="vehicles" size={16} chip />最近热销
             <span className="card-title-count">近 30 天成单量排名</span>
             <div className="card-title-actions">
-              <button className="card-title-action" onClick={refreshAll} disabled={refreshAct.pending}>
-                <Icon name="refresh" size={12} />{refreshAct.pending ? '刷新中…' : '刷新'}
+              <button className="btn-sm btn-sm-default btn-icon-sm" onClick={refreshAll} disabled={refreshAct.pending}>
+                <Icon name="refresh" size={14} /><span className="btn-label">{refreshAct.pending ? '刷新中…' : '刷新'}</span>
               </button>
-              <button className="card-title-action" onClick={() => navigate('/vehicle-catalog')}>
-                查看全部车辆<Icon name="chevron-right" size={12} />
+              <button className="btn-sm btn-sm-primary btn-icon-sm" onClick={() => navigate('/vehicle-catalog')}>
+                <Icon name="vehicles" size={14} color="#fff" /><span className="btn-label">查看全部车辆</span>
               </button>
             </div>
           </div>

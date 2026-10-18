@@ -425,16 +425,16 @@ export default function Reports() {
         <div className="print-header-title">电动车出租店出租管理系统 — 统计报表（{isFinance ? '财务口径' : '管理员运营口径'}）</div>
         <div className="print-header-meta">统计区间：{rangeText} ｜ 打印时间：{new Date().toLocaleString('zh-CN', { hour12: false })}</div>
       </div>
-      <div className="toolbar">
-        <h3 className="page-heading"><Icon name="reports" size={18} chip />统计报表</h3>
-        <div className="btn-group toolbar-compact-actions">
-          <button className="btn-sm btn-sm-default" onClick={handleRetryAll} disabled={reloadAct.pending}>
-            <Icon name="refresh" size={14} />{reloadAct.pending ? '刷新中…' : '刷新'}
+      <div className="card-title">
+        <Icon name="reports" size={18} chip />统计报表
+        <div className="toolbar-actions" style={{ marginLeft: 'auto' }}>
+          <button className="btn-sm btn-sm-default btn-icon-sm" onClick={handleRetryAll} disabled={reloadAct.pending}>
+            <Icon name="refresh" size={14} /><span className="btn-label">{reloadAct.pending ? '刷新中…' : '刷新'}</span>
           </button>
           {/* 导出是财务主操作，单独露出；打印 / 对账收进「更多」，工具条只留两三个按钮 */}
           {isFinance && (
-            <button className="btn-sm btn-sm-primary" onClick={handleExport} disabled={exportAct.pending}>
-              <Icon name="download" size={14} color="#fff" />{exportAct.pending ? '导出中…' : '导出营收报表'}
+            <button className="btn-sm btn-sm-primary btn-icon-sm" onClick={handleExport} disabled={exportAct.pending}>
+              <Icon name="download" size={14} color="#fff" /><span className="btn-label">{exportAct.pending ? '导出中…' : '导出营收报表'}</span>
             </button>
           )}
           <OverflowMenu

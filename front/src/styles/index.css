@@ -3699,33 +3699,33 @@ textarea,
   /* 卡片化后不需要横向滚动，容器放开裁切，让卡片自然铺满 */
   .table-wrap { overflow: visible; }
 
-  table.data-table:not(.batch-table) {
+  table.data-table:not(.batch-table):not(.dict-table) {
     min-width: 0;
     width: 100%;
     border-collapse: separate;
     border-spacing: 0;
   }
-  table.data-table:not(.batch-table) thead { display: none; }
-  table.data-table:not(.batch-table),
-  table.data-table:not(.batch-table) tbody,
-  table.data-table:not(.batch-table) tr,
-  table.data-table:not(.batch-table) td {
+  table.data-table:not(.batch-table):not(.dict-table) thead { display: none; }
+  table.data-table:not(.batch-table):not(.dict-table),
+  table.data-table:not(.batch-table):not(.dict-table) tbody,
+  table.data-table:not(.batch-table):not(.dict-table) tr,
+  table.data-table:not(.batch-table):not(.dict-table) td {
     display: block;
     width: auto;
   }
   /* 一行一张卡：外框 + 间距，替代原来的行分隔线 */
-  table.data-table:not(.batch-table) tbody tr {
+  table.data-table:not(.batch-table):not(.dict-table) tbody tr {
     margin-bottom: 10px;
     padding: 6px 0;
     border: 1px solid var(--border);
     border-radius: 12px;
     background: var(--surface, #fff);
   }
-  table.data-table:not(.batch-table) tbody tr:hover { background: var(--surface, #fff); }
-  table.data-table:not(.batch-table) tbody tr:last-child { margin-bottom: 0; }
+  table.data-table:not(.batch-table):not(.dict-table) tbody tr:hover { background: var(--surface, #fff); }
+  table.data-table:not(.batch-table):not(.dict-table) tbody tr:last-child { margin-bottom: 0; }
   /* 单元格 = 「列名 ...... 值」两栏，值靠右对齐便于扫读 */
-  table.data-table:not(.batch-table) tbody td,
-  table.data-table:not(.batch-table) tbody td:last-child {
+  table.data-table:not(.batch-table):not(.dict-table) tbody td,
+  table.data-table:not(.batch-table):not(.dict-table) tbody td:last-child {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -3738,7 +3738,7 @@ textarea,
     white-space: normal;
     overflow: visible;
   }
-  table.data-table:not(.batch-table) tbody td::before {
+  table.data-table:not(.batch-table):not(.dict-table) tbody td::before {
     content: attr(data-label);
     flex: 0 0 auto;
     font-size: 12px;
@@ -3856,4 +3856,32 @@ textarea,
   /* 卡片化后分页条与工具栏不必再挤在一行 */
   .pagination { row-gap: 10px; }
   .pagination-pages { overflow-x: auto; max-width: 100%; padding-bottom: 2px; }
+}
+
+/* ============================================================
+   数据字典表：窄屏下保持表格一行显示，不转卡片式
+   ============================================================ */
+@media (max-width: 620px) {
+  .data-table.dict-table { display: table; }
+  .data-table.dict-table thead { display: table-header-group; }
+  .data-table.dict-table tbody { display: table-row-group; }
+  .data-table.dict-table tbody tr { display: table-row; }
+  .data-table.dict-table tbody td { display: table-cell; }
+  .data-table.dict-table tbody td::before { content: none; }
+  .data-table.dict-table tbody tr {
+    margin-bottom: 0;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+  }
+  .data-table.dict-table tbody td {
+    text-align: left;
+    white-space: nowrap;
+    padding: 8px 10px;
+  }
+  .data-table.dict-table .btn-group {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+  }
 }

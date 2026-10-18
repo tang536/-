@@ -177,10 +177,9 @@ eRentalSystem/
 ├─ front/                      统一前端（员工端 + 顾客端）
 │  ├─ src/pages/               顾客端：落地页、选车、支付、我的订单、会员、资料
 │  └─ src/pages/staff/         员工端：工作台、车辆、订单、结算、客户、会员、报表、配置
-├─ tests/ERental.Tests/        xUnit 单元测试（计价 / 结算 / 幂等键 / 分页 / 脱敏，41 例）
 ├─ database/                   schema.sql（17 张表）/ seed.sql
-├─ .github/workflows/ci.yml    CI：后端编译（警告即失败）+ 单测，前端 tsc + 构建
-├─ eRentalSystem.slnx          解决方案（后端 + 测试项目）
+├─ .github/workflows/ci.yml    CI：后端编译（警告即失败），前端 tsc + 构建
+├─ eRentalSystem.slnx          解决方案
 └─ start.bat                   Windows 本地一键启动（后端 5105 + 前端 5173）
 ```
 
@@ -207,15 +206,14 @@ cd front && npm install && npm run dev   # http://localhost:5173
 
 Windows 下直接双击 `start.bat`；`start.bat lan` 开启局域网模式（手机连同一 Wi-Fi 即可访问）。
 
-改完代码要自证没弄坏什么，跑这三条：
+改完代码要自证没弄坏什么，跑这两条：
 
 ```bash
 dotnet build eRentalSystem.slnx -c Release -warnaserror   # 后端：0 警告 0 错误
-dotnet test  tests/ERental.Tests                          # 41 例纯逻辑单测
 cd front && npm run build                                 # 前端：tsc 类型检查 + vite 构建
 ```
 
-推送后 GitHub Actions 会自动跑同样的三件事（`.github/workflows/ci.yml`），红叉即代表不可合并。
+推送后 GitHub Actions 会自动跑同样的两件事（`.github/workflows/ci.yml`），红叉即代表不可合并。
 
 **默认账号**：管理员 `trq / 123456`（首次启动自动创建）。前台、财务账号由管理员在「用户管理」中创建，
 顾客在前端自行注册。

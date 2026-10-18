@@ -104,18 +104,20 @@ export default function VehicleCheckPanel() {
         <>
           <div className="inline-panel">
             <div className="inline-panel-title"><Icon name="create-order" size={16} chip />新增盘点</div>
-            <div className="inline-panel-row">
-              <select value={selectedVehicle} onChange={e => { setSelectedVehicle(Number(e.target.value)); setError('') }}>
+            <div className="inline-panel-row" style={{ flexDirection: 'column', gap: '10px' }}>
+              <select value={selectedVehicle} onChange={e => { setSelectedVehicle(Number(e.target.value)); setError('') }} style={{ width: '100%' }}>
                 <option value={0}>选择车辆</option>
                 {vehicles.map(v => (
                   <option key={v.vehicleId} value={v.vehicleId}>{v.vehicleNo}（{v.brand} - {v.vehicleStatus}）</option>
                 ))}
               </select>
-              <select value={actualStatus} onChange={e => setActualStatus(e.target.value)}>
-                {ACTUAL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-              <input placeholder="差异说明（可选）" value={diffDesc} onChange={e => setDiffDesc(e.target.value)} />
-              <button className="btn-sm btn-sm-primary" onClick={handleAdd}>添加盘点</button>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <select value={actualStatus} onChange={e => setActualStatus(e.target.value)}>
+                  {ACTUAL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <input placeholder="差异说明（可选）" value={diffDesc} onChange={e => setDiffDesc(e.target.value)} style={{ flex: 1, minWidth: '120px' }} />
+                <button className="btn-sm btn-sm-primary" onClick={handleAdd}>添加盘点</button>
+              </div>
             </div>
             {selectedVehicleInfo && (
               <div className="field-hint">
