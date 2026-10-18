@@ -188,22 +188,7 @@ scp -r dist/* ubuntu@<server>:/var/www/erental/frontend/
     实现按更严格的一条走——JSON 明文只在内存里存在，落盘前即 AES-256-GCM 加密为 `.erbk`；
     旧版明文 `.json` 仍可在目录里识别，但不参与恢复。
 
-## 8. 自检命令
-
-```bash
-cd back  && dotnet build -c Release     # 期望：0 警告 0 错误
-cd front && npm run typecheck           # 期望：无输出
-cd front && npm run build               # 期望：dist/ 生成成功
-```
-
-关键接口冒烟（需先启动后端）：
-
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:5105/api/vehicle   # 401 = 鉴权生效
-curl -s http://localhost:5105/swagger/index.html -o /dev/null -w "%{http_code}\n"
-```
-
-## 9. 文档对应
+## 8. 文档对应
 
 | 文档 | 用途 |
 |---|---|
