@@ -235,7 +235,8 @@ export default function SystemConfig() {
     try {
       const res: any = await logApi.backup()
       const d = res?.data || {}
-      toast(`备份成功：${d.fileName}（${d.sizeKB}KB，共 ${d.tableCount} 张表，已加密）`, 'success')
+      const cost = d.elapsedMs < 1000 ? `${d.elapsedMs}ms` : `${(d.elapsedMs / 1000).toFixed(1)}s`
+      toast(`备份成功：${d.fileName}（${d.sizeKB}KB，共 ${d.tableCount} 张表，已加密，耗时 ${cost}）`, 'success')
       loadLogs(1)
       setPage(1)
       loadBackups()

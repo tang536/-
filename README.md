@@ -127,6 +127,9 @@ InnoDB 行锁保证判定与写入原子完成，第二个并发请求影响 0 �
   全程单事务，失败自动回滚。
 - 密钥：`Backup:Key`（32 字节 Base64）；未配置时由 `Jwt:Key` 派生。**换 JWT 密钥会导致旧备份解不开**，
   生产环境请显式配置 `Backup:Key` 并单独保管。
+- 计时：备份与恢复都用 `Stopwatch` 记录实际耗时，随接口返回 `elapsedMs` 并写入 `system_log`
+  （恢复的耗时包含"恢复前快照"）。需求 5.2.5 的「备份 ≤10s、恢复 ≤15s」因此可直接用一条日志复核，
+  不需要另装压测工具。本机样例库（17 表 / 44 行）实测：备份 164 ms、恢复 108 ms。
 
 ## 5. 数据模型与文档对照
 
@@ -154,6 +157,9 @@ cd front && npm run build
 scp -r dist/* ubuntu@<server>:/var/www/erental/frontend/
 ```
 
+- 生产配置放 `/etc/erental/erental.env`（systemd `EnvironmentFile=`），不要改 `appsettings.json`：
+  发布用 `scp -r publish/*` 会把仓库里留空的配置覆盖回去。变量名见 `部署说明.txt` 第三节，
+  其中 `Backup__Directory` 指向独立目录（如 `/var/backups/erental`）、`Backup__Key` 单独保管。
 - Kestrel 只监听 `127.0.0.1:5105`，由 nginx 443 反代；HTTP 强制 301 到 HTTPS。
 - 本机 Windows 演示与 Linux 生产共用同一份代码，差异只在配置与托管方式。
 - 生产若未配置 `Jwt:Key`（或短于 32 字符）或连接串为空，后端会**拒绝启动**，避免带默认密钥上线。
@@ -170,6 +176,11 @@ scp -r dist/* ubuntu@<server>:/var/www/erental/frontend/
    身份证读卡器无专用适配（HID 键盘可直接输入）；钱箱未接。
 7. **无自动化测试 / 无 CI**：验收依赖构建 + 接口联调 + 手工回归。
 8. **AI 生图是附加能力**：依赖本机 ComfyUI（4GB 显存机器上较慢），不属于需求范围，不部署不影响业务。
+9. **恢复是整库覆盖**：流程为「清空 + 重插」，恢复期间业务数据短暂为空，应在停业时段执行。
+   系统会自动先做一份恢复前快照，但快照与正式备份同目录，磁盘故障场景需要靠异地副本（`Backup:Directory`）。
+10. **备份文件格式**：需求 4.2.1 仍写「导出为 JSON 存档」，而 6.4/7.1 要求「备份文件加密存储」。
+    实现按更严格的一条走——JSON 明文只在内存里存在，落盘前即 AES-256-GCM 加密为 `.erbk`；
+    旧版明文 `.json` 仍可在目录里识别，但不参与恢复。
 
 ## 8. 自检命令
 

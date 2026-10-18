@@ -18,6 +18,9 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
     private string? ClientIp => HttpContext.Connection.RemoteIpAddress?.ToString();
 
+    /// <summary>耗时文案：小库常在 1 秒内，写 0.0s 会让人以为没测；不足 1 秒直接给毫秒</summary>
+    private static string Elapsed(long ms) => ms < 1000 ? $"{ms}ms" : $"{ms / 1000.0:0.0}s";
+
     /// <summary>
     /// 操作日志查询（需求 4.2.1）：按用户、时间、操作类型（模块/结果）+ 内容关键字组合筛选。
     /// 日志只读——本控制器不提供任何删除或修改入口，保证「不可删除、不可篡改」。
@@ -48,17 +51,18 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
         {
             var r = await _backup.CreateAsync();
             await _svc.WriteLog(CurrentUserId,
-                $"执行数据库备份，生成加密文件 {r.FileName}（{r.SizeBytes / 1024}KB，{r.TableCount} 张表）",
+                $"执行数据库备份，生成加密文件 {r.FileName}（{r.SizeBytes / 1024}KB，{r.TableCount} 张表，耗时 {r.ElapsedMs}ms）",
                 "系统管理", "成功", ClientIp);
             return Ok(new ApiResponse<object>
             {
-                Message = $"数据库备份成功，共 {r.TableCount} 张表（已加密）",
+                Message = $"数据库备份成功，共 {r.TableCount} 张表（已加密，耗时 {Elapsed(r.ElapsedMs)}）",
                 Data = new
                 {
                     r.FileName,
                     SizeKB = Math.Round(r.SizeBytes / 1024.0, 2),
                     r.TableCount,
-                    r.Encrypted
+                    r.Encrypted,
+                    r.ElapsedMs
                 }
             });
         }
@@ -110,11 +114,11 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
         {
             var r = await _backup.RestoreAsync(req.FileName);
             await _svc.WriteLog(CurrentUserId,
-                $"从备份 {r.FileName} 恢复数据库（{r.TableCount} 张表 / {r.Rows} 行；恢复前快照 {r.SafetyBackup}）",
+                $"从备份 {r.FileName} 恢复数据库（{r.TableCount} 张表 / {r.Rows} 行，耗时 {r.ElapsedMs}ms；恢复前快照 {r.SafetyBackup}）",
                 "系统管理", "成功", ClientIp);
             return Ok(new ApiResponse<object>
             {
-                Message = $"恢复完成：{r.Rows} 行数据；恢复前快照已保存为 {r.SafetyBackup}",
+                Message = $"恢复完成：{r.Rows} 行数据，耗时 {Elapsed(r.ElapsedMs)}；恢复前快照已保存为 {r.SafetyBackup}",
                 Data = r
             });
         }

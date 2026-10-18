@@ -10,11 +10,11 @@ namespace ERental.Services;
 /// <summary>备份文件摘要（供管理员端列表展示）</summary>
 public sealed record BackupFileInfo(string FileName, long SizeBytes, DateTime CreatedAt, bool Encrypted);
 
-/// <summary>备份结果</summary>
-public sealed record BackupResult(string FileName, long SizeBytes, int TableCount, bool Encrypted);
+/// <summary>备份结果（ElapsedMs 对应需求 5.2.5 的「备份 ≤10 秒」，随接口返回，便于随时实测）</summary>
+public sealed record BackupResult(string FileName, long SizeBytes, int TableCount, bool Encrypted, long ElapsedMs);
 
-/// <summary>恢复结果</summary>
-public sealed record RestoreResult(string FileName, int TableCount, long Rows, string SafetyBackup);
+/// <summary>恢复结果（ElapsedMs 含恢复前快照，即用户实际等待的时长；需求 5.2.5 要求 ≤15 秒）</summary>
+public sealed record RestoreResult(string FileName, int TableCount, long Rows, string SafetyBackup, long ElapsedMs);
 
 /// <summary>
 /// 数据库备份 / 恢复（需求 4.2.1 备份、6.4 故障处理、7.1 数据安全）。
@@ -85,6 +85,8 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
     /// <param name="prefix">文件名前缀：手动/定时用 backup_，恢复前快照用 auto-before-restore_</param>
     public async Task<BackupResult> CreateAsync(string prefix = FilePrefix)
     {
+        // 计时口径 = 读库 + 序列化 + 加密 + 落盘 + 清理旧文件，也就是用户点下按钮后实际等待的时长
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var tables = new Dictionary<string, List<Dictionary<string, object?>>>();
         long rows = 0;
 
@@ -144,9 +146,10 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
         var size = new FileInfo(path).Length;
         ApplyRetention();
 
-        _logger.LogInformation("备份完成：{File}（{Size} KB，{Tables} 张表 / {Rows} 行）",
-            fileName, size / 1024, Tables.Length, rows);
-        return new BackupResult(fileName, size, Tables.Length, true);
+        sw.Stop();
+        _logger.LogInformation("备份完成：{File}（{Size} KB，{Tables} 张表 / {Rows} 行，耗时 {Elapsed} ms）",
+            fileName, size / 1024, Tables.Length, rows, sw.ElapsedMilliseconds);
+        return new BackupResult(fileName, size, Tables.Length, true, sw.ElapsedMilliseconds);
     }
 
     /// <summary>备份文件列表（新的在前）；只认 .erbk（旧版明文 .json 不参与恢复）</summary>
@@ -181,6 +184,8 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
     /// </summary>
     public async Task<RestoreResult> RestoreAsync(string fileName)
     {
+        // 计时含「恢复前快照」：快照同样在用户等待期间发生，不计进去会好看但失真
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var path = ResolvePath(fileName);
         var cipher = await File.ReadAllBytesAsync(path);
         var plain = Decrypt(cipher);
@@ -248,9 +253,10 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
             if (!wasOpen) await conn.CloseAsync();
         }
 
-        _logger.LogInformation("数据恢复完成：{File}，{Tables} 张表 / {Rows} 行；恢复前快照 {Safety}",
-            fileName, Tables.Length, rows, safety.FileName);
-        return new RestoreResult(fileName, Tables.Length, rows, safety.FileName);
+        sw.Stop();
+        _logger.LogInformation("数据恢复完成：{File}，{Tables} 张表 / {Rows} 行；恢复前快照 {Safety}；耗时 {Elapsed} ms",
+            fileName, Tables.Length, rows, safety.FileName, sw.ElapsedMilliseconds);
+        return new RestoreResult(fileName, Tables.Length, rows, safety.FileName, sw.ElapsedMilliseconds);
     }
 
     /// <summary>构造单行 INSERT：列名只允许备份里出现过的真实列，防止被篡改的备份文件注入 SQL</summary>
@@ -445,7 +451,8 @@ public class BackupSchedulerService(
                 using var scope = scopeFactory.CreateScope();
                 var backup = scope.ServiceProvider.GetRequiredService<BackupService>();
                 var result = await backup.CreateAsync();
-                logger.LogInformation("自动备份完成：{File}（{Size} KB）", result.FileName, result.SizeBytes / 1024);
+                logger.LogInformation("自动备份完成：{File}（{Size} KB，耗时 {Elapsed} ms）",
+                    result.FileName, result.SizeBytes / 1024, result.ElapsedMs);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
