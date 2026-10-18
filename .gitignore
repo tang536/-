@@ -18,6 +18,8 @@ front/certs/*.crt
 *.log
 
 # 本地配置（生产凭据一律走环境变量）
+# Development.json 含本机数据库口令与开发 JWT 密钥，只保留 .example 模板在仓库里
+back/appsettings.Development.json
 back/appsettings.Production.json
 back/appsettings.Local.json
 
