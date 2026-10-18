@@ -201,7 +201,10 @@ builder.Services.AddHttpClient("comfy-probe", c => c.Timeout = TimeSpan.FromSeco
 builder.Services.AddScoped<ImageStorage>();
 // 单点登录登记表：同一账号不允许同时登录。进程内单例（本地单实例部署），
 // 不加表不加列——保住与《唐荣强.docx》图4-1~图4-17 的 17 张表 / 134 字段严格一致。
-builder.Services.AddSingleton<SessionRegistry>();
+// 会话登记表落在库表（system_config），多实例共享；因此随请求作用域解析，不能做单例
+builder.Services.AddScoped<SessionRegistry>();
+// 基于 MySQL GET_LOCK 的分布式锁：定时任务（备份、超时单回收）多实例选主
+builder.Services.AddScoped<DbLockService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<CustomerService>();

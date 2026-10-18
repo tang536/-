@@ -108,6 +108,18 @@ public class OrderService(AppDbContext db)
 
     /// <summary>订单查询。customerId 非空时仅返回该顾客的订单（顾客端数据隔离）</summary>
     public async Task<List<OrderDto>> GetAll(string? status = null, string? keyword = null, int? customerId = null)
+        => (await QueryAsync(status, keyword, customerId, 0, 0)).Rows;
+
+    /// <summary>
+    /// 分页查询（管理端长列表用）：pageSize≤0 时等价于 <see cref="GetAll"/>。
+    /// 总数在**分页前**统计，前端据此渲染页码；排序与过滤条件与全量查询完全一致。
+    /// </summary>
+    public async Task<(List<OrderDto> Rows, int Total)> GetPaged(
+        string? status, string? keyword, int? customerId, int page, int pageSize)
+        => await QueryAsync(status, keyword, customerId, page, pageSize);
+
+    private async Task<(List<OrderDto> Rows, int Total)> QueryAsync(
+        string? status, string? keyword, int? customerId, int page, int pageSize)
     {
         // 进列表前先回收超时单，保证用户看到的状态与车辆可用性都是最新的
         await ReleaseExpiredPendingOrders();
@@ -124,7 +136,13 @@ public class OrderService(AppDbContext db)
                               || (o.Customer.ContactPhone != null && o.Customer.ContactPhone.Contains(k))))
                           || (o.Vehicle != null && o.Vehicle.VehicleNo.Contains(k)));
         }
-        var rows = await q.OrderByDescending(o => o.CreateTime).Select(o => new OrderDto
+
+        var ordered = q.OrderByDescending(o => o.CreateTime);
+        var total = await ordered.CountAsync();
+        var (_, _, skip, take) = DTOs.Paging.Normalize(page, pageSize);
+        var pageQuery = take > 0 ? ordered.Skip(skip).Take(take) : ordered;
+
+        var rows = await pageQuery.Select(o => new OrderDto
         {
             OrderId = o.OrderId,
             OrderNo = o.OrderNo,
@@ -156,7 +174,7 @@ public class OrderService(AppDbContext db)
                 dto.PayRemainSeconds = (int)Math.Max(0, (dto.PayDeadline.Value - nowUtcBaseline).TotalSeconds);
             }
         }
-        return rows;
+        return (rows, total);
     }
 
     public async Task<RentalOrder> GetById(int id) =>

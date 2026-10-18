@@ -19,6 +19,49 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         return await q.ToListAsync();
     }
 
+    /// <summary>
+    /// 分页查询（管理端车辆台账）：pageSize≤0 时等价于 <see cref="GetAll"/>。
+    /// <paramref name="brand"/> 是列表页的品牌筛选，放到库里过滤——前端只对当前页做筛选会导致
+    /// 总数与页码都失真，所以下推到 SQL。排序固定按车辆编号，保证翻页不重不漏。
+    /// </summary>
+    public async Task<(List<Vehicle> Items, int Total)> GetPaged(
+        string? status, string? keyword, string? brand, int page, int pageSize)
+    {
+        var q = _db.Vehicles.AsQueryable();
+        if (!string.IsNullOrEmpty(status)) q = q.Where(v => v.VehicleStatus == status);
+        if (!string.IsNullOrEmpty(brand)) q = q.Where(v => v.Brand == brand);
+        if (!string.IsNullOrEmpty(keyword))
+        {
+            var k = keyword.Trim();
+            q = q.Where(v => v.VehicleNo.Contains(k) || (v.Brand != null && v.Brand.Contains(k)));
+        }
+
+        var total = await q.CountAsync();
+        var (_, _, skip, take) = DTOs.Paging.Normalize(page, pageSize);
+        var items = take > 0
+            ? await q.OrderBy(v => v.VehicleNo).Skip(skip).Take(take).ToListAsync()
+            : await q.OrderBy(v => v.VehicleNo).ToListAsync();
+        return (items, total);
+    }
+
+    /// <summary>
+    /// 各状态的车辆数（车辆页签上的角标）。分页后前端拿不到全集，必须由后端单独统计，
+    /// 否则角标只会反映"当前这一页"。筛选条件与列表保持一致（关键字 + 品牌 + 状态无关）。
+    /// </summary>
+    public async Task<Dictionary<string, int>> GetStatusCountsAsync(string? keyword, string? brand)
+    {
+        var q = _db.Vehicles.AsQueryable();
+        if (!string.IsNullOrEmpty(brand)) q = q.Where(v => v.Brand == brand);
+        if (!string.IsNullOrEmpty(keyword))
+        {
+            var k = keyword.Trim();
+            q = q.Where(v => v.VehicleNo.Contains(k) || (v.Brand != null && v.Brand.Contains(k)));
+        }
+        return await q.GroupBy(v => v.VehicleStatus)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.Status ?? "", x => x.Count);
+    }
+
     public async Task<Vehicle> GetById(int id) =>
         await _db.Vehicles.FindAsync(id) ?? throw new Exception("车辆不存在");
 

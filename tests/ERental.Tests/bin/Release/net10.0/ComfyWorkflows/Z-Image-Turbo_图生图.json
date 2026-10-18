@@ -1,0 +1,171 @@
+{
+ "3": {
+  "class_type": "KSampler",
+  "inputs": {
+   "model": [
+    "11",
+    0
+   ],
+   "positive": [
+    "27",
+    0
+   ],
+   "negative": [
+    "33",
+    0
+   ],
+   "latent_image": [
+    "76",
+    0
+   ],
+   "seed": 0,
+   "steps": 8,
+   "cfg": 1,
+   "sampler_name": "res_multistep",
+   "scheduler": "simple",
+   "denoise": 0.6
+  },
+  "_meta": {
+   "title": "KSampler"
+  }
+ },
+ "8": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "3",
+    0
+   ],
+   "vae": [
+    "29",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "VAEDecode"
+  }
+ },
+ "9": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "8",
+    0
+   ],
+   "filename_prefix": "Z-Image-Turbo/i2i"
+  },
+  "_meta": {
+   "title": "SaveImage"
+  }
+ },
+ "11": {
+  "class_type": "ModelSamplingAuraFlow",
+  "inputs": {
+   "model": [
+    "28",
+    0
+   ],
+   "shift": 3
+  },
+  "_meta": {
+   "title": "ModelSamplingAuraFlow"
+  }
+ },
+ "27": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "clip": [
+    "62",
+    0
+   ],
+   "text": "keep the original composition and subject, refine details, enhance lighting and texture, sharpen, photorealistic, 8k"
+  },
+  "_meta": {
+   "title": "CLIPTextEncode"
+  }
+ },
+ "28": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "z_image_turbo_int8_convrot.safetensors",
+   "weight_dtype": "default"
+  },
+  "_meta": {
+   "title": "UNETLoader"
+  }
+ },
+ "29": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "ae.safetensors"
+  },
+  "_meta": {
+   "title": "VAELoader"
+  }
+ },
+ "33": {
+  "class_type": "ConditioningZeroOut",
+  "inputs": {
+   "conditioning": [
+    "27",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "ConditioningZeroOut"
+  }
+ },
+ "62": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "qwen_3_4b_fp8_mixed.safetensors",
+   "type": "lumina2",
+   "device": "default"
+  },
+  "_meta": {
+   "title": "CLIPLoader"
+  }
+ },
+ "74": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "reference.png",
+   "upload": "image"
+  },
+  "_meta": {
+   "title": "LoadImage"
+  }
+ },
+ "75": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "74",
+    0
+   ],
+   "upscale_method": "bilinear",
+   "width": 1024,
+   "height": 1024,
+   "crop": "disabled"
+  },
+  "_meta": {
+   "title": "ImageScale"
+  }
+ },
+ "76": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "75",
+    0
+   ],
+   "vae": [
+    "29",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "VAEEncode"
+  }
+ }
+}

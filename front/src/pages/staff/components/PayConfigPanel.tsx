@@ -60,7 +60,7 @@ interface FormState {
   sandboxAlipayPublicKey: string
   sandboxGateway: string
 
-  // 微信支付（占位）
+  // 微信支付（APIv3 正式通道）
   wechatEnabled: boolean
   wechatAppId: string
   wechatMchId: string
@@ -69,12 +69,14 @@ interface FormState {
   wechatPrivateKey: string
   wechatNotifyUrl: string
 
-  // 银行卡（占位）
+  // 银行卡（通用收银网关正式通道）
   bankEnabled: boolean
   bankMerchantNo: string
   bankGateway: string
   bankSignKey: string
   bankNotifyUrl: string
+  /** 退款地址：非必填，留空时由支付网关推导（/pay → /refund） */
+  bankRefundUrl: string
 
   notifyUrl: string
   returnUrl: string
@@ -87,7 +89,7 @@ const EMPTY_FORM: FormState = {
   wechatEnabled: false,
   wechatAppId: '', wechatMchId: '', wechatApiV3Key: '', wechatCertSerial: '', wechatPrivateKey: '', wechatNotifyUrl: '',
   bankEnabled: false,
-  bankMerchantNo: '', bankGateway: '', bankSignKey: '', bankNotifyUrl: '',
+  bankMerchantNo: '', bankGateway: '', bankSignKey: '', bankNotifyUrl: '', bankRefundUrl: '',
   notifyUrl: '', returnUrl: '',
 }
 
@@ -249,6 +251,7 @@ export default function PayConfigPanel() {
         bankGateway: d.bankGateway || '',
         bankSignKey: '',
         bankNotifyUrl: d.bankNotifyUrl || '',
+        bankRefundUrl: d.bankRefundUrl || '',
         notifyUrl: d.notifyUrl || '',
         returnUrl: d.returnUrl || '',
       })
@@ -299,6 +302,7 @@ export default function PayConfigPanel() {
         bankMerchantNo: form.bankMerchantNo.trim(),
         bankGateway: form.bankGateway.trim(),
         bankNotifyUrl: form.bankNotifyUrl.trim(),
+        bankRefundUrl: form.bankRefundUrl.trim(),
         notifyUrl: form.notifyUrl.trim(),
         returnUrl: form.returnUrl.trim(),
       }
@@ -552,6 +556,7 @@ export default function PayConfigPanel() {
         <div className="pay-read-grid">
           <ReadRow label="商户号" value={form.bankMerchantNo} />
           <ReadRow label="收单网关地址" value={form.bankGateway} />
+          <ReadRow label="退款地址" value={form.bankRefundUrl || '（留空：按网关自动推导）'} />
           <ReadRow label="通知地址 notify_url" value={form.bankNotifyUrl} />
           <SecretRow label="签名密钥" isSet={view?.bankSignKeySet} />
         </div>
@@ -730,6 +735,10 @@ export default function PayConfigPanel() {
                   <label className="field-label">签名密钥<span className="field-label-hint">机构下发的密钥 / 证书</span></label>
                   <SecretInput value={form.bankSignKey} onChange={v => set('bankSignKey', v)} isSet={!!view?.bankSignKeySet} rows={2}
                     placeholder={view?.bankSignKeyMasked ? `已保存：${view.bankSignKeyMasked}（留空保持不变）` : '机构下发的签名密钥'} />
+                </div>
+                <div className="field field-full">
+                  <label className="field-label">退款地址<span className="field-label-hint">非必填，留空按网关推导（/pay → /refund）</span></label>
+                  <input className="field-input mono" value={form.bankRefundUrl} onChange={e => set('bankRefundUrl', e.target.value)} placeholder="https://（机构退款接口地址，留空自动推导）" />
                 </div>
                 <div className="field field-full">
                   <label className="field-label">异步通知地址 notify_url</label>

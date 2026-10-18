@@ -4,11 +4,15 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-public class PaymentService(AppDbContext db, AlipayService alipay, PayConfigService payConfig)
+public class PaymentService(
+    AppDbContext db, AlipayService alipay, PayConfigService payConfig,
+    WechatPayService wechat, BankPayService bank)
 {
     private readonly AppDbContext _db = db;
     private readonly AlipayService _alipay = alipay;
     private readonly PayConfigService _payConfig = payConfig;
+    private readonly WechatPayService _wechat = wechat;
+    private readonly BankPayService _bank = bank;
 
     /// <summary>
     /// 支付记录列表。用 AsNoTracking + Select 投影成 DTO：
@@ -54,19 +58,18 @@ public class PaymentService(AppDbContext db, AlipayService alipay, PayConfigServ
     /// 退款（需求 4.2.5「剩余押金原路退还」）。
     ///
     /// 三条口径，按通道能力分流，**绝不把"账面退款"伪装成"已原路退回"**：
-    ///   ① 支付宝 + 真实凭证 → 调 <see cref="AlipayService.RefundAsync"/> 原路退回，
+    ///   ① 真实凭证齐全的通道（支付宝 / 微信 / 银行卡）→ 调该通道的退款接口原路退回，
     ///      成功后按累计金额改 refund_amount；金额未退满为「部分退款」，退满为「已退款」；
-    ///   ② 模拟支付模式 → 没有真实资金流，只记账，返回文案明确写「未发生资金划转」；
-    ///   ③ 微信 / 银行卡 → 这两个通道的退款接口尚未接入（收款侧也是模拟），
-    ///      同样只记账并如实告知，避免财务以为钱已经退回去了。
+    ///   ② 模拟支付模式（通道凭证不全，收款本身就没走资金）→ 只记账，返回文案明确写「未发生资金划转」。
     ///
-    /// 幂等键：`{payId}R{累计应退金额的分}`。同一支付记录、同一累计退款额只会产生一个
-    /// out_request_no——网关成功但本地事务回滚后重试不会重复退款。
+    /// 幂等键：`{payId}R{累计应退金额的分}`，三通道同一口径——支付宝作 out_request_no、
+    /// 微信作 out_refund_no、银行卡作 out_refund_no。同一支付记录、同一累计退款额只会产生一个请求号，
+    /// 网关成功但本地事务回滚后重试不会重复退款。
     /// 累计退款金额同时受 `pay_amount - refund_amount` 约束，不存在退超。
     /// </summary>
     /// <param name="payId">支付记录 ID（不是订单 ID）</param>
     /// <param name="amount">本次退款金额（部分退款时传本次金额，不是累计金额）</param>
-    /// <param name="reason">退款原因，写进支付宝退款单，便于对账</param>
+    /// <param name="reason">退款原因，写进通道退款单，便于对账</param>
     public async Task<RefundResult> Refund(int payId, decimal amount, string? reason = null)
     {
         var p = await _db.PaymentRecords.FindAsync(payId)
@@ -83,37 +86,88 @@ public class PaymentService(AppDbContext db, AlipayService alipay, PayConfigServ
             throw new Exception($"退款金额不能超过可退金额 ¥{refundable:0.00}");
 
         var newTotal = Math.Round(p.RefundAmount + amount, 2);
-        var isAlipay = string.Equals(p.PayType, "支付宝", StringComparison.Ordinal);
-        var rt = await _payConfig.ResolveAsync();
+        // 幂等键：通道无关，只由「支付记录 + 累计应退额」决定（规则见 RefundKey）
+        var requestNo = RefundKey.For(p.PayId, newTotal);
+        var payType = p.PayType ?? "";
 
         // ① 支付宝真实通道：必须走网关
-        if (isAlipay && rt.IsReal && rt.CredentialsComplete)
+        if (string.Equals(payType, "支付宝", StringComparison.Ordinal))
         {
-            if (string.IsNullOrWhiteSpace(p.TransactionNo))
-                throw new Exception("该笔支付宝支付缺少交易号，无法原路退款；请到支付宝商户后台按订单号手工退款。");
+            var rt = await _payConfig.ResolveAsync();
+            if (rt.IsReal && rt.CredentialsComplete)
+            {
+                if (string.IsNullOrWhiteSpace(p.TransactionNo))
+                    throw new Exception("该笔支付宝支付缺少交易号，无法原路退款；请到支付宝商户后台按订单号手工退款。");
 
-            var requestNo = $"{p.PayId}R{(int)Math.Round(newTotal * 100)}";
-            var (ok, msg) = await _alipay.RefundAsync(p.TransactionNo!, requestNo, amount, reason);
-            if (!ok) throw new Exception(msg);
+                var (ok, msg) = await _alipay.RefundAsync(p.TransactionNo!, requestNo, amount, reason);
+                if (!ok) throw new Exception(msg);
 
-            p.RefundAmount = newTotal;
-            p.PayStatus = newTotal >= p.PayAmount ? "已退款" : "部分退款";
-            await _db.SaveChangesAsync();
-            return new RefundResult(
-                $"支付宝原路退款 ¥{amount:0.00} 已受理（累计 ¥{newTotal:0.00}，请求号 {requestNo}）",
-                true, newTotal, p.PayStatus);
+                return await ApplyRefundedAsync(p, newTotal, amount, "支付宝", requestNo);
+            }
         }
 
-        // ②③ 模拟 / 微信 / 银行卡：只记账，如实告知
+        // ② 微信真实通道：APIv3 退款，金额单位为分（服务内部换算）
+        if (string.Equals(payType, "微信", StringComparison.Ordinal))
+        {
+            var (_, real) = await _wechat.ResolveAsync();
+            if (real)
+            {
+                var tradeNo = string.IsNullOrWhiteSpace(p.TransactionNo)
+                    ? await OrderNoOfAsync(p.OrderId)
+                    : p.TransactionNo!;
+                var (ok, msg) = await _wechat.RefundAsync(tradeNo, requestNo, amount, p.PayAmount, reason);
+                if (!ok) throw new Exception(msg);
+
+                return await ApplyRefundedAsync(p, newTotal, amount, "微信", requestNo);
+            }
+        }
+
+        // ③ 银行卡真实通道：通用收银网关退款（按同一套 HMAC 签名）
+        if (string.Equals(payType, "银行卡", StringComparison.Ordinal))
+        {
+            var (_, real) = await _bank.ResolveAsync();
+            if (real)
+            {
+                var tradeNo = await OrderNoOfAsync(p.OrderId);
+                if (string.IsNullOrWhiteSpace(tradeNo) && string.IsNullOrWhiteSpace(p.TransactionNo))
+                    throw new Exception("该笔银行卡支付缺少订单号与流水号，无法原路退款；请在收单机构后台手工退款。");
+
+                var (ok, msg) = await _bank.RefundAsync(
+                    string.IsNullOrWhiteSpace(tradeNo) ? p.TransactionNo! : tradeNo,
+                    requestNo, amount, p.PayAmount, reason);
+                if (!ok) throw new Exception(msg);
+
+                return await ApplyRefundedAsync(p, newTotal, amount, "银行卡", requestNo);
+            }
+        }
+
+        // ④ 模拟 / 凭证不全：只记账，如实告知
         p.RefundAmount = newTotal;
         p.PayStatus = newTotal >= p.PayAmount ? "已退款" : "部分退款";
         await _db.SaveChangesAsync();
 
-        var why = isAlipay
+        var why = string.IsNullOrEmpty(payType) || payType == "支付宝"
             ? "当前为模拟支付模式，没有真实资金流"
-            : $"{p.PayType}通道的退款接口尚未接入";
+            : $"{payType}通道未配置真实凭证（收款走的是模拟收银台）";
         return new RefundResult(
             $"已完成账面退款 ¥{amount:0.00}（累计 ¥{newTotal:0.00}）；{why}，请线下退还现金并留存凭证。",
             false, newTotal, p.PayStatus);
     }
+
+    /// <summary>退款成功后统一落库：写累计金额、按是否退满改状态，返回给前端的文案带上通道名与请求号</summary>
+    private async Task<RefundResult> ApplyRefundedAsync(
+        Models.PaymentRecord p, decimal newTotal, decimal amount, string channel, string requestNo)
+    {
+        p.RefundAmount = newTotal;
+        p.PayStatus = newTotal >= p.PayAmount ? "已退款" : "部分退款";
+        await _db.SaveChangesAsync();
+        return new RefundResult(
+            $"{channel}原路退款 ¥{amount:0.00} 已受理（累计 ¥{newTotal:0.00}，请求号 {requestNo}）",
+            true, newTotal, p.PayStatus);
+    }
+
+    /// <summary>取订单号：微信/银行卡退款都支持按商户订单号定位原交易，不必依赖交易号</summary>
+    private async Task<string> OrderNoOfAsync(int orderId) =>
+        await _db.RentalOrders.Where(o => o.OrderId == orderId)
+            .Select(o => o.OrderNo).FirstOrDefaultAsync() ?? string.Empty;
 }

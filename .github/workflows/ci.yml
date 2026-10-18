@@ -1,0 +1,78 @@
+name: CI
+
+# 触发：推送到 main 与所有 PR。课程项目不需要矩阵构建，两个 job 覆盖「后端能编译能测」+「前端类型与构建通过」。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的新提交取消上一轮，避免排队堆积
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端 编译 + 单元测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # 编译门槛与本地一致：警告即视为失败（项目已做到 0 警告，别让回归悄悄溜进来）
+      - name: 还原
+        run: dotnet restore eRentalSystem.slnx
+
+      - name: 编译（Release，警告视为错误）
+        run: dotnet build eRentalSystem.slnx -c Release --no-restore -warnaserror
+
+      # 单元测试只覆盖纯逻辑（计价/结算/幂等键/分页/脱敏），不连数据库，CI 里可直接跑
+      - name: 单元测试
+        run: dotnet test tests/ERental.Tests/ERental.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test-results.trx"
+
+      - name: 上传测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-test-results
+          path: '**/test-results.trx'
+          if-no-files-found: ignore
+
+  frontend:
+    name: 前端 类型检查 + 构建
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: front
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      # tsc --noEmit：只做类型检查，不产出文件；vite build 才是真实产物验证
+      - name: 类型检查
+        run: npx tsc --noEmit
+
+      - name: 生产构建
+        run: npm run build
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: front/dist
+          retention-days: 7

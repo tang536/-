@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using ERental.Models;
 using ERental.Services;
 
@@ -33,9 +33,11 @@ public sealed class SingleSessionMiddleware(RequestDelegate next)
 
             // 解析单独成句：写在 && 短路表达式里的话，userId 在后续使用时不算"确定赋值"（CS0165）
             var hasId = int.TryParse(rawId, out var userId);
-            var online = sid is not null
-                         && hasId
-                         && registry.IsCurrent(userType, userId, sid);
+            // 一次查询同时拿到「是否当前会话」与「撤销原因」，避免每个请求打两次库
+            (bool Online, string? Reason) state = sid is not null && hasId
+                ? await registry.CheckAsync(userType, userId, sid)
+                : (false, null);
+            var online = state.Online;
 
             if (!online)
             {
@@ -51,8 +53,7 @@ public sealed class SingleSessionMiddleware(RequestDelegate next)
                     //   · 其余            → 被别处的登录顶下线
                     Message = sid is null
                         ? "登录状态已更新，请重新登录"
-                        : registry.RevokedReasonOf(userType, userId)
-                          ?? "该账号已在其他设备登录，当前登录已被下线"
+                        : state.Reason ?? "该账号已在其他设备登录，当前登录已被下线"
                 });
                 return;
             }

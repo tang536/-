@@ -31,11 +31,21 @@ public class PendingOrderCleanupService(
             try
             {
                 using var scope = _scopeFactory.CreateScope();
-                var orders = scope.ServiceProvider.GetRequiredService<OrderService>();
-                var released = await orders.ReleaseExpiredPendingOrders();
-                if (released > 0)
-                    _logger.LogInformation("已自动取消 {Count} 笔超时未支付订单并释放对应车辆", released);
+
+                // 多实例部署时用 MySQL 命名锁选主：没抢到锁说明另一台正在扫，本轮直接跳过。
+                // 抢不到不算异常——释放逻辑本身是幂等的，加锁只是避免两台重复扫同一批订单。
+                var locks = scope.ServiceProvider.GetRequiredService<DbLockService>();
+                await using var handle = await locks.TryAcquireAsync("erental_pending_cleanup", TimeSpan.Zero);
+
+                if (handle is not null)
+                {
+                    var orders = scope.ServiceProvider.GetRequiredService<OrderService>();
+                    var released = await orders.ReleaseExpiredPendingOrders();
+                    if (released > 0)
+                        _logger.LogInformation("已自动取消 {Count} 笔超时未支付订单并释放对应车辆", released);
+                }
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
                 // 清理失败不能影响主流程：记日志后等下一轮重试

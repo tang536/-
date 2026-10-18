@@ -253,6 +253,85 @@ public class WechatPayService(
         }, "微信");
     }
 
+    /// <summary>
+    /// 微信退款（APIv3 <c>POST /v3/refund/domestic/refunds</c>）。
+    ///
+    /// 与支付宝退款的同构约定：
+    ///   ① 幂等键 <paramref name="outRefundNo"/> 由调用方按「支付记录 + 累计退款额」生成，
+    ///      同一键重复提交微信侧只受理一次——网关成功但本地事务回滚后重试不会重复退款；
+    ///   ② 金额单位是**分**，且必须同时带订单总额 <paramref name="totalAmount"/>（微信用于校验部分退款）；
+    ///   ③ 返回 SUCCESS / PROCESSING 都算受理成功（资金到账是异步的），
+    ///      CLOSED / ABNORMAL 视为失败，交由调用方回滚业务事务。
+    /// </summary>
+    /// <param name="outTradeNo">原支付订单号（商户侧 out_trade_no；也可换 transaction_id，本项目用订单号）</param>
+    /// <param name="outRefundNo">商户退款单号（幂等键）</param>
+    /// <param name="amount">本次退款金额（元）</param>
+    /// <param name="totalAmount">原订单实付总额（元，微信要求 refund ≤ total）</param>
+    /// <param name="reason">退款原因（会展示在微信账单里，长度截断到 80 字）</param>
+    public async Task<(bool Ok, string Message)> RefundAsync(
+        string outTradeNo, string outRefundNo, decimal amount, decimal totalAmount, string? reason = null)
+    {
+        if (string.IsNullOrWhiteSpace(outTradeNo))
+            return (false, "缺少微信支付订单号，无法原路退款；请到微信商户平台按订单号手工退款。");
+        if (amount <= 0) return (false, "退款金额必须大于 0。");
+
+        var (rt, real) = await ResolveAsync();
+        if (!real) return (false, "微信支付未配置凭证，未发生真实资金划转。");
+
+        var refundFen = (int)Math.Round(amount * 100m, MidpointRounding.AwayFromZero);
+        var totalFen = (int)Math.Round(totalAmount * 100m, MidpointRounding.AwayFromZero);
+        if (refundFen > totalFen) return (false, "退款金额不能超过原订单实付金额。");
+
+        var payload = new Dictionary<string, object?>
+        {
+            // 只传 out_trade_no：与 transaction_id 二选一，同时传会被网关拒绝
+            ["out_trade_no"] = outTradeNo,
+            ["out_refund_no"] = outRefundNo,
+            ["reason"] = string.IsNullOrWhiteSpace(reason) ? null : SecretMasker.Truncate(reason.Trim(), 80),
+            ["amount"] = new Dictionary<string, object?>
+            {
+                ["refund"] = refundFen,
+                ["total"] = totalFen,
+                ["currency"] = "CNY"
+            }
+        };
+
+        var url = $"{rt.Gateway.TrimEnd('/')}/v3/refund/domestic/refunds";
+        string respBody;
+        try
+        {
+            respBody = await PostSignedAsync(rt, url, JsonSerializer.Serialize(payload), "退款");
+        }
+        catch (Exception ex)
+        {
+            // 异常消息已由 PostSignedAsync 泛化（不回显报文），这里只补一句可操作提示
+            _logger.LogWarning("微信退款失败：{Message}", ex.Message);
+            return (false, ex.Message);
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(respBody);
+            string G(string n) => doc.RootElement.TryGetProperty(n, out var e) ? e.GetString() ?? "" : "";
+            var status = G("status");
+            var refundId = G("refund_id");
+
+            return status switch
+            {
+                "SUCCESS" => (true, $"微信退款成功（退款单 {refundId}）"),
+                // PROCESSING：微信已受理、银行侧在途，钱最终会到账，按成功处理
+                "PROCESSING" => (true, $"微信退款已受理，资金在途（退款单 {refundId}）"),
+                "CLOSED" => (false, "微信退款被关闭：原订单状态或退款金额不满足退款条件，请到商户平台核实。"),
+                "ABNORMAL" => (false, "微信退款异常：请到微信商户平台查看该退款单的处理结果。"),
+                _ => (false, $"微信退款返回未知状态（{(status.Length == 0 ? "空" : status)}），请到商户平台核实。")
+            };
+        }
+        catch (JsonException)
+        {
+            return (false, "微信退款响应解析失败，请到商户平台核实退款状态后再重试。");
+        }
+    }
+
     /// <summary>查询微信订单原始结果（HTTP/解析异常向上抛）</summary>
     private async Task<(string TradeState, string TransactionId, int TotalFen)> QueryRawAsync(
         WechatRuntime rt, string outTradeNo)
@@ -289,8 +368,8 @@ public class WechatPayService(
              + $"timestamp=\"{timestamp}\",serial_no=\"{rt.CertSerial}\",signature=\"{signature}\"";
     }
 
-    /// <summary>带签名头发起 POST，返回响应体</summary>
-    private async Task<string> PostSignedAsync(WechatRuntime rt, string url, string body)
+    /// <summary>带签名头发起 POST，返回响应体；<paramref name="operation"/> 只用于日志与错误文案（下单/退款）</summary>
+    private async Task<string> PostSignedAsync(WechatRuntime rt, string url, string body, string operation = "下单")
     {
         var http = _httpFactory.CreateClient();
         http.DefaultRequestHeaders.Remove("Authorization");
@@ -303,8 +382,8 @@ public class WechatPayService(
         if (!resp.IsSuccessStatusCode)
         {
             // 响应体可能回显报文片段，不进日志与异常消息，只记状态码
-            _logger.LogWarning("微信下单失败：HTTP {Status}", (int)resp.StatusCode);
-            throw new Exception($"微信下单被网关拒绝（HTTP {(int)resp.StatusCode}），请核对商户凭证");
+            _logger.LogWarning("微信{Operation}失败：HTTP {Status}", operation, (int)resp.StatusCode);
+            throw new Exception($"微信{operation}被网关拒绝（HTTP {(int)resp.StatusCode}），请核对商户凭证");
         }
         return respBody;
     }

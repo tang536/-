@@ -19,10 +19,32 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     private readonly VehicleService _svc = svc;
     private readonly AuthService _auth = auth;
 
+    /// <summary>
+    /// 车辆台账。传 <c>pageSize&gt;0</c> 时返回分页结构 { items, total, page, pageSize }，
+    /// 不传则维持原来的全量数组（顾客端选车、可用车辆等小结果集调用不受影响）。
+    /// </summary>
     [HttpGet]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> GetAll(string? status, string? keyword) =>
-        Ok(new ApiResponse<List<Vehicle>> { Data = await _svc.GetAll(status, keyword) });
+    public async Task<IActionResult> GetAll(string? status, string? keyword, string? brand,
+        int page = 0, int pageSize = 0)
+    {
+        if (pageSize > 0)
+        {
+            var (items, total) = await _svc.GetPaged(status, keyword, brand, page, pageSize);
+            var (p, size, _, _) = Paging.Normalize(page, pageSize);
+            return Ok(new ApiResponse<PagedResult<Vehicle>>
+            {
+                Data = new PagedResult<Vehicle>(items, total, p, size)
+            });
+        }
+        return Ok(new ApiResponse<List<Vehicle>> { Data = await _svc.GetAll(status, keyword) });
+    }
+
+    /// <summary>各状态车辆数（车辆页签角标）。分页后前端没有全集，角标改由后端分组统计。</summary>
+    [HttpGet("stats")]
+    [Authorize(Policy = Policies.AdminOrReception)]
+    public async Task<IActionResult> GetStats(string? keyword, string? brand) =>
+        Ok(new ApiResponse<Dictionary<string, int>> { Data = await _svc.GetStatusCountsAsync(keyword, brand) });
 
     [HttpGet("{id:int}")]
     [Authorize(Policy = Policies.AdminOrReception)]

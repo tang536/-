@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/tests/">
+    <Project Path="tests/ERental.Tests/ERental.Tests.csproj" />
+  </Folder>
+  <Project Path="back/back.csproj" />
+</Solution>

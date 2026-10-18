@@ -94,7 +94,7 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
         // 关键：角色一律以数据库中的真实角色为准，前端不再根据"登录时点的哪个页签"决定跳转
         var roleName = user.Role?.RoleName ?? RoleReception;
         // 单点登录：先登记会话（顶掉该账号此前的登录），再把会话标识签进 token
-        var sid = _sessions.Issue("staff", user.UserId);
+        var sid = await _sessions.IssueAsync("staff", user.UserId);
         var token = GenerateJwt(user.UserId, user.LoginAccount, "staff", roleName, sid);
         return new LoginResponseDto
         {
@@ -155,7 +155,7 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
         await WriteLog(null, $"顾客登录成功（{account}）", "用户登录", "成功");
 
         // 单点登录：顾客端同理——同一账号在第二台设备登录会把先登录的那台顶下线
-        var sid = _sessions.Issue("customer", customer.CustomerId);
+        var sid = await _sessions.IssueAsync("customer", customer.CustomerId);
         var token = GenerateJwt(customer.CustomerId, customer.LoginAccount ?? account, "customer", RoleCustomer, sid);
         return new LoginResponseDto
         {
@@ -269,7 +269,7 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
         }
         await WriteLog(null, $"顾客修改登录密码成功（{customer.LoginAccount}）", "用户登录", "成功");
         // 改密后强制下线：凭据已变，改密前签发的 token 不应继续可用
-        _sessions.RevokeAll("customer", customerId, "密码已修改，请用新密码重新登录");
+        await _sessions.RevokeAllAsync("customer", customerId, "密码已修改，请用新密码重新登录");
     }
 
     /// <summary>
@@ -325,7 +325,7 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
             }
             await WriteLog(null, $"顾客自助注销账号：{oldAccount}（身份信息已匿名化释放）", "系统管理", "成功");
             // 账号已注销：立刻把在线会话清掉，避免注销后旧 token 还能继续调接口
-            _sessions.RevokeAll("customer", userId, "账号已注销，登录状态已失效");
+            await _sessions.RevokeAllAsync("customer", userId, "账号已注销，登录状态已失效");
             return;
         }
 
@@ -346,7 +346,7 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
         await _db.SaveChangesAsync();
         await WriteLog(user.UserId, $"管理员自助注销账号：{user.LoginAccount}", "系统管理", "成功");
         // 账号已停用：清掉在线会话（否则停用了却还能凭旧 token 用到过期）
-        _sessions.RevokeAll("staff", user.UserId, "账号已停用，登录状态已失效");
+        await _sessions.RevokeAllAsync("staff", user.UserId, "账号已停用，登录状态已失效");
     }
 
     /// <summary>
@@ -375,8 +375,8 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
     /// 退出登录：撤销当前这一个会话（单点登录登记表里的那条）。
     /// 只撤销 token 自带的 sid，不会误伤该账号在别处的新会话。
     /// </summary>
-    public void Logout(string userType, int userId, string? sessionToken) =>
-        _sessions.Revoke(userType, userId, sessionToken);
+    public async Task Logout(string userType, int userId, string? sessionToken) =>
+        await _sessions.RevokeAsync(userType, userId, sessionToken);
 
     private async Task WriteLog(int? userId, string content, string module, string result)
     {
@@ -457,9 +457,9 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
             throw new Exception("登录状态已失效，请重新登录");
 
         // 与单点登录接缝：会话已被顶掉 / 被强制撤销时，不允许续期
-        if (!_sessions.IsCurrent(userType, userId, sid))
-            throw new Exception(_sessions.RevokedReasonOf(userType, userId)
-                                ?? "该账号已在其他设备登录，当前登录已被下线");
+        var (sessionOk, revokedReason) = await _sessions.CheckAsync(userType, userId, sid);
+        if (!sessionOk)
+            throw new Exception(revokedReason ?? "该账号已在其他设备登录，当前登录已被下线");
 
         if (userType == "customer")
         {

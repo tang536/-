@@ -12,6 +12,38 @@ public class CustomerService(AppDbContext db, LogService log)
 
     public async Task<List<Customer>> GetAll(string? keyword = null)
     {
+        var q = BuildQuery(keyword);
+        var list = await q.OrderByDescending(c => c.CreateTime).ToListAsync();
+        await MemberDiscountLookup.FillAsync(_db, list);   // 3NF：展示折扣按等级关联，出参字段名不变
+        return list;
+    }
+
+    /// <summary>
+    /// 分页查询（管理端客户台账）：pageSize≤0 时等价于 <see cref="GetAll"/>。
+    /// 会员等级与账号状态两个筛选项同样下推到 SQL——只对当前页筛会让总数与页码失真。
+    /// 折扣是关联计算字段，分页后再填充，避免把整表拉进内存。
+    /// </summary>
+    public async Task<(List<Customer> Items, int Total)> GetPaged(
+        string? keyword, string? level, string? accountStatus, int page, int pageSize)
+    {
+        var q = BuildQuery(keyword);
+        if (!string.IsNullOrEmpty(level)) q = q.Where(c => c.MemberLevel == level);
+        if (!string.IsNullOrEmpty(accountStatus)) q = q.Where(c => c.AccountStatus == accountStatus);
+
+        var total = await q.CountAsync();
+        var (_, _, skip, take) = DTOs.Paging.Normalize(page, pageSize);
+        var ordered = q.OrderByDescending(c => c.CreateTime);
+        var items = take > 0
+            ? await ordered.Skip(skip).Take(take).ToListAsync()
+            : await ordered.ToListAsync();
+
+        await MemberDiscountLookup.FillAsync(_db, items);
+        return (items, total);
+    }
+
+    /// <summary>客户列表的公共过滤条件（关键字命中姓名/账号/身份证/电话），全量与分页共用</summary>
+    private IQueryable<Customer> BuildQuery(string? keyword)
+    {
         var q = _db.Customers.AsQueryable();
         if (!string.IsNullOrEmpty(keyword))
         {
@@ -21,9 +53,7 @@ public class CustomerService(AppDbContext db, LogService log)
                           || (c.IdCard != null && c.IdCard.Contains(k))
                           || (c.ContactPhone != null && c.ContactPhone.Contains(k)));
         }
-        var list = await q.OrderByDescending(c => c.CreateTime).ToListAsync();
-        await MemberDiscountLookup.FillAsync(_db, list);   // 3NF：展示折扣按等级关联，出参字段名不变
-        return list;
+        return q;
     }
 
     public async Task<Customer> GetById(int id)

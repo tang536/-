@@ -185,6 +185,9 @@ export const userApi = {
 // 客户
 export const customerApi = {
   list: (keyword?: string) => api.get('/customer', { params: { keyword } }),
+  /** 服务端分页：返回 { items, total, page, pageSize, pageCount }；不传 pageSize 则后端返回全量数组 */
+  page: (params: { keyword?: string; level?: string; accountStatus?: string; page: number; pageSize: number }) =>
+    api.get('/customer', { params }),
   get: (id: number) => api.get(`/customer/${id}`),
   create: (data: any) => api.post('/customer', data),
   update: (id: number, data: any) => api.put(`/customer/${id}`, data),
@@ -201,6 +204,11 @@ export const customerApi = {
 // 车辆
 export const vehicleApi = {
   list: (status?: string, keyword?: string) => api.get('/vehicle', { params: { status, keyword } }),
+  /** 服务端分页：返回 { items, total, page, pageSize, pageCount }；品牌筛选下推到后端 */
+  page: (params: { status?: string; keyword?: string; brand?: string; page: number; pageSize: number }) =>
+    api.get('/vehicle', { params }),
+  /** 各状态车辆数（页签角标）：分页后前端没有全集，角标由后端分组统计 */
+  stats: (params?: { keyword?: string; brand?: string }) => api.get('/vehicle/stats', { params }),
   get: (id: number) => api.get(`/vehicle/${id}`),
   create: (data: any) => api.post('/vehicle', data),
   /**
@@ -313,6 +321,9 @@ export const aiApi = {
 // 订单（顾客角色后端会自动只返回本人订单）
 export const orderApi = {
   list: (status?: string, keyword?: string) => api.get('/order', { params: { status, keyword } }),
+  /** 服务端分页：返回 { items, total, page, pageSize, pageCount }；顾客角色仍只返回本人订单 */
+  page: (params: { status?: string; keyword?: string; page: number; pageSize: number }) =>
+    api.get('/order', { params }),
   get: (id: number) => api.get(`/order/${id}`),
   /** 客户不存在时后端自动建档 */
   create: (data: any) => api.post('/order', data),

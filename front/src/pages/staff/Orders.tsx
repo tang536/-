@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { useUI } from '@/components/UIProvider'
 import { useSearchParams } from 'react-router-dom'
 import { orderApi, renewalApi, printApi } from '@/api'
@@ -9,6 +9,10 @@ import { useAuth, ROLE } from '@/hooks/useAuth'
 import { fmtDT } from '@/utils/datetime'
 import { downloadBlob, todayStamp } from '@/utils/download'
 import CreateOrderPanel from './components/CreateOrderPanel'
+import Pagination from '@/components/Pagination'
+
+/** 服务端分页：每页条数与后端 Paging.MaxPageSize 无关，仅作展示分页粒度 */
+const PAGE_SIZE = 10
 
 const statusMap: Record<string, string> = {
   '待支付': 'status-warning',
@@ -44,6 +48,9 @@ export default function Orders() {
   const [loading, setLoading] = useState(true)
   const [receipt, setReceipt] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
+  /** 服务端分页状态：页码从 1 开始，total 由后端统计 */
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
   /** 页面级页签：list=订单列表（原整页内容），create=创建订单（原独立页并入） */
   const [view, setView] = useState<'list' | 'create'>(() =>
     searchParams.get('view') === 'create' && hasRole([ROLE.RECEPTION]) ? 'create' : 'list'
@@ -52,8 +59,14 @@ export default function Orders() {
   const load = async () => {
     setLoading(true)
     try {
-      const res: any = await orderApi.list(status || undefined, keyword || undefined)
-      setList(res.data || [])
+      const res: any = await orderApi.page({
+        status: status || undefined,
+        keyword: keyword || undefined,
+        page,
+        pageSize: PAGE_SIZE,
+      })
+      setList(res.data?.items || [])
+      setTotal(res.data?.total || 0)
     } catch (e: any) {
       toast(e?.message || '订单加载失败', 'error')
     } finally {
@@ -62,7 +75,9 @@ export default function Orders() {
   }
 
   // 顶栏全局搜索会带上 ?q=，进入页面后自动作为筛选条件
-  useEffect(() => { load() }, [status, keyword])
+  useEffect(() => { load() }, [status, keyword, page])
+  // 筛选条件变化后回到第 1 页，避免停在越界页码上看到空列表
+  useEffect(() => { setPage(1) }, [status, keyword])
 
   const handleCancel = async (o: Order) => {
     const ok = await confirm({
@@ -127,7 +142,7 @@ export default function Orders() {
       <div className="card-title">
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
           <Icon name="orders" size={18} chip />租赁订单
-          {view === 'list' && <span className="card-title-count">共 {list.length} 条</span>}
+          {view === 'list' && <span className="card-title-count">共 {total} 条</span>}
         </span>
         {view === 'list' && (
           <button className="btn-sm btn-sm-default" onClick={handleExport} disabled={exporting}
@@ -210,6 +225,9 @@ export default function Orders() {
             </table>
           </div>
 
+          {!loading && total > PAGE_SIZE && (
+            <Pagination total={total} page={page} pageSize={PAGE_SIZE} onChange={setPage} />
+          )}
           {loading && <div className="loading-line"><Icon name="refresh" size={18} />数据加载中…</div>}
           {!loading && list.length === 0 && (
             <div className="empty">

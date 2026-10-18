@@ -56,6 +56,10 @@ export default function Customers() {
   const load = async () => {
     setLoading(true)
     try {
+      // 客户列表暂按全量取：页面上「账号状态 / 租车资料」两个筛选是**派生条件**
+      // （已注销 = 登录账号停用，资料不全 = profileCompleted 为空），后端还没有对应查询参数。
+      // 接口本身已支持 page/pageSize（见 customerApi.page），等派生条件落到后端再切分页，
+      // 否则只对当前页筛选会让总数与页码失真。
       const res: any = await customerApi.list(keyword || undefined)
       setList(res.data || [])
     } catch (e: any) {

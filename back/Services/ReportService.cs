@@ -40,48 +40,17 @@ public class ReportService(AppDbContext db)
         if (hasRange)
         {
             var days = (int)(rangeTo!.Value.Date - rangeFrom!.Value.Date).TotalDays;
+            // 区间 ≤31 天按天铺点；更长的区间按月聚合，避免图上出现几百个点
             if (days <= 31)
-            {
-                for (var d = rangeFrom.Value.Date; d < rangeTo.Value.Date; d = d.AddDays(1))
-                {
-                    var day = d;
-                    var next = day.AddDays(1);
-                    monthlyRevenue[day.ToString("MM-dd")] = await _db.PaymentRecords
-                        .Where(p => p.PayTime.HasValue && p.PayTime >= day && p.PayTime < next && p.PayStatus == "已支付")
-                        .SumAsync(p => p.PayAmount);
-                    orderTrend[day.ToString("MM-dd")] = await _db.RentalOrders
-                        .CountAsync(o => o.CreateTime >= day && o.CreateTime < next);
-                }
-            }
+                await FillDailyTrendAsync(rangeFrom.Value.Date, rangeTo.Value.Date, monthlyRevenue, orderTrend);
             else
-            {
-                for (var m = new DateTime(rangeFrom.Value.Year, rangeFrom.Value.Month, 1);
-                     m < rangeTo.Value;
-                     m = m.AddMonths(1))
-                {
-                    var month = m;
-                    var next = month.AddMonths(1);
-                    monthlyRevenue[month.ToString("yyyy-MM")] = await _db.PaymentRecords
-                        .Where(p => p.PayTime.HasValue && p.PayTime >= month && p.PayTime < next && p.PayStatus == "已支付")
-                        .SumAsync(p => p.PayAmount);
-                    orderTrend[month.ToString("yyyy-MM")] = await _db.RentalOrders
-                        .CountAsync(o => o.CreateTime >= month && o.CreateTime < next);
-                }
-            }
+                await FillMonthlyTrendAsync(rangeFrom.Value.Date, rangeTo.Value.Date, monthlyRevenue, orderTrend);
         }
         else
         {
-            for (var i = 6; i >= 0; i--)
-            {
-                var day = DateTime.Now.AddDays(-i).Date;
-                var next = day.AddDays(1);
-                var total = await _db.PaymentRecords
-                    .Where(p => p.PayTime.HasValue && p.PayTime >= day && p.PayTime < next && p.PayStatus == "已支付")
-                    .SumAsync(p => p.PayAmount);
-                monthlyRevenue[day.ToString("MM-dd")] = total;
-                orderTrend[day.ToString("MM-dd")] = await _db.RentalOrders
-                    .CountAsync(o => o.CreateTime >= day && o.CreateTime < next);
-            }
+            // 无区间：最近 7 天
+            await FillDailyTrendAsync(DateTime.Now.AddDays(-6).Date, DateTime.Now.Date.AddDays(1),
+                monthlyRevenue, orderTrend);
         }
 
         // 车辆状态分布：一次全表分组，把「在租 / 空闲 / 维保 / 总数」全部读出来。
@@ -756,5 +725,67 @@ public class ReportService(AppDbContext db)
             FaultTypes = faultTypes,
             TopVehicles = topVehicles
         };
+    }
+
+    /// <summary>
+    /// 按天铺满营收 / 订单趋势：**两条 GROUP BY 查询**覆盖整个区间，
+    /// 而不是「循环每一天各查一次」（31 天区间原本要 62 条 SQL）。
+    /// 聚合在库里完成，返回的日期集合再与区间对齐补 0——没有数据的日期仍要有点，否则折线会把缺口连起来。
+    /// </summary>
+    private async Task FillDailyTrendAsync(
+        DateTime start, DateTime end,
+        Dictionary<string, decimal> revenue, Dictionary<string, int> orders)
+    {
+        var revenueRows = await _db.PaymentRecords
+            .Where(p => p.PayStatus == "已支付" && p.PayTime.HasValue && p.PayTime >= start && p.PayTime < end)
+            .GroupBy(p => p.PayTime!.Value.Date)
+            .Select(g => new { Day = g.Key, Total = g.Sum(x => x.PayAmount) })
+            .ToListAsync();
+
+        var orderRows = await _db.RentalOrders
+            .Where(o => o.CreateTime >= start && o.CreateTime < end)
+            .GroupBy(o => o.CreateTime.Date)
+            .Select(g => new { Day = g.Key, Count = g.Count() })
+            .ToListAsync();
+
+        var revenueByDay = revenueRows.ToDictionary(r => r.Day, r => r.Total);
+        var ordersByDay = orderRows.ToDictionary(r => r.Day, r => r.Count);
+
+        for (var d = start.Date; d < end.Date; d = d.AddDays(1))
+        {
+            var key = d.ToString("MM-dd");
+            revenue[key] = revenueByDay.GetValueOrDefault(d, 0m);
+            orders[key] = ordersByDay.GetValueOrDefault(d, 0);
+        }
+    }
+
+    /// <summary>
+    /// 按月铺满趋势（长区间用）：同样只用两条 GROUP BY，按 (年, 月) 分组后在内存里对齐到月份序列。
+    /// </summary>
+    private async Task FillMonthlyTrendAsync(
+        DateTime start, DateTime end,
+        Dictionary<string, decimal> revenue, Dictionary<string, int> orders)
+    {
+        var revenueRows = await _db.PaymentRecords
+            .Where(p => p.PayStatus == "已支付" && p.PayTime.HasValue && p.PayTime >= start && p.PayTime < end)
+            .GroupBy(p => new { p.PayTime!.Value.Year, p.PayTime.Value.Month })
+            .Select(g => new { g.Key.Year, g.Key.Month, Total = g.Sum(x => x.PayAmount) })
+            .ToListAsync();
+
+        var orderRows = await _db.RentalOrders
+            .Where(o => o.CreateTime >= start && o.CreateTime < end)
+            .GroupBy(o => new { o.CreateTime.Year, o.CreateTime.Month })
+            .Select(g => new { g.Key.Year, g.Key.Month, Count = g.Count() })
+            .ToListAsync();
+
+        var revenueByMonth = revenueRows.ToDictionary(r => (r.Year, r.Month), r => r.Total);
+        var ordersByMonth = orderRows.ToDictionary(r => (r.Year, r.Month), r => r.Count);
+
+        for (var m = new DateTime(start.Year, start.Month, 1); m < end; m = m.AddMonths(1))
+        {
+            var key = m.ToString("yyyy-MM");
+            revenue[key] = revenueByMonth.GetValueOrDefault((m.Year, m.Month), 0m);
+            orders[key] = ordersByMonth.GetValueOrDefault((m.Year, m.Month), 0);
+        }
     }
 }

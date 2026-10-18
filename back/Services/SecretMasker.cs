@@ -26,6 +26,9 @@ public static class SecretMasker
     public static string Scrub(string? text, params string?[] secrets)
     {
         var result = text ?? "";
+        // 显式传 null 数组（如 Scrub(text, null) 的反射/动态调用）会让 foreach 抛空引用；
+        // 脱敏是最后一道防线，宁可什么都不做也不能把调用方带崩。
+        if (secrets is null) return result;
         foreach (var s in secrets)
         {
             var v = (s ?? "").Trim();

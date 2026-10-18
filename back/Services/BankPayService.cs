@@ -20,16 +20,21 @@ namespace ERental.Services;
 /// 主动查单：通用网关没有统一查询协议，本通道**不实现查单**，
 ///   入账依赖异步回调（配置的 bank_notify_url 必须公网可达），这点与支付宝/微信不同，
 ///   在通道状态详情里会明确提示。
+///
+/// 退款：按同一套签名规则 POST 到退款地址（<c>pay.bank_refund_url</c>，未填时由支付网关推导），
+///   幂等键 out_refund_no 由调用方生成；响应做宽容解析，解析不出明确成功信号即判失败。
 /// </summary>
 public class BankPayService(
-    PayConfigService payConfig, AlipayService alipay, ILogger<BankPayService> logger)
+    PayConfigService payConfig, AlipayService alipay, IHttpClientFactory httpFactory, ILogger<BankPayService> logger)
 {
     private readonly PayConfigService _payConfig = payConfig;
     private readonly AlipayService _alipay = alipay;
+    private readonly IHttpClientFactory _httpFactory = httpFactory;
     private readonly ILogger<BankPayService> _logger = logger;
 
     /// <summary>银行卡通道的一次运行参数。</summary>
-    public sealed record BankRuntime(string MerchantNo, string Gateway, string SignKey, string NotifyUrl, string ReturnUrl)
+    public sealed record BankRuntime(
+        string MerchantNo, string Gateway, string SignKey, string NotifyUrl, string ReturnUrl, string RefundUrl)
     {
         /// <summary>三项必填是否齐全（商户号 + 网关 + 签名密钥）</summary>
         public bool CredentialsComplete =>
@@ -44,14 +49,31 @@ public class BankPayService(
         string Secret(string key) => _payConfig.Secret(key, Get(key));
 
         var enabled = Get(PayConfigService.KeyBankEnabled) is "1" or "true" or "True";
+        var gateway = Get(PayConfigService.KeyBankGateway);
         var rt = new BankRuntime(
             Get(PayConfigService.KeyBankMerchantNo),
-            Get(PayConfigService.KeyBankGateway),
+            gateway,
             Secret(PayConfigService.KeyBankSignKey),
             _payConfig.FallbackChannelUrl(Get(PayConfigService.KeyBankNotifyUrl), "api/payment/bank/notify"),
-            _payConfig.FallbackChannelUrl(Get(PayConfigService.KeyReturnUrl), "pay-result"));
+            _payConfig.FallbackChannelUrl(Get(PayConfigService.KeyReturnUrl), "pay-result"),
+            DeriveRefundUrl(Get(PayConfigService.KeyBankRefundUrl), gateway));
 
         return (rt, enabled && rt.CredentialsComplete);
+    }
+
+    /// <summary>
+    /// 退款地址：优先用管理员显式填写的 <c>pay.bank_refund_url</c>。
+    /// 未填时按业内常见约定由支付网关推导——以 <c>/pay</c> 结尾的网关换成 <c>/refund</c>，
+    /// 其余情况追加 <c>/refund</c>。推导不符合所选机构的路径规范时，请直接填退款地址。
+    /// </summary>
+    private static string DeriveRefundUrl(string configured, string gateway)
+    {
+        if (!string.IsNullOrWhiteSpace(configured)) return configured.Trim();
+        var g = gateway.Trim().TrimEnd('/');
+        if (g.Length == 0) return "";
+        if (g.EndsWith("/pay", StringComparison.OrdinalIgnoreCase))
+            return g[..^3] + "refund";
+        return g + "/refund";
     }
 
     /// <summary>
@@ -120,6 +142,114 @@ public class BankPayService(
             ["trade_no"] = form.TryGetValue("trade_no", out var tn) ? tn : "",
             ["total_amount"] = form.TryGetValue("total_amount", out var amt) ? amt : ""
         }, "银行卡");
+    }
+
+    /// <summary>
+    /// 银行卡退款：按同一套 HMAC 签名规则 POST 到退款地址。
+    ///
+    /// 通用网关没有统一的退款响应规范，这里做**宽容解析**：
+    ///   ① JSON 响应 → 取 code / status / result 任一字段，命中 0 / 0000 / 200 / SUCCESS / PROCESSING 即受理；
+    ///   ② 纯文本响应 → 出现 success/succeed/ok（不区分大小写）即受理；
+    ///   ③ 其余情况一律判失败，**绝不把"没解析明白"当成"退款成功"**，避免账面已退、钱没退。
+    ///
+    /// 幂等键 <paramref name="outRefundNo"/> 与支付宝/微信同构，由调用方按「支付记录 + 累计退款额」生成。
+    /// </summary>
+    public async Task<(bool Ok, string Message)> RefundAsync(
+        string outTradeNo, string outRefundNo, decimal amount, decimal totalAmount, string? reason = null)
+    {
+        if (string.IsNullOrWhiteSpace(outTradeNo))
+            return (false, "缺少银行卡支付流水号，无法原路退款；请到收单机构后台按订单号手工退款。");
+        if (amount <= 0) return (false, "退款金额必须大于 0。");
+
+        var (rt, real) = await ResolveAsync();
+        if (!real) return (false, "银行卡通道未配置凭证，未发生真实资金划转。");
+        if (string.IsNullOrWhiteSpace(rt.RefundUrl))
+            return (false, "未配置银行卡退款地址，无法发起退款。");
+
+        var parameters = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["merchant_no"] = rt.MerchantNo,
+            ["out_trade_no"] = outTradeNo,
+            ["out_refund_no"] = outRefundNo,
+            ["refund_amount"] = amount.ToString("0.00"),
+            ["total_amount"] = totalAmount.ToString("0.00"),
+            ["reason"] = string.IsNullOrWhiteSpace(reason) ? "" : SecretMasker.Truncate(reason.Trim(), 100),
+            ["timestamp"] = DateTimeOffset.Now.ToUnixTimeSeconds().ToString()
+        };
+        parameters["sign"] = BuildSign(parameters, rt.SignKey);
+
+        try
+        {
+            var http = _httpFactory.CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(15);
+            var resp = await http.PostAsync(rt.RefundUrl,
+                new FormUrlEncodedContent(parameters.ToDictionary(kv => kv.Key, kv => kv.Value)));
+            var body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("银行卡退款失败：HTTP {Status}", (int)resp.StatusCode);
+                return (false, $"银行卡退款被网关拒绝（HTTP {(int)resp.StatusCode}），请核对商户凭证与退款地址。");
+            }
+
+            var (accepted, status) = IsAcceptedResponse(body);
+            if (!accepted)
+            {
+                _logger.LogWarning("银行卡退款未获受理：{Status}", status);
+                return (false, $"银行卡退款未获受理（{status}），请到收单机构后台核实。");
+            }
+            _logger.LogInformation("银行卡退款已受理：{Status}", status);
+            return (true, $"银行卡退款已受理（{status}）");
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning("银行卡退款请求异常（{ExType}）", ex.GetType().Name);
+            return (false, "银行卡退款网关不可达，请检查网络与退款地址配置。");
+        }
+        catch (TaskCanceledException)
+        {
+            return (false, "银行卡退款请求超时，结果未知：请到收单机构后台核实后再重试。");
+        }
+    }
+
+    /// <summary>
+    /// 宽容判定网关是否受理退款：JSON 取 code/status/result，纯文本看关键字。
+    /// 解析不出明确成功信号时**一律判失败**——宁可让人去对账，也不能谎报退款成功。
+    /// </summary>
+    private static (bool Accepted, string Status) IsAcceptedResponse(string body)
+    {
+        var text = (body ?? "").Trim();
+        if (text.Length == 0) return (false, "网关返回空响应");
+
+        if (text.StartsWith('{') || text.StartsWith('['))
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(text);
+                foreach (var name in new[] { "code", "status", "result", "ret_code", "return_code" })
+                {
+                    if (!doc.RootElement.TryGetProperty(name, out var el)) continue;
+                    // 不用 switch 表达式：ValueKind 是 8 值枚举，缺省会触发 IDE0072（本项目要求 0 警告）
+                    var kind = el.ValueKind;
+                    var value = kind == System.Text.Json.JsonValueKind.String ? (el.GetString() ?? "")
+                              : kind == System.Text.Json.JsonValueKind.Number ? el.GetRawText()
+                              : kind == System.Text.Json.JsonValueKind.True ? "true"
+                              : "";
+                    var ok = value.ToUpperInvariant() is "0" or "0000" or "00" or "200"
+                        or "SUCCESS" or "SUCCEED" or "PROCESSING" or "TRUE";
+                    if (value.Length > 0) return (ok, $"{name}={value}");
+                }
+                return (false, "网关响应中无状态字段");
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return (false, "网关响应不是合法 JSON");
+            }
+        }
+
+        var lower = text.ToLowerInvariant();
+        if (lower.Contains("success") || lower.Contains("succeed") || lower == "ok")
+            return (true, SecretMasker.Truncate(text, 30));
+        return (false, SecretMasker.Truncate(text, 30));
     }
 
     /// <summary>按 key 字典序拼 k=v&amp;（末尾直接接签名密钥）后做 HMAC-SHA256，返回大写十六进制</summary>

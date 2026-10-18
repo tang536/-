@@ -110,11 +110,11 @@ public class AuthController(AuthService auth) : ControllerBase
     /// </summary>
     [HttpPost("logout")]
     [Authorize(Policy = Policies.AnyAuthenticated)]
-    public IActionResult Logout()
+    public async Task<IActionResult> Logout()
     {
         var id = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
         var userType = User.FindFirst("user_type")?.Value ?? "staff";
-        _auth.Logout(userType, id, User.FindFirst(Middleware.SingleSessionMiddleware.SessionClaim)?.Value);
+        await _auth.Logout(userType, id, User.FindFirst(Middleware.SingleSessionMiddleware.SessionClaim)?.Value);
         return Ok(new ApiResponse<object> { Message = "已退出登录" });
     }
 

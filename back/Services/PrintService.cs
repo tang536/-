@@ -1,4 +1,4 @@
-using ERental.Data;
+﻿using ERental.Data;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
 
@@ -146,7 +146,11 @@ public class PrintService(AppDbContext db)
     /// 小票会被随手丢在柜台、被顾客拍照，打出完整 18 位等于把证件号散播到不可控的地方；
     /// 保留前 4 位与后 4 位，既能让前台核对是本人，又不构成完整证件号。
     /// </summary>
-    private static string MaskIdCard(string? idCard)
+    /// <summary>
+    /// 身份证脱敏：保留前 4 位与后 4 位，中间按实际长度补 *（小票属易丢失凭证，需求 6.4「敏感信息脱敏」）。
+    /// 内部可见是为了让单元测试能直接验证边界（空值/短号/标准 18 位）。
+    /// </summary>
+    internal static string MaskIdCard(string? idCard)
     {
         var s = (idCard ?? string.Empty).Trim();
         if (s.Length == 0) return "—";

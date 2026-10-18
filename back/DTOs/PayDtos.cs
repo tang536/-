@@ -228,6 +228,8 @@ public class PayConfigViewDto
     public string BankGateway { get; init; } = string.Empty;
     public string BankSignKeyMasked { get; init; } = string.Empty;
     public string BankNotifyUrl { get; init; } = string.Empty;
+    /// <summary>退款地址（非必填，留空时按支付网关推导）</summary>
+    public string BankRefundUrl { get; init; } = string.Empty;
     public bool BankSignKeySet { get; init; }
 
     // ── 公共 ──
@@ -280,6 +282,7 @@ public class SavePayConfigDto
     public string? BankGateway { get; init; }
     public string? BankSignKey { get; init; }
     public string? BankNotifyUrl { get; init; }
+    public string? BankRefundUrl { get; init; }
 
     public string? NotifyUrl { get; init; }
     public string? ReturnUrl { get; init; }

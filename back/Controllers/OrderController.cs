@@ -20,11 +20,20 @@ public class OrderController(OrderService svc) : ControllerBase
     private bool IsCustomer => User.IsInRole(AuthService.RoleCustomer);
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
-    /// <summary>订单列表。顾客角色只能看到自己的订单（后端强隔离，不依赖前端传参）</summary>
+    /// <summary>
+    /// 订单列表。顾客角色只能看到自己的订单（后端强隔离，不依赖前端传参）。
+    /// 传 <c>pageSize&gt;0</c> 返回分页结构，不传返回全量数组（顾客端"我的订单"等调用不受影响）。
+    /// </summary>
     [HttpGet]
-    public async Task<IActionResult> GetAll(string? status, string? keyword)
+    public async Task<IActionResult> GetAll(string? status, string? keyword, int page = 0, int pageSize = 0)
     {
         var customerId = IsCustomer ? CurrentUserId : (int?)null;
+        if (pageSize > 0)
+        {
+            var (rows, total) = await _svc.GetPaged(status, keyword, customerId, page, pageSize);
+            var (p, size, _, _) = Paging.Normalize(page, pageSize);
+            return Ok(new ApiResponse<PagedResult<OrderDto>> { Data = new PagedResult<OrderDto>(rows, total, p, size) });
+        }
         return Ok(new ApiResponse<List<OrderDto>> { Data = await _svc.GetAll(status, keyword, customerId) });
     }
 

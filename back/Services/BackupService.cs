@@ -449,6 +449,17 @@ public class BackupSchedulerService(
                 await Task.Delay(wait, stoppingToken);
 
                 using var scope = scopeFactory.CreateScope();
+
+                // 多实例部署时只有抢到 MySQL 命名锁的那台执行，其余实例让位。
+                // 备份是重 IO 任务，重复执行既浪费磁盘也可能撞上同名文件。
+                var locks = scope.ServiceProvider.GetRequiredService<DbLockService>();
+                await using var handle = await locks.TryAcquireAsync("erental_backup", TimeSpan.Zero);
+                if (handle is null)
+                {
+                    logger.LogInformation("自动备份已由其他实例执行，本实例跳过本轮");
+                    continue;
+                }
+
                 var backup = scope.ServiceProvider.GetRequiredService<BackupService>();
                 var result = await backup.CreateAsync();
                 logger.LogInformation("自动备份完成：{File}（{Size} KB，耗时 {Elapsed} ms）",

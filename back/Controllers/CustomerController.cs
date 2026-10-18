@@ -18,11 +18,26 @@ public class CustomerController(CustomerService svc) : ControllerBase
     private bool IsCustomer => User.IsInRole(AuthService.RoleCustomer);
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
-    /// <summary>客户列表：仅工作人员可查（顾客不可遍历他人档案）</summary>
+    /// <summary>
+    /// 客户列表：仅工作人员可查（顾客不可遍历他人档案）。
+    /// 传 <c>pageSize&gt;0</c> 返回分页结构，不传返回全量数组（兼容既有调用）。
+    /// </summary>
     [HttpGet]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> GetAll(string? keyword) =>
-        Ok(new ApiResponse<List<Customer>> { Data = await _svc.GetAll(keyword) });
+    public async Task<IActionResult> GetAll(string? keyword, string? level, string? accountStatus,
+        int page = 0, int pageSize = 0)
+    {
+        if (pageSize > 0)
+        {
+            var (items, total) = await _svc.GetPaged(keyword, level, accountStatus, page, pageSize);
+            var (p, size, _, _) = Paging.Normalize(page, pageSize);
+            return Ok(new ApiResponse<PagedResult<Customer>>
+            {
+                Data = new PagedResult<Customer>(items, total, p, size)
+            });
+        }
+        return Ok(new ApiResponse<List<Customer>> { Data = await _svc.GetAll(keyword) });
+    }
 
     /// <summary>客户详情：工作人员可查任意客户，顾客仅能查自己</summary>
     [HttpGet("{id:int}")]

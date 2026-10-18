@@ -50,21 +50,15 @@ public class SettlementService(AppDbContext db, PaymentService payment)
         var multiplier = ConfigValue.Decimal(multiplierCfgs, "overdue_multiplier", 1.5m);
         var overdueFee = Math.Round(overdueHours * hourlyRent * multiplier, 2);
 
-        // 逾期费**也是租金**——它只是「超出约定还车时间那一段」的租金，单价上浮而已。
-        // 所以对外收口成一个「租金合计」：前台向顾客报的是这笔合计，退款也按合计算，
-        // 不能把它当成与租金无关的附加费（那样「实际租金 ¥41.67」会误导顾客以为超时那 12 小时没算钱）。
-        // 落库仍拆成 actual_rent / overdue_fee 两列，是为了保留可审计的构成。
-        var rentTotal = Math.Round(actualRent + overdueFee, 2);
-
-        // 多退少补：预付租金扣掉租金合计、押金扣掉损坏费，剩余退回；不足则补缴。
-        // 原来只退押金、预付租金一律不退，提前还车的顾客等于白送钱，与「以小时计费」自相矛盾。
-        var rentDiff = Math.Round(order.TotalRent - rentTotal, 2);
-        var refund = Math.Round(rentDiff + order.Deposit - damageFee, 2);
+        // 落库仍拆成 actual_rent / overdue_fee 两列，是为了保留可审计的构成；
+        // 合计与多退少补的算法收在 SettlementMath，纯函数、可被单元测试锁住口径。
+        var (rentTotal, rentDiff, refund, supplement) = SettlementMath.Settle(
+            order.TotalRent, order.Deposit, damageFee, actualRent, overdueFee);
 
         return new SettleCalc(
             hourlyRent, multiplier, actualHours, actualRent,
             overdueHours, overdueFee, rentTotal, rentDiff,
-            Math.Max(0, refund), refund < 0 ? -refund : 0);
+            refund, supplement);
     }
 
     /// <summary>

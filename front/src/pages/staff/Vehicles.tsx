@@ -124,6 +124,9 @@ export default function Vehicles() {
   const [brandFilter, setBrandFilter] = useState('')
   /** 档案列表当前页码：筛选条件变化时归零到第 1 页 */
   const [page, setPage] = useState(1)
+  /** 服务端分页返回的总条数与各状态角标 */
+  const [total, setTotal] = useState(0)
+  const [counts, setCounts] = useState<Record<string, number>>({})
   /**
    * 页面级页签：list=车辆档案，check=车辆盘点，maintenance=维保管理（后两者原为独立页并入）。
    * 支持 ?view= 直达（供旧路由重定向与通知链接使用）；前台无车辆档案权限，默认落在维保页签。
@@ -138,8 +141,16 @@ export default function Vehicles() {
   const load = async () => {
     setLoading(true)
     try {
-      const res: any = await vehicleApi.list(status || undefined, keyword || undefined)
-      setList(res.data || [])
+      // 服务端分页：品牌筛选也下推给后端，否则只对当前页筛会造成总数与页码失真
+      const res: any = await vehicleApi.page({
+        status: status || undefined,
+        keyword: keyword || undefined,
+        brand: brandFilter || undefined,
+        page,
+        pageSize: PAGE_SIZE,
+      })
+      setList(res.data?.items || [])
+      setTotal(res.data?.total || 0)
     } catch (e: any) {
       toast(e?.message || '车辆列表加载失败', 'error')
     } finally {
@@ -147,7 +158,17 @@ export default function Vehicles() {
     }
   }
 
-  useEffect(() => { load() }, [status, keyword])
+  useEffect(() => { load() }, [status, keyword, brandFilter, page])
+
+  // 状态角标单独统计：分页后前端拿不到全集，角标不能靠当前页算
+  useEffect(() => {
+    (async () => {
+      try {
+        const res: any = await vehicleApi.stats({ keyword: keyword || undefined, brand: brandFilter || undefined })
+        setCounts(res.data || {})
+      } catch { /* 统计失败时角标退化为 0，不影响列表 */ }
+    })()
+  }, [keyword, brandFilter, status])
 
   // 品牌筛选选项来自数据字典（dict.brand），字典更新后筛选选项随之变化
   useEffect(() => {
@@ -391,15 +412,14 @@ export default function Vehicles() {
     }
   }
 
-  const counts = STATUSES.map(s => ({ s, n: list.filter(v => v.vehicleStatus === s).length }))
+  const countsRows = STATUSES.map(s => ({ s, n: counts[s] || 0 }))
 
   // ── 批量勾选：仅车辆档案页签（list）、管理员可见 ──
-  // 品牌筛选后的全集；分页只影响「当前展示哪几行」，勾选与全选仍基于全集，
-  // 这样「同型号 50 台一次性全选 → 批量改价」跨页也成立。
-  const filtered = list.filter(v => !brandFilter || v.brand === brandFilter)
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
-  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
-  const visibleIds = filtered.map(v => v.vehicleId)
+  // 服务端分页后前端只有当前页数据，因此"全选"作用于**当前页**；
+  // 已勾选项跨页保留，批量改价/批量状态仍可先逐页勾选再一次性提交。
+  const paged = list
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const visibleIds = list.map(v => v.vehicleId)
   const allSelected = visibleIds.length > 0 && visibleIds.every(id => selected.includes(id))
   const toggleSelect = (id: number) =>
     setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
@@ -487,7 +507,7 @@ export default function Vehicles() {
         </div>
         {view === 'list' && (
           <span className="title-chips">
-            {counts.map(c => (
+            {countsRows.map(c => (
               <span key={c.s} className={`status-tag ${statusMap[c.s]}`}>{c.s} {c.n}</span>
             ))}
           </span>
@@ -593,12 +613,12 @@ export default function Vehicles() {
       </div>
 
       {/* 分页：同类车再多也一页一页看；仅一页时不显示分页条 */}
-      {!loading && filtered.length > 0 && (
-        <Pagination total={filtered.length} page={page} pageSize={PAGE_SIZE} onChange={setPage} />
+      {!loading && total > 0 && (
+        <Pagination total={total} page={page} pageSize={PAGE_SIZE} onChange={setPage} />
       )}
 
       {loading && <div className="loading-line"><Icon name="refresh" size={18} />数据加载中…</div>}
-      {!loading && filtered.length === 0 && (
+      {!loading && total === 0 && (
         <div className="empty">
           <Icon name="empty" size={40} chip />
           <div>{list.length === 0 ? '暂无车辆数据' : '没有符合条件的车辆'}</div>

@@ -99,6 +99,9 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     public const string KeyBankGateway = Prefix + "bank_gateway";
     public const string KeyBankSignKey = Prefix + "bank_sign_key";
     public const string KeyBankNotifyUrl = Prefix + "bank_notify_url";
+    // 退款地址非必填：留空时由支付网关推导（/pay → /refund，其余追加 /refund），
+    // 所选机构的路径规范不同时再显式填写。
+    public const string KeyBankRefundUrl = Prefix + "bank_refund_url";
 
     /// <summary>支付模式：生产 / 沙箱 / 模拟</summary>
     public const string ModeProd = "生产";
@@ -293,7 +296,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             Configured = wxConfigured,
             Status = wxOn && wxConfigured ? "已启用" : wxConfigured ? "已配置未启用" : "未配置",
             Detail = wxOn && wxConfigured
-                ? "正式通道已生效：微信支付 APIv3（H5 收银台），回调验签 + 查单兜底入账。"
+                ? "正式通道已生效：微信支付 APIv3（H5 收银台），回调验签 + 查单兜底入账，支持原路退款。"
                 : wxConfigured
                     ? "凭证齐全但开关未打开，打开后即走微信支付 APIv3 正式通道。"
                     : $"凭证 {wxFilled}/{wxRequired.Length} 项已填；不齐全期间自动退回内置模拟收银台。"
@@ -315,7 +318,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             Configured = bankConfigured,
             Status = bankOn && bankConfigured ? "已启用" : bankConfigured ? "已配置未启用" : "未配置",
             Detail = bankOn && bankConfigured
-                ? "正式通道已生效：收银网关签名跳转，入账依赖异步回调（回调地址须公网可达）。"
+                ? "正式通道已生效：收银网关签名跳转，入账依赖异步回调（回调地址须公网可达），支持原路退款。"
                 : bankConfigured
                     ? "凭证齐全但开关未打开，打开后即走银行卡收银网关正式通道。"
                     : $"凭证 {bankFilled}/{bankRequired.Length} 项已填；不齐全期间自动退回内置模拟收银台。"
@@ -425,6 +428,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             BankGateway = Get(KeyBankGateway),
             BankSignKeyMasked = Mask(bankKey),
             BankNotifyUrl = FallbackLocalUrl(Get(KeyBankNotifyUrl), "api/payment/bank/notify"),
+            BankRefundUrl = Get(KeyBankRefundUrl),
             BankSignKeySet = bankKey.Length > 0,
 
             SecretSources = sources,
@@ -496,6 +500,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             (KeyBankGateway, KeepIfEmpty(dto.BankGateway, KeyBankGateway), "支付-银行卡网关"),
             (KeyBankSignKey, KeepIfEmpty(dto.BankSignKey, KeyBankSignKey), "支付-银行卡签名密钥"),
             (KeyBankNotifyUrl, KeepIfEmpty(dto.BankNotifyUrl, KeyBankNotifyUrl), "支付-银行卡异步回调地址"),
+            (KeyBankRefundUrl, KeepIfEmpty(dto.BankRefundUrl, KeyBankRefundUrl), "支付-银行卡退款地址（留空按网关推导）"),
 
             (KeyNotifyUrl, KeepIfEmpty(dto.NotifyUrl, KeyNotifyUrl), "支付-异步回调地址（须公网可达）"),
             (KeyReturnUrl, KeepIfEmpty(dto.ReturnUrl, KeyReturnUrl), "支付-同步跳转地址")
