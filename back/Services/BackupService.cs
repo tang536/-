@@ -258,24 +258,33 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
         string table, JsonElement rowEl, Dictionary<(string Table, string Column), string> columnTypes)
     {
         var cols = new List<string>();
-        var args = new List<object?>();
+        var placeholders = new List<string>();
+        var args = new List<object>();
 
         foreach (var prop in rowEl.EnumerateObject())
         {
             if (!columnTypes.TryGetValue((table, prop.Name), out var dataType))
                 throw new InvalidOperationException($"备份文件含未知列 {table}.{prop.Name}，已拒绝恢复");
             cols.Add($"`{prop.Name}`");
-            args.Add(ToDbValue(prop.Value, dataType));
+
+            // NULL 直接写字面量而不是传参数：MySQL 提供程序无法为 DBNull 参数推断类型
+            // （实测报 "doesn't have a store type mapping for properties of type 'DBNull'"），
+            // 而 NULL 本身不需要类型，写成 SQL 字面量最稳。
+            if (prop.Value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                placeholders.Add("NULL");
+                continue;
+            }
+
+            placeholders.Add($"@p{args.Count}");
+            args.Add(ToDbValue(prop.Value, dataType)!);
         }
 
         if (cols.Count == 0)
             throw new InvalidOperationException($"备份文件中表 {table} 存在空行");
 
-        var placeholders = string.Join(",", args.Select((_, i) => $"@p{i}"));
-        // EF 的 ExecuteSqlRawAsync 形参是 object[]（不可为空引用）：null 必须先换成 DBNull，
-        // 否则运行时参数绑定会抛 InvalidCastException。
-        var dbArgs = args.Select(a => a ?? DBNull.Value).ToArray();
-        return ($"INSERT INTO `{table}` ({string.Join(",", cols)}) VALUES ({placeholders})", dbArgs);
+        return ($"INSERT INTO `{table}` ({string.Join(",", cols)}) VALUES ({string.Join(",", placeholders)})",
+            args.ToArray());
     }
 
     private static object? ToDbValue(JsonElement v, string dataType)
