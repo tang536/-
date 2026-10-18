@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ERental</RootNamespace>
+    <!-- 代码质量门控：把 IDE 代码样式分析器纳入每次 dotnet build，
+         这样「0 警告」是可复现的默认状态，而不是靠命令行额外加参数才看得到。
+         风格约定与静音项见 .editorconfig。 -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- IDE0005（删除不必要的 using）依赖文档生成文件才生效；CS1591（公开成员缺 XML 注释）
+         与本项目现状不符，一并静音。 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.9" />
+    <!-- MySQL 驱动：原 Pomelo.EntityFrameworkCore.MySql 无 EF Core 10 版本（止步 9.0.0），
+         改用 Oracle 官方 MySql.EntityFrameworkCore（EF Core 10 支持）。 -->
+    <PackageReference Include="MySql.EntityFrameworkCore" Version="10.0.9" />
+    <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.23.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
+  </ItemGroup>
+</Project>

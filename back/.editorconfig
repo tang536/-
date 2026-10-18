@@ -1,0 +1,208 @@
+﻿root = true
+
+# ============================================================================
+# 途电驿站 后端代码风格约定与诊断级别
+# ----------------------------------------------------------------------------
+# 目的：让 IDE / 分析器与项目既有风格保持一致，只对「真正的缺陷」报问题，
+#       而不是对个人风格偏好（var、大括号、命名空间写法等）刷屏。
+#   · 「风格约定」段落把项目现状固化为偏好；
+#   · 「静音」段落只关掉纯风格类规则（不影响正确性）；
+#   · 其余规则全部按 warning 级别启用，代码已按建议修复至 0 警告。
+# ============================================================================
+
+[*.cs]
+
+# ------------------------- 风格约定（与现有代码一致） -------------------------
+# 类型推断：项目统一使用 var
+csharp_style_var_for_built_in_types = true
+csharp_style_var_when_type_is_apparent = true
+csharp_style_var_elsewhere = true
+
+# 大括号：单行语句允许省略
+csharp_prefer_braces = false
+
+# 命名空间：使用文件范围的 namespace 声明
+csharp_style_namespace_declarations = file_scoped
+
+# 表达式主体：方法/构造函数/局部函数用块主体；属性/访问器/索引器用表达式主体
+csharp_style_expression_bodied_methods = false
+csharp_style_expression_bodied_constructors = false
+csharp_style_expression_bodied_local_functions = false
+csharp_style_expression_bodied_properties = true
+csharp_style_expression_bodied_accessors = true
+csharp_style_expression_bodied_indexers = true
+
+# 倾向使用现代语法：对象/集合初始化器、null 传播、合并表达式、模式匹配、switch 表达式
+dotnet_style_object_initializer = true
+dotnet_style_collection_initializer = true
+dotnet_style_coalesce_expression = true
+dotnet_style_null_propagation = true
+dotnet_style_prefer_is_null_check_over_reference_equality_method = true
+dotnet_style_prefer_conditional_expression_over_assignment = true
+csharp_prefer_simple_default_expression = true
+csharp_style_prefer_switch_expression = true
+csharp_style_prefer_pattern_matching = true
+csharp_style_prefer_not_pattern = true
+# 类型检查：被检查值在非 null 时已确定就是该类型时，用 null 检查模式而不是 `is T`
+# （对应 IDE0150 / ReSharper 的 ConvertTypeCheckPatternToNullCheck）
+csharp_style_prefer_null_check_over_type_check = true
+csharp_style_implicit_object_creation_when_type_is_apparent = true
+
+# 主构造函数：统一采用（C# 12）
+csharp_style_prefer_primary_constructors = true
+
+# ------------------------- 命名约定 -------------------------
+# 主构造函数转型后的统一写法（让「形参 camelCase」与「私有字段 _ 前缀」两条规则共存）：
+#     public class Foo(AppDbContext db, ILogger<Foo> logger)
+#     {
+#         private readonly AppDbContext _db = db;
+#         private readonly ILogger<Foo> _logger = logger;
+#     }
+# 形参 camelCase，私有状态用 _ 前缀的只读字段承接；类体里原有的 _db / _logger 引用无需改动。
+dotnet_naming_rule.parameters_should_be_camel_case.severity = warning
+dotnet_naming_rule.parameters_should_be_camel_case.symbols = parameters
+dotnet_naming_rule.parameters_should_be_camel_case.style = camel_case
+dotnet_naming_symbols.parameters.applicable_kinds = parameter
+dotnet_naming_style.camel_case.capitalization = camel_case
+
+# ------------------------- 分析器启用范围 -------------------------
+dotnet_analyzer_diagnostic.category-Style.severity = warning
+dotnet_analyzer_diagnostic.category-Maintainability.severity = warning
+dotnet_analyzer_diagnostic.category-Usage.severity = warning
+dotnet_analyzer_diagnostic.category-Performance.severity = warning
+
+# ------------------------- 静音：纯风格 / 刻意约定（非缺陷） -------------------------
+# 以下规则属「风格偏好」或本项目刻意的架构约定，不改变正确性，统一降噪。
+dotnet_diagnostic.IDE0007.severity = silent    # 显式类型 → var（项目两者混用，不强制）
+dotnet_diagnostic.IDE0008.severity = silent    # var → 显式类型
+dotnet_diagnostic.IDE0011.severity = silent    # 单行语句大括号
+dotnet_diagnostic.IDE0160.severity = silent    # namespace 声明形式
+dotnet_diagnostic.IDE0021.severity = silent    # 构造函数表达式主体
+dotnet_diagnostic.IDE0022.severity = silent    # 方法表达式主体
+dotnet_diagnostic.IDE0061.severity = silent    # 局部函数主体
+dotnet_diagnostic.IDE0028.severity = silent    # 集合初始化
+dotnet_diagnostic.IDE0300.severity = silent
+dotnet_diagnostic.IDE0305.severity = silent
+dotnet_diagnostic.IDE0055.severity = silent    # 纯格式（交由 dotnet format 处理）
+dotnet_diagnostic.IDE0058.severity = silent    # 未使用表达式值（如 StringBuilder.AppendLine 链）
+dotnet_diagnostic.IDE0010.severity = silent    # switch 补齐（业务分支有意不写全）
+dotnet_diagnostic.IDE0370.severity = silent    # 多余抑制
+
+# 卫语句（if (x) return/throw ...）是本项目统一的写法：守卫条件与业务分支一眼可分。
+# 改写成 `return cond ? a : b` / `?? throw` 会把守卫揉进表达式，长守卫尤其难读，
+# 故关掉「优先用条件表达式替代 return」这条纯风格规则。
+dotnet_style_prefer_conditional_expression_over_return = false
+
+# 值元组保持「具名变量 + 成员访问」（如 view.Exists / meta.Code），不做位置析构：
+# 析构会引入一串彼此易错位的局部变量，且丢失元组成员的语义命名。
+csharp_style_deconstructed_variable_declaration = false
+
+# 质量规则：按本项目约定调整
+# 业务校验统一抛 System.Exception，由 ExceptionMiddleware 统一转 HTTP 响应，
+# 这是刻意的架构约定（见 Middleware/ExceptionMiddleware.cs），不视为缺陷。
+dotnet_diagnostic.CA2201.severity = silent
+# 日志量小，暂不需要引入 LoggerMessage 源生成器
+dotnet_diagnostic.CA1848.severity = silent
+dotnet_diagnostic.CA1873.severity = silent
+
+# ------------------------- 静音：ReSharper 结构性改写建议（不改语义，收益低于代价） -------------------------
+# 这一组都是「把能跑的写法换成另一种等价写法」，不涉及正确性。逐条评估后按项目口径不采纳，
+# 记录在此便于日后统一复核——想重新启用，删掉对应那一行即可。
+# 键名依据 ReSharper 官方文档的 EditorConfig 一节（Inspection id 转 snake_case + _highlighting）。
+
+# 1) 集合表达式（C# 12 `[]` / `[.. x]`）已按建议全量采纳（37 处，含 DTO 集合属性与
+# `x.Select(..).ToList()` → `[.. x.Select(..)]`），故此处不再需要静音该规则。
+# 注：`resharper_use_collection_expression_highlighting` 在 ReSharper 2026.2 下设置无效，
+#     只能用「直接改代码」这一种办法。
+
+# 2) 反转 if 以减少嵌套（InvertIf）：19 处。
+#    这些位置全是「先判失败并 return/throw，成功流程留在 if 之后」的卫语句。
+#    再反转一次等于把成功流程整体塞进 if 里，嵌套只增不减——卫语句本身已经是最扁平的写法。
+resharper_invert_if_highlighting = none
+
+# 3) 局部函数移到 return 之后（MoveLocalFunctionAfterJumpStatement）：14 处。
+#    这些局部函数（Get / Secret / KeepIfEmpty 等）紧贴它捕获的数据源（raw、respEl、doc）定义，
+#    与第一个使用点在同一屏内。移到方法末尾会拉开「数据源 → 取值逻辑 → 使用点」的阅读距离，
+#    对这类十行以内的小方法得不偿失。
+resharper_move_local_function_after_jump_statement_highlighting = none
+
+# 4) 连续 if 改 switch（ConvertIfStatementToSwitchStatement）：11 处。
+#    这些 if 链判断的并不是「同一变量的多个常量值」：有的判长度（== 0 / > 200），
+#    有的判不同成员（ApplyDailyRent / ApplyDeposit / ApplyBrand），有的带附加条件（key == A && len == 0）。
+#    硬改成 switch 只能拼出带 when 的伪 switch，每个分支各自独立的语义反而被模糊。
+resharper_convert_if_statement_to_switch_statement_highlighting = none
+
+# 5) foreach / for 改写成 LINQ：16 处。
+#    这些循环体内含副作用（往外部 list 追加）、提前 return，或枚举的是
+#    JsonElement.EnumerateArray() 这类非标准 GetEnumerator——ReSharper 自己的提示里也写明
+#    「another GetEnumerator method will be used」。改写会改变求值时机并多一次委托分配，
+#    在报表聚合、通知生成这些热点路径上没有收益。
+resharper_foreach_can_be_converted_to_query_using_another_get_enumerator_highlighting = none
+resharper_foreach_can_be_partly_converted_to_query_using_another_get_enumerator_highlighting = none
+resharper_loop_can_be_converted_to_query_highlighting = none
+
+# 6) `(string?)kv.Value` 是**可空性标注**，不是运行时强转：
+#    去掉后 BuildSignContentForVerify(IDictionary<string, string?>) 的入参契约变成不可空，实测报 CS8620。
+resharper_can_replace_cast_with_lambda_return_type_highlighting = none
+
+# 7) `\\` / `\"` 这类「直接表白反斜杠与引号本身」的转义串，改成 verbatim 写法（@"\" / @""""）
+#    要数着引号个数才看得懂；签名代码里不如原来的转义形式直观。
+resharper_use_verbatim_string_highlighting = none
+
+# ------------------------- 契约边界目录：关掉三类「运行时读写」误报 -------------------------
+# DTOs / Models / Options 三处的属性不参与普通的「赋值—读取」分析，因为读写都发生在框架内部：
+#   · DTOs   —— JSON 模型绑定与序列化（请求体反序列化直接写 init/set，响应体由序列化器读）；
+#   · Models —— EF Core 物化与回写（自增主键、导航属性）+ VisualReport 这类 JSON 载荷；
+#   · Options—— IOptions<T> 配置绑定。
+# 静态分析看不到这些调用点，于是必然报：
+#   1) UnusedAutoPropertyAccessor  —— 「访问器从未被使用」
+#   2) AutoPropertyCanBeMadeGetOnly —— 「属性可改为只读」
+#      真按提示改成 { get; } / private init，JSON 反序列化与配置绑定会静默失效（字段永远取默认值）；
+#   3) MemberCanBePrivate          —— 「init 访问器可以私有」，同上，改完即绑定失败。
+# 因此三个目录统一豁免这三条；其余检查（命名、冗余、性能、可空性）保持开启。
+# 注意：真重复/无意义的字段不靠豁免掩盖——ActiveVehicles、CustomerCount 已删，
+#       分别并入 RentedCount 与 TotalCustomers。
+# 键名依据 ReSharper 官方文档（EditorConfig 一栏）：
+# https://www.jetbrains.com/help/resharper/UnusedAutoPropertyAccessor.Global.html
+[DTOs/*.cs]
+resharper_unused_auto_property_accessor_global_highlighting = none
+resharper_auto_property_can_be_made_get_only_global_highlighting = none
+resharper_member_can_be_private_global_highlighting = none
+# 请求体里的数组（如批量编辑的 Ids）由 JSON 反序列化逐项填充，静态分析看不到写入点
+resharper_collection_never_updated_global_highlighting = none
+
+[Models/*.cs]
+resharper_unused_auto_property_accessor_global_highlighting = none
+resharper_auto_property_can_be_made_get_only_global_highlighting = none
+
+[Options/*.cs]
+resharper_unused_auto_property_accessor_global_highlighting = none
+resharper_auto_property_can_be_made_get_only_global_highlighting = none
+
+# ------------------------- 主构造函数参数：保留只读字段 -------------------------
+# ReSharper 建议把 `class Foo(AppDbContext db) { private readonly AppDbContext _db = db; }`
+# 里的字段去掉、全类改用主构造函数参数 db。本项目不采用：
+#   · 只读字段是「依赖」的唯一命名槽位，嵌套 lambda / 局部函数里读 _db 与读 db
+#     （捕获参数）语义不同，字段写法更不容易写出闭包捕获的坑；
+#   · 字段可标 readonly 并被 IDE 识别为「不可变状态」，而主构造函数参数不是字段级不可变；
+#   · 全项目 50+ 个类统一这一种写法，替换成参数会引入 90 处纯机械改动，收益只有少一行。
+# 故关闭该建议（该检查不读 .editorconfig，配置在 back.sln.DotSettings 的
+# InspectionSeverities/ReplaceWithPrimaryConstructorParameter = DO_NOT_SHOW）。
+# 主构造函数本身仍是首选写法（csharp_style_prefer_primary_constructors = true）。
+
+# ------------------------- 单文件豁免 -------------------------
+# AiProgressTracker 的进度快照是 GET /api/ai-image/progress/{jobId} 的响应体：
+# State / Stage / Message 三个 getter 由 System.Text.Json 序列化时读取，
+# 服务端只负责写。与 DTO 同属 JSON 契约，故仅对这一处豁免该检查。
+[Services/AiProgressTracker.cs]
+resharper_unused_auto_property_accessor_global_highlighting = none
+
+# 角色类的职责方法来自需求类图（管理员：车辆管理 / 查看报表 / 系统配置 / 员工账号…），
+# 系统实际按 RoleName 做鉴权，这些方法没有运行时调用点，属设计文档的占位定义。
+# 为避免与需求文档脱节，保留方法签名，仅对这三个文件关闭「成员从未被使用」。
+[Models/AdminUser.cs]
+resharper_unused_member_global_highlighting = none
+[Models/FinanceUser.cs]
+resharper_unused_member_global_highlighting = none
+[Models/ReceptionUser.cs]
+resharper_unused_member_global_highlighting = none

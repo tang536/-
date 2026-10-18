@@ -1,0 +1,29 @@
+# .NET
+back/bin/
+back/obj/
+back/publish/
+*.user
+*.suo
+
+# 前端
+front/node_modules/
+front/dist/
+front/dist.tar.gz
+front/certs/*.key
+front/certs/*.crt
+
+# 运行时产物
+**/backups/
+*.erbk
+*.log
+
+# 本地配置（生产凭据一律走环境变量）
+back/appsettings.Production.json
+back/appsettings.Local.json
+
+# 编辑器 / 系统
+.vs/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
