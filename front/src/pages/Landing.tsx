@@ -5,6 +5,7 @@ import HeroStage, { resolveInitialMode, type StageFace, type StageMode } from '.
 import { ROLE } from '@/hooks/useAuth'
 import { useTheme } from '@/hooks/useTheme'
 import { ROUTE_ROLES } from '@/permissions'
+import { GITHUB_URL } from '@/utils/links'
 
 /**
  * 首页（同时充当登录入口）。
@@ -108,6 +109,17 @@ export default function Landing() {
             <a href="#flow" className="landing-nav-link">使用流程</a>
           </nav>
           <div className="landing-nav-actions">
+            {/* GitHub 直达：与系统顶栏共用 utils/links.ts 里的同一个地址 */}
+            <a
+              className="landing-theme-btn"
+              href={GITHUB_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="我的 GitHub"
+              aria-label="我的 GitHub"
+            >
+              <Icon name="github" size={17} strokeWidth={0.6} />
+            </a>
             {/* 深浅主题切换：与系统内顶栏同一套 sun/moon，偏好共用 localStorage */}
             <button
               className="landing-theme-btn"

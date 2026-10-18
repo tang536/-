@@ -545,6 +545,8 @@ input:disabled, select:disabled { background: var(--surface-2, #f8fafc); color: 
   transition: background 0.2s, color 0.2s;
 }
 .header-icon-btn:hover, .header-icon-btn.active { background: var(--primary-bg); color: var(--primary); }
+/* 顶栏里既有 <button> 也有 <a>（GitHub 直达），统一成同样的观感 */
+a.header-icon-btn { color: inherit; text-decoration: none; }
 .header-icon-btn .badge {
   position: absolute; top: 4px; right: 3px;
   min-width: 17px; height: 17px; padding: 0 4px;
@@ -2729,6 +2731,8 @@ input:disabled, select:disabled { background: var(--surface-2, #f8fafc); color: 
   transition: color .2s var(--ease), border-color .2s var(--ease), background .2s var(--ease);
 }
 .landing-theme-btn:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-bg); }
+/* 落地页导航里 GitHub 直达是 <a>，与主题按钮同款外观 */
+a.landing-theme-btn { text-decoration: none; }
 .landing-btn-ghost {
   color: var(--text); background: var(--surface, #fff);
   border: 1.5px solid var(--border-strong);

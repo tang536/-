@@ -8,6 +8,7 @@ import Icon, { type IconName } from './Icon'
 import Avatar from './Avatar'
 import { authApi, customerApi, orderApi, reportApi, vehicleApi } from '../api'
 import { logoutEverywhere } from '../utils/session'
+import { GITHUB_URL } from '../utils/links'
 import useTableLabels from '../hooks/useTableLabels'
 import type { NotificationItem } from '../types'
 
@@ -462,6 +463,18 @@ export default function Layout() {
             >
               <Icon name={isDark ? 'sun' : 'moon'} size={19} />
             </button>
+
+            {/* GitHub 直达：作者/源码入口，新标签打开，员工端与顾客端都显示 */}
+            <a
+              className="header-icon-btn"
+              href={GITHUB_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="我的 GitHub"
+              aria-label="我的 GitHub"
+            >
+              <Icon name="github" size={19} strokeWidth={0.7} />
+            </a>
 
             {/* 通知中心 */}
             {!isCustomer && (
