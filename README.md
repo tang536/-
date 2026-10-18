@@ -39,9 +39,10 @@ eRentalSystem/
 mysql -uroot -p < database/schema.sql
 mysql -uroot -p < database/seed.sql
 
-# 2) 本地配置：数据库口令与开发 JWT 密钥写在 appsettings.Development.json
-#    （仓库里的 appsettings.json 刻意留空，防止真实口令进版本库）
-#    默认值：Server=127.0.0.1;Database=erental;User=root;Password=<your-password>
+# 2) 本地配置：首次 clone 后从模板复制，再填本机口令
+cp back/appsettings.Development.example.json back/appsettings.Development.json
+#    appsettings.Development.json 已被 .gitignore 排除，不会进仓库；
+#    仓库里的 appsettings.json 刻意留空，防止真实口令进版本库。
 
 # 3) 起后端（Development 环境，Swagger 在 /swagger）
 cd back && dotnet run            # http://localhost:5105
