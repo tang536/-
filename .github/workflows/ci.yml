@@ -17,6 +17,8 @@ jobs:
   backend:
     name: 后端 编译
     runs-on: ubuntu-latest
+    # 后端编译实测 25s；给 10 分钟上限，卡住就快速失败，不要挂几个小时
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -35,6 +37,9 @@ jobs:
   frontend:
     name: 前端 类型检查 + 构建
     runs-on: ubuntu-latest
+    # 正常 1~2 分钟能跑完；超过 15 分钟必是依赖下载卡住，直接判失败
+    # （此前一次跑满 4h46m 才被 SIGABRT 打断，就是 npm 在境外拉国内镜像拉不动）
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: front
@@ -48,8 +53,15 @@ jobs:
           cache: npm
           cache-dependency-path: front/package-lock.json
 
+      # package-lock.json 里的 resolved 一律指向官方源；本地开发用的 npmmirror
+      # 只写在 ~/.npmrc 里（不进仓库），所以这里显式钉住官方源，
+      # 避免 runner 上拿不到国内镜像却按镜像地址去下载。
       - name: 安装依赖
-        run: npm ci
+        # fetch-timeout 从 npm 默认的 5 分钟压到 60 秒：真拉不动时一步就报错，
+        # 而不是每个包静默等 5 分钟、整步挂上几个小时（上次就是挂了 4h46m）
+        run: npm ci --no-audit --no-fund --fetch-timeout=60000 --fetch-retries=2
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
 
       # tsc --noEmit：只做类型检查，不产出文件；vite build 才是真实产物验证
       - name: 类型检查
