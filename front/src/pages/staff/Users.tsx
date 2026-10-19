@@ -153,9 +153,9 @@ export default function Users() {
           <Icon name="users" size={18} chip />账号管理
           <span className="card-title-count">共 {list.length} 个工作人员账号</span>
         </span>
-        <button className="btn-sm btn-sm-primary" style={{ marginLeft: 'auto' }}
+        <button className="btn-sm btn-sm-primary btn-icon-sm" style={{ marginLeft: 'auto' }}
                 onClick={() => { setEditId(null); setForm({ ...EMPTY }); setErrors({}); setShowModal(true) }}>
-          <Icon name="create-order" size={15} color="#fff" />新增账号
+          <Icon name="create-order" size={15} color="#fff" /><span className="btn-label">新增账号</span>
         </button>
       </div>
 

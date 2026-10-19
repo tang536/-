@@ -778,8 +778,9 @@ export default function Vehicles() {
                     />
                   </label>
                   {/* AI 生图：与上传 / 拍照并列的第三种图片来源（对接本机 ComfyUI 桌面版）。
-                      入口是颗胶囊按钮，紧跟拍照上传；展开后整块面板独占一行（见 .img-picker-row > .ai-panel） */}
-                  <AiImagePanel editId={editId} onUse={handleAiUse} />
+                      入口是颗胶囊按钮，紧跟拍照上传；展开后整块面板独占一行（见 .img-picker-row > .ai-panel）。
+                      传 form 进去，面板据此把「品牌」写进默认提示词——不用手写也能直接出图 */}
+                  <AiImagePanel editId={editId} vehicle={form} onUse={handleAiUse} />
                   <span className="upload-hint">
                     支持 jpg / png / webp / gif，单张不超过 {MAX_IMG_MB}MB
                     {!editId && `，最多 ${MAX_IMAGES} 张，第一张为主图`}

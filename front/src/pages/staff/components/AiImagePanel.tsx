@@ -21,6 +21,32 @@ import Icon from '@/components/Icon'
 type Mode = 'text2img' | 'img2img'
 
 /**
+ * 面板可见的车辆信息（车辆表单的当前值：新增流程刚填到一半也能用）。
+ * 只取对画面有意义的字段——编号/采购价/状态对生成结果没有帮助，反而会干扰提示词。
+ */
+interface VehicleBrief {
+  vehicleNo?: string
+  brand?: string
+}
+
+/**
+ * 按车辆信息拼默认提示词。
+ *
+ * 车辆档案里没有颜色、型号字段，能喂给模型的只有品牌；因此主体用品牌，
+ * 其余靠一套固定的商品图拍摄描述兜底——新建一辆车只填了品牌也能直接出图，
+ * 不必手写提示词。用户仍可在文本框里改，改过之后不再被自动覆盖。
+ */
+function buildVehiclePrompt(v: VehicleBrief | null | undefined, mode: Mode): string {
+  const brand = (v?.brand || '').trim()
+  if (mode === 'img2img') {
+    // 图生图已有参考图定住车型，提示词只负责「往商品图方向修」，不再重复品牌
+    return '保持原车型结构与比例，优化细节与光照质感，纯白背景，产品图风格，高分辨率'
+  }
+  const subject = brand ? `${brand}电动自行车` : '电动自行车'
+  return `${subject}，产品级棚拍，纯白背景，侧面 45 度视角，柔和布光，细节清晰，高分辨率`
+}
+
+/**
  * 从模板名推断适配模式：文生图模板名含「文生图 / text2img / t2i」，
  * 图生图模板名含「图生图 / img2img / i2i」；无法识别返回 null（用户自建模板）。
  * 面板打开/切模式时据此自动选中匹配的模板——否则按文件名排序，
@@ -79,11 +105,13 @@ const SIZE_PRESETS = [
 interface Props {
   /** 编辑中的车辆 id；null = 新增车辆建档流程 */
   editId: number | null
+  /** 当前车辆的档案信息：用于自动生成默认提示词 */
+  vehicle?: VehicleBrief | null
   /** 应用生成结果（编辑态传 URL，新增态由内部转 File 后回调） */
   onUse: (url: string, file?: File) => void
 }
 
-export default function AiImagePanel({ editId, onUse }: Props) {
+export default function AiImagePanel({ editId, vehicle, onUse }: Props) {
   const { toast } = useUI()
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<Mode>('text2img')
@@ -104,6 +132,8 @@ export default function AiImagePanel({ editId, onUse }: Props) {
   const [fbPrompt, setFbPrompt] = useState('')
   const [fbSeed, setFbSeed] = useState('')
   const [fbModel, setFbModel] = useState('')
+  // 提示词是否被用户手动编辑过：改过之后就不再被车辆信息 / 模式切换覆盖
+  const promptTouched = useRef(false)
 
   const [refFile, setRefFile] = useState<File | null>(null)
   const refInputRef = useRef<HTMLInputElement | null>(null)
@@ -178,7 +208,21 @@ export default function AiImagePanel({ editId, onUse }: Props) {
   const fields = schema?.fields ?? []
   const widthField = fields.find(f => f.inputName === 'width')
   const heightField = fields.find(f => f.inputName === 'height')
-  const promptField = fields.find(f => f.required)
+  // 提示词字段：优先取 prompt 分组里标了必填的那个，模板没分组时退回第一个必填字段
+  const promptField = fields.find(f => f.group === 'prompt' && f.required) ?? fields.find(f => f.required)
+
+  /**
+   * 默认提示词来自车辆信息（品牌 + 固定商品图描述）。
+   * 触发时机：面板打开、切换文/图生图、模板换好、车辆品牌变化。
+   * 用户一旦手动改过提示词就不再覆盖——否则改到一半被冲掉。
+   */
+  useEffect(() => {
+    if (!open || promptTouched.current) return
+    const next = buildVehiclePrompt(vehicle, mode)
+    setFbPrompt(next)
+    if (promptField) setValues(prev => ({ ...prev, [promptField.key]: next }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, mode, vehicle?.brand, vehicle?.vehicleNo, schema])
 
   // 模式切换：当前模板不适配新模式时，自动换到适配的模板（识别不出模式的
   // 自建模板不换，由用户自己决定）。防止文生图模式下图生图模板的
@@ -300,9 +344,19 @@ export default function AiImagePanel({ editId, onUse }: Props) {
   const renderField = (f: FieldDef) => {
     const v = values[f.key] ?? ''
     const disabled = generating
+    const isPrompt = f.key === promptField?.key
     const ph = f.kind === 'seed'
       ? '-1 随机；填整数可复现'
       : (f.default !== null && f.default !== undefined ? `模板默认：${f.default}` : '')
+    /** 提示词字段的「按车辆信息重填」：改坏了点一下回到车辆信息生成的那版 */
+    const resetBtn = isPrompt ? (
+      <button type="button" className="ai-prompt-reset" disabled={disabled}
+        title="丢弃手动修改，按当前车辆信息重新生成提示词"
+        onClick={() => {
+          promptTouched.current = false
+          setValue(f.key, buildVehiclePrompt(vehicle, mode))
+        }}>按车辆信息重填</button>
+    ) : null
 
     if (f.kind === 'select' || f.kind === 'boolean') {
       const missing = f.default !== null && f.default !== undefined &&
@@ -322,8 +376,15 @@ export default function AiImagePanel({ editId, onUse }: Props) {
     if (f.kind === 'textarea') {
       return (
         <div className="form-group" key={f.key}>
-          <label>{f.label}{f.required && <em className="ai-req">*</em>}</label>
-          <textarea rows={2} value={v} onChange={e => setValue(f.key, e.target.value)}
+          <label>
+            {f.label}{f.required && <em className="ai-req">*</em>}
+            {resetBtn}
+          </label>
+          <textarea rows={2} value={v}
+            onChange={e => {
+              setValue(f.key, e.target.value)
+              if (isPrompt) promptTouched.current = true
+            }}
             placeholder={ph} disabled={disabled} />
         </div>
       )
@@ -334,10 +395,13 @@ export default function AiImagePanel({ editId, onUse }: Props) {
         : f.kind === 'int' ? /\D/g : null
     return (
       <div className="form-group" key={f.key}>
-        <label>{f.label}{f.required && <em className="ai-req">*</em>}</label>
+        <label>{f.label}{f.required && <em className="ai-req">*</em>}{resetBtn}</label>
         <input
           value={v}
-          onChange={e => setValue(f.key, filter ? e.target.value.replace(filter, '') : e.target.value)}
+          onChange={e => {
+            setValue(f.key, filter ? e.target.value.replace(filter, '') : e.target.value)
+            if (isPrompt) promptTouched.current = true
+          }}
           placeholder={ph}
           inputMode={f.kind === 'text' ? undefined : 'decimal'}
           disabled={disabled}
@@ -463,9 +527,18 @@ export default function AiImagePanel({ editId, onUse }: Props) {
           <div className="ai-group-title">基础参数</div>
           {schemaError && <div className="ai-hint">表单生成失败（{schemaError}），请用基础参数生成，或检查模板文件。</div>}
           <div className="form-group">
-            <label>提示词（正向）</label>
-            <textarea rows={2} value={fbPrompt} onChange={e => setFbPrompt(e.target.value)}
-              placeholder="描述你想要的车辆图片，如：a red electric scooter, clean white background, product photo"
+            <label>
+              提示词（正向）
+              <button type="button" className="ai-prompt-reset" disabled={generating}
+                title="按当前车辆信息重新生成提示词"
+                onClick={() => {
+                  promptTouched.current = false
+                  setFbPrompt(buildVehiclePrompt(vehicle, mode))
+                }}>按车辆信息重填</button>
+            </label>
+            <textarea rows={2} value={fbPrompt}
+              onChange={e => { setFbPrompt(e.target.value); promptTouched.current = true }}
+              placeholder="已按车辆品牌预填，可改成任意描述"
               disabled={generating} />
           </div>
           <div className="ai-grid">

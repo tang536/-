@@ -29,3 +29,7 @@ back/appsettings.Local.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 打包/运行时产物
+back/publish.tar.gz
+back/wwwroot/uploads/ai/
