@@ -623,83 +623,93 @@ export default function Reports() {
         <div className="field-hint" style={{ marginBottom: 10 }}>
           按营收降序排列：越靠前越是高价值车辆；订单数为 0 的是这段区间里闲置没出过车的。
         </div>
-        <div className="filter-row">
-          <label className="field-inline">
-            <span>车辆/品牌</span>
+        {/* 筛选沿用全站统一的 search-box 结构与外观（与客户管理、车辆管理一致）：
+            输入框 + 下拉 + 显式查询；草稿态 vehDraft 与生效态 vehFilter 分离，
+            避免每敲一个字就发一次请求 */}
+        <div className="toolbar">
+          <div className="search-box">
             <input
               value={vehDraft.keyword}
-              placeholder="车辆编号或品牌"
+              placeholder="搜索车辆编号 / 品牌"
               onChange={e => setVehDraft({ ...vehDraft, keyword: e.target.value })}
               onKeyDown={e => { if (e.key === 'Enter') setVehFilter(vehDraft) }}
             />
-          </label>
-          <label className="field-inline">
-            <span>车辆状态</span>
             <select value={vehDraft.status} onChange={e => setVehDraft({ ...vehDraft, status: e.target.value })}>
-              <option value="">全部</option>
+              <option value="">全部状态</option>
               <option value="空闲">空闲</option>
               <option value="在租">在租</option>
               <option value="维保">维保</option>
               <option value="报废">报废</option>
             </select>
-          </label>
-          <button className="btn-sm btn-sm-primary" onClick={() => setVehFilter(vehDraft)}>
-            <Icon name="search" size={14} />查询
-          </button>
-          <button className="btn-sm" onClick={() => {
-            const empty = { keyword: '', status: '' }
-            setVehDraft(empty)
-            setVehFilter(empty)
-          }}>
-            重置
-          </button>
-        </div>
-
-        {vehStats && (
-          <div className="stats-grid" style={{ marginBottom: 14 }}>
-            <div className="stat-card tone-sky"><div className="label">车辆数</div><div className="value">{vehStats.totalVehicles}</div><div className="hint">其中闲置 {vehStats.idleVehicles} 台</div></div>
-            <div className="stat-card tone-indigo"><div className="label">累计营收</div><div className="value">{money(vehStats.totalRevenue)}</div><div className="hint">已支付流水合计</div></div>
-            <div className="stat-card tone-emerald"><div className="label">累计租赁时长</div><div className="value">{vehStats.totalRentHours} h</div></div>
-            <div className="stat-card tone-amber"><div className="label">维保费用</div><div className="value">{money(vehStats.totalMaintenanceFee)}</div><div className="hint">{vehStats.totalMaintenanceCount} 次工单</div></div>
-          </div>
-        )}
-
-        <BlockState loading={vehLoading} error={vehError}
-          empty={!vehLoading && !vehError && vehRows.length === 0}
-          emptyText="当前筛选条件下没有车辆数据"
-          onRetry={() => loadVehStats(range, vehFilter)} height={140} />
-
-        {!vehLoading && !vehError && vehRows.length > 0 && (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>车辆编号</th><th>品牌</th><th>状态</th>
-                  <th className="num">订单数</th><th className="num">累计时长(h)</th><th className="num">累计营收</th>
-                  <th className="num">维保次数</th><th className="num">维保费用</th><th>最近租赁</th>
-                </tr>
-              </thead>
-              <tbody>
-                {vehRows.slice(0, 50).map((v: any) => (
-                  <tr key={v.vehicleId}>
-                    <td className="mono">{v.vehicleNo}</td>
-                    <td>{v.brand || '—'}</td>
-                    <td><span className={`status-tag ${VEH_BADGE[v.vehicleStatus] || 'status-default'}`}>{v.vehicleStatus}</span></td>
-                    <td className="num">{v.orderCount}</td>
-                    <td className="num">{v.rentHours}</td>
-                    <td className="num">{money(v.revenue)}</td>
-                    <td className="num">{v.maintenanceCount}</td>
-                    <td className="num">{money(v.maintenanceFee)}</td>
-                    <td className="cell-time">{v.lastRentTime || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {vehRows.length > 50 && (
-              <div className="field-hint" style={{ marginTop: 8 }}>仅显示前 50 台，共 {vehRows.length} 台；用上方筛选缩小范围可看全。</div>
+            <button className="btn-sm btn-sm-primary" onClick={() => setVehFilter(vehDraft)}>
+              <Icon name="search" size={14} color="#fff" />查询
+            </button>
+            {(vehDraft.keyword || vehDraft.status) && (
+              <button className="btn-sm btn-sm-default" onClick={() => {
+                const empty = { keyword: '', status: '' }
+                setVehDraft(empty)
+                setVehFilter(empty)
+              }}>
+                <Icon name="refresh" size={14} />重置
+              </button>
             )}
           </div>
-        )}
+        </div>
+
+        {/* 主次布局：主区是每台车的明细（这张卡的主体内容），
+            次区竖排四张汇总卡做旁注——先看车，再看总数，
+            与页面顶部「总览指标」形成由细到粗的两级 */}
+        <div className="dash-layout dash-layout--wide">
+          <div className="dash-primary">
+            <BlockState loading={vehLoading} error={vehError}
+              empty={!vehLoading && !vehError && vehRows.length === 0}
+              emptyText="当前筛选条件下没有车辆数据"
+              onRetry={() => loadVehStats(range, vehFilter)} height={140} />
+
+            {!vehLoading && !vehError && vehRows.length > 0 && (
+              <div className="table-wrap">
+                <table className="data-table report-veh-table">
+                  <thead>
+                    <tr>
+                      <th>车辆编号</th><th>品牌</th><th>状态</th>
+                      <th className="num">订单数</th><th className="num">累计时长(h)</th><th className="num">累计营收</th>
+                      <th className="num">维保次数</th><th className="num">维保费用</th><th>最近租赁</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {vehRows.slice(0, 50).map((v: any) => (
+                      <tr key={v.vehicleId}>
+                        <td className="mono">{v.vehicleNo}</td>
+                        <td>{v.brand || '—'}</td>
+                        <td><span className={`status-tag ${VEH_BADGE[v.vehicleStatus] || 'status-default'}`}>{v.vehicleStatus}</span></td>
+                        <td className="num">{v.orderCount}</td>
+                        <td className="num">{v.rentHours}</td>
+                        <td className="num">{money(v.revenue)}</td>
+                        <td className="num">{v.maintenanceCount}</td>
+                        <td className="num">{money(v.maintenanceFee)}</td>
+                        <td className="cell-time">{v.lastRentTime || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {vehRows.length > 50 && (
+                  <div className="field-hint" style={{ marginTop: 8 }}>仅显示前 50 台，共 {vehRows.length} 台；用上方筛选缩小范围可看全。</div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="dash-secondary">
+            {vehStats && (
+              <div className="stats-grid stats-rail">
+                <div className="stat-card tone-sky"><div className="label">车辆数</div><div className="value">{vehStats.totalVehicles}</div><div className="hint">其中闲置 {vehStats.idleVehicles} 台</div></div>
+                <div className="stat-card tone-indigo"><div className="label">累计营收</div><div className="value">{money(vehStats.totalRevenue)}</div><div className="hint">已支付流水合计</div></div>
+                <div className="stat-card tone-emerald"><div className="label">累计租赁时长</div><div className="value">{vehStats.totalRentHours} h</div></div>
+                <div className="stat-card tone-amber"><div className="label">维保费用</div><div className="value">{money(vehStats.totalMaintenanceFee)}</div><div className="hint">{vehStats.totalMaintenanceCount} 次工单</div></div>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* ===== 维保费用统计（需求 4.2.7）：按月看趋势、按毛病看结构、按车看排行 ===== */}
@@ -714,13 +724,6 @@ export default function Reports() {
           </div>
         </div>
 
-        {maintStats && (
-          <div className="stats-grid" style={{ marginBottom: 14 }}>
-            <div className="stat-card tone-amber"><div className="label">维保总费用</div><div className="value">{money(maintStats.totalFee)}</div><div className="hint">已完工工单支出</div></div>
-            <div className="stat-card tone-sky"><div className="label">工单总数</div><div className="value">{maintStats.totalCount}</div><div className="hint">含未完工</div></div>
-          </div>
-        )}
-
         <BlockState loading={maintLoading} error={maintError}
           empty={!maintLoading && !maintError && !maintStats}
           emptyText="该区间内暂无维保数据"
@@ -728,8 +731,20 @@ export default function Reports() {
 
         {!maintLoading && !maintError && maintStats && (
           <>
-            <div className="chart-container">
-              <ReactECharts option={maintTrendOption} style={{ height: '100%' }} />
+            {/* 主次：月度趋势图占主区（时间轴是维保支出的主要读法），
+                两张汇总卡竖排在次区做旁注 */}
+            <div className="dash-layout">
+              <div className="dash-primary">
+                <div className="chart-container">
+                  <ReactECharts option={maintTrendOption} style={{ height: '100%' }} />
+                </div>
+              </div>
+              <div className="dash-secondary">
+                <div className="stats-grid stats-rail">
+                  <div className="stat-card tone-amber"><div className="label">维保总费用</div><div className="value">{money(maintStats.totalFee)}</div><div className="hint">已完工工单支出</div></div>
+                  <div className="stat-card tone-sky"><div className="label">工单总数</div><div className="value">{maintStats.totalCount}</div><div className="hint">含未完工</div></div>
+                </div>
+              </div>
             </div>
 
             <div className="dash-layout" style={{ marginTop: 16 }}>

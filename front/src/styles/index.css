@@ -740,6 +740,25 @@ a.header-icon-btn { color: inherit; text-decoration: none; }
 }
 /* 报表页「对账」一行五张卡：桌面五列，平板三列，手机一列（沿用下方媒体查询） */
 .stats-grid--5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+/* 主次布局次区里的指标卡：单列竖排，作为主区表格 / 图表的旁注。
+   不拉伸行高——卡片矮一点、顶部对齐，比撑满一列更像「注脚」。
+   用双类名提高特异性，避免被下面媒体查询里的 `.stats-grid` 两列规则盖掉 */
+.stats-grid.stats-rail {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  margin-bottom: 0;
+}
+/* 报表页车辆明细表：主次布局把它挤进约 2/3 宽，九列在窄容器里会把「品牌」
+   压成一字一行。只给识别列（车号 / 品牌 / 状态）加不折行，数字列本来就窄；
+   再留一个下限宽度兜底，真挤不下时由 .table-wrap 的横向滚动接住。 */
+.report-veh-table { min-width: 760px; }
+.report-veh-table tbody td:nth-child(-n+3),
+.report-veh-table thead th:nth-child(-n+3) { white-space: nowrap; }
+/* 报表页的主次布局：右侧旁注只放指标卡（220px 就够），主区要容纳九列明细表，
+   因此比看板的 1.9:1 再往主区偏一点。窄屏仍沿用下方的单列回落规则。 */
+@media (min-width: 1181px) {
+  .dash-layout.dash-layout--wide { grid-template-columns: minmax(0, 2.35fr) minmax(220px, 1fr); }
+}
 .stat-card {
   position: relative; overflow: hidden;
   background: var(--surface, #fff); border: 1px solid var(--border);
