@@ -599,7 +599,7 @@ export default function Vehicles() {
                 <td>
                   <div className="btn-group">
                     {/* 二维码是低频操作，收成图标按钮（title 说明用途），把宽度让给数据列 */}
-                    <button className="btn-sm btn-sm-default" onClick={() => setQrVehicle(v)} title="查看该车收款二维码">
+                    <button className="btn-sm btn-sm-default" onClick={() => setQrVehicle(v)} title="查看该车专属二维码（扫码调取档案与租赁记录）">
                       <Icon name="qrcode" size={14} />
                     </button>
                     <button className="btn-sm btn-sm-default" onClick={() => handleEdit(v)}>编辑</button>

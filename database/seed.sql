@@ -41,6 +41,9 @@ INSERT INTO `system_user` (`login_account`, `login_pwd`, `role_id`, `user_name`,
 ('caiwu', '$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 3, '财务小李', 1, 'finance');
 
 -- 会员权益（purchase_price = 顾客在会员中心的自助购买价，普通会员为基准等级故不设价）
+-- ⚠️ 以下四个等级只是**演示数据**，用于让新环境一打开就有可展示的等级梯度。
+--    程序启动时的初始化（DbInitializer）不预置任何会员类型——需求 4.2.3「出厂不预置任何会员类型」，
+--    真实门店由管理员在「会员管理」页按自己的等级体系建立。正式环境导入数据时不要执行本段。
 INSERT INTO `member_rights` (`member_level`, `discount`, `min_rent_count`, `purchase_price`, `rights_desc`) VALUES
 ('普通会员', 1.00, NULL, NULL, '无折扣'),
 ('银卡会员', 0.95, 5, 29.00, '95折'),

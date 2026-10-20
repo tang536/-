@@ -13,7 +13,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
-// ⚠️ 必须在 CreateBuilder **之前**建目录。
+// 在 CreateBuilder 之前建目录。
 // WebApplicationBuilder 的构造函数里就会探测 ContentRoot 下的 wwwroot 来决定 WebRootPath；
 // 一旦探测时目录不存在，WebRootPath 会被置空、StaticFileMiddleware 退化成 NullFileProvider，
 // 之后就算再建目录也不会重新扫描 —— 表现为「照片能上传成功，但访问一律 404」。
@@ -42,8 +42,7 @@ if (string.IsNullOrWhiteSpace(erentalDb))
 builder.Services.AddDbContext<AppDbContext>(options => options.UseMySQL(erentalDb));
 
 // JWT 认证
-// 密钥来源：显式配置（Jwt__Key / Jwt:Key）→ App_Data/signing.key → 首次启动生成随机密钥并落盘。
-// 仓库里不再保留任何可用的默认密钥：写死的默认值等于公开的密钥，谁都能伪造管理员令牌。
+// 密钥来源：显式配置（Jwt__Key / Jwt:Key）→ App_Data/signing.key → 首次启动生成随机密钥并落盘,仓库里不保留任何可用的默认密钥
 var jwtKey = SigningKeyProvider.Resolve(builder.Configuration, builder.Environment, out var jwtKeySource);
 // 把解析结果写回配置，AuthService / BackupService 注入的 IConfiguration 便拿到同一把密钥，
 // 不需要各自再算一遍来源。
@@ -74,7 +73,7 @@ builder.Services.AddAuthentication(options =>
     };
     options.Events = new JwtBearerEvents
     {
-        // ⚠️ 续期令牌（7 天）与访问令牌（120 分钟）用的是同一把签名密钥，
+        // 续期令牌（7 天）与访问令牌（120 分钟）用的是同一把签名密钥，
         // 若不加这道判断，把 refresh token 当 Bearer 发过来就能一路通过所有策略校验。
         // 这里在验证通过后按 token_type 再拦一道：只有 access 能访问业务接口。
         // 没有 token_type 声明的老令牌一律放行，避免升级瞬间把所有人踢下线。
@@ -208,7 +207,6 @@ builder.Services.AddHttpClient("comfy-probe", c => c.Timeout = TimeSpan.FromSeco
 // 业务服务
 builder.Services.AddScoped<ImageStorage>();
 // 单点登录登记表：同一账号不允许同时登录。进程内单例（本地单实例部署），
-// 不加表不加列——保住与《唐荣强.docx》图4-1~图4-17 的 17 张表 / 134 字段严格一致。
 // 会话登记表落在库表（system_config），多实例共享；因此随请求作用域解析，不能做单例
 builder.Services.AddScoped<SessionRegistry>();
 // 基于 MySQL GET_LOCK 的分布式锁：定时任务（备份、超时单回收）多实例选主
@@ -334,8 +332,8 @@ Console.WriteLine("===== 途电驿站启动成功 =====");
 var lanIp = NetworkHelper.ResolveLanIp();
 if (!string.IsNullOrWhiteSpace(lanIp))
 {
-    // 前端只有 5173 一个入口：员工端与顾客端已合并为同一份 React 工程，
-    // 登录时按角色决定进入后台工作台还是顾客自助端，不再有独立的 5174。
+    // 员工端与顾客端为同一份 React 工程，
+    // 登录时按角色决定进入后台工作台还是顾客自助端。
     Console.WriteLine($"[局域网] 前端     http://{lanIp}:5173");
     Console.WriteLine($"[局域网] 接口文档 http://{lanIp}:5105/swagger");
 }
