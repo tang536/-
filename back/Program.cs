@@ -42,11 +42,19 @@ if (string.IsNullOrWhiteSpace(erentalDb))
 builder.Services.AddDbContext<AppDbContext>(options => options.UseMySQL(erentalDb));
 
 // JWT 认证
-var jwtKey = builder.Configuration["Jwt:Key"];
-// 拒绝空密钥/短密钥启动：带着默认或空密钥上线，等于任何人都能伪造管理员令牌。
-if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
+// 密钥来源：显式配置（Jwt__Key / Jwt:Key）→ App_Data/signing.key → 首次启动生成随机密钥并落盘。
+// 仓库里不再保留任何可用的默认密钥：写死的默认值等于公开的密钥，谁都能伪造管理员令牌。
+var jwtKey = SigningKeyProvider.Resolve(builder.Configuration, builder.Environment, out var jwtKeySource);
+// 把解析结果写回配置，AuthService / BackupService 注入的 IConfiguration 便拿到同一把密钥，
+// 不需要各自再算一遍来源。
+builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Jwt:Key"] = jwtKey });
+
+// 兜底：正常走不到这里（Resolve 保证长度），万一被改动也宁可拒绝启动，
+// 也不要带着空密钥/短密钥对外服务。
+if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < SigningKeyProvider.MinLength)
     throw new InvalidOperationException(
-        "Jwt:Key 缺失或短于 32 字符。本地开发写在 appsettings.Development.json；生产用环境变量 Jwt__Key 注入 64 位随机串。");
+        "Jwt:Key 缺失或短于 32 字符。本地开发留空即可（会自动生成 App_Data/signing.key）；" +
+        "生产用环境变量 Jwt__Key 注入。");
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -264,6 +272,12 @@ builder.Services.AddHostedService<PendingOrderCleanupService>();
 builder.Services.AddHostedService<BackupSchedulerService>();
 
 var app = builder.Build();
+
+// 只记来源、不记密钥：排查「为什么重启后令牌失效 / 备份解不开」时，这一行就够定位了
+if (jwtKeySource.StartsWith("新生成", StringComparison.Ordinal))
+    app.Logger.LogWarning("JWT 签名密钥{Source}。请勿提交该文件；生产环境建议用环境变量 Jwt__Key 注入。", jwtKeySource);
+else
+    app.Logger.LogInformation("JWT 签名密钥来源：{Source}", jwtKeySource);
 
 // 自动迁移和种子数据
 using (var scope = app.Services.CreateScope())

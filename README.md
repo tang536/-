@@ -246,7 +246,8 @@ cd front && npm run build                                 # 前端：tsc 类型�
 
 ```bash
 # 后端（生产配置走环境变量，不写入仓库）
-export Jwt__Key='<64 位随机串>'
+# Jwt__Key 不填也能启动：会自动生成随机密钥落到 App_Data/signing.key；多机部署时要填同一把，否则各签各的
+export Jwt__Key="$(openssl rand -base64 48)"
 export ConnectionStrings__DefaultConnection='Server=127.0.0.1;Database=erental;User=erental_app;Password=<强密码>;CharSet=utf8mb4;'
 dotnet publish -c Release -o publish
 
@@ -256,8 +257,9 @@ cd front && npm run build
 
 - 生产配置放 `/etc/erental/erental.env`（systemd `EnvironmentFile=`），发布时用 `scp -r publish/*` 覆盖代码目录也不会冲掉配置。
 - Kestrel 只监听 `127.0.0.1:5105`，由 nginx 443 反代，HTTP 强制 301 跳 HTTPS。
-- 未配置 `Jwt:Key`（或短于 32 字符）或连接串为空时，后端**拒绝启动**，避免带默认密钥上线。
-- `Backup__Directory` 指向独立目录（如 `/var/backups/erental`）；`Backup__Key` 单独保管，换密钥会导致旧备份无法解开。
+- JWT 签名密钥不写死在配置里，按 `Jwt__Key` → `App_Data/signing.key` → **首次启动随机生成并落盘** 的顺序取用。仓库里没有任何可用的默认密钥，本地开箱即用，也不会出现「线上跑着和仓库里一样的密钥」。
+- 连接串为空时后端**拒绝启动**，避免连错库却毫无提示。
+- `Backup__Directory` 指向独立目录（如 `/var/backups/erental`）；`Backup__Key` 单独保管，换密钥会导致旧备份无法解开（未配置时备份密钥由 JWT 密钥派生，而 JWT 密钥现在是每台机器随机生成的——跨机器恢复备份必须显式配置 `Backup__Key`）。
 
 ---
 

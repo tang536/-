@@ -16,6 +16,8 @@ front/certs/*.crt
 **/backups/
 *.erbk
 *.log
+# 自动生成的签名密钥（首次启动随机生成；进了仓库就等于公开）
+back/App_Data/
 
 # 本地配置（生产凭据一律走环境变量）
 # Development.json 含本机数据库口令与开发 JWT 密钥，只保留 .example 模板在仓库里
