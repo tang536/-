@@ -35,3 +35,6 @@ Thumbs.db
 # 打包/运行时产物
 back/publish.tar.gz
 back/wwwroot/uploads/ai/
+
+# 员工/顾客头像：运行时上传数据，不入库版本管理
+back/wwwroot/uploads/avatars/

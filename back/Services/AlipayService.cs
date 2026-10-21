@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text;
 using ERental.Data;
 using ERental.DTOs;
@@ -216,73 +217,113 @@ public class AlipayService(
             return (mOk, mMsg);
         }
 
-        var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderNo == outTradeNo);
-        if (order == null)
-        {
-            _logger.LogWarning("支付通知的订单号 {OrderNo} 在系统中不存在", outTradeNo);
-            // 让它重推，给「订单先入库、通知先到」的极端时序留余量
-            return (false, "订单 " + outTradeNo + " 不存在，请确认订单号后重试。");
-        }
+        // 租赁订单入账：整段放进「订单行锁 + 事务」里。
+        // 触发源不止一个——支付宝会重推通知，前端轮询查单也可能与回调同时到达
+        //（一个走 notify、一个走 trade.query，两者是不同线程）。
+        // 原实现两边都读到「待支付」，于是各写一次支付记录、各改一次订单状态；
+        // 加锁后第二个请求在锁内重读，直接命中幂等分支，不会重复入账。
+        return await DbConcurrency.RunAsync(
+            () => ApplyOrderPaidAsync(outTradeNo, tradeNo, totalAmount, payType),
+            _logger, "支付通知入账", reset: () => _db.ChangeTracker.Clear());
+    }
 
-        // ② 幂等：已支付过的订单直接确认，不重复入账
-        if (order.OrderStatus is "已支付" or "租赁中")
+    /// <summary>
+    /// 租赁订单入账本体（必须在订单行锁的保护下执行）。
+    /// 状态机与金额校验的判定顺序保持原样：幂等 → 已取消 → 状态合法性 → 金额核对 → 写入。
+    /// 顺序不能变：先判金额再判幂等，会让重复通知因为金额字段缺失而被判失败、进而被支付宝无限重推。
+    /// </summary>
+    private async Task<(bool Ok, string Message)> ApplyOrderPaidAsync(
+        string outTradeNo, string tradeNo, string totalAmount, string payType)
+    {
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        try
         {
-            _logger.LogInformation("订单 {OrderNo} 已是 {Status}，重复通知忽略", outTradeNo, order.OrderStatus);
-            return (true, "订单已是「" + order.OrderStatus + "」，无需重复支付。");
-        }
-        if (order.OrderStatus == "已取消")
-        {
-            _logger.LogWarning("订单 {OrderNo} 已取消，仍收到支付通知，需人工退款。交易号 {TradeNo}",
-                outTradeNo, tradeNo);
-            return (true, "订单已取消，该笔收款需人工退款处理。");
-        }
-        if (order.OrderStatus != "待支付")
-        {
-            _logger.LogWarning("订单 {OrderNo} 当前状态「{Status}」，不接受支付通知", outTradeNo, order.OrderStatus);
-            return (false, "订单当前状态为「" + order.OrderStatus + "」，不可支付。");
-        }
+            await DbRowLock.PrepareAsync(_db);
 
-        // ③ 金额核对：防止「改价」类伪造
-        var expect = order.TotalRent + order.Deposit;
-        if (decimal.TryParse(totalAmount, out var paid) && Math.Abs(paid - expect) > 0.01m)
-        {
-            _logger.LogWarning("订单 {OrderNo} 金额不符：通知 {Paid}，应付款 {Expect}",
-                outTradeNo, paid, expect);
-            return (false, $"支付金额不符：通知 ¥{paid:0.00}，订单应付 ¥{expect:0.00}。");
-        }
-
-        // ④ 入账：把订单置为已支付，写支付记录
-        order.OrderStatus = "已支付";
-
-        var record = await _db.PaymentRecords
-            .Where(p => p.OrderId == order.OrderId && p.PayStatus != "已支付")
-            .OrderByDescending(p => p.PayId).FirstOrDefaultAsync();
-
-        if (record == null)
-        {
-            _db.PaymentRecords.Add(new PaymentRecord
+            // 锁内重读订单：从这一行往下，状态判定与写入之间不会再有别人插队
+            var order = await DbRowLock.LockOrderByNoAsync(_db, outTradeNo);
+            if (order == null)
             {
-                OrderId = order.OrderId,
-                PayAmount = order.TotalRent + order.Deposit,
-                PayType = payType,
-                PayStatus = "已支付",
-                PayTime = DateTime.Now,
-                TransactionNo = tradeNo
-            });
+                _logger.LogWarning("支付通知的订单号 {OrderNo} 在系统中不存在", outTradeNo);
+                await tx.RollbackAsync();
+                // 让它重推，给「订单先入库、通知先到」的极端时序留余量
+                return (false, "订单 " + outTradeNo + " 不存在，请确认订单号后重试。");
+            }
+
+            // ② 幂等：已支付过的订单直接确认，不重复入账
+            if (order.OrderStatus is "已支付" or "租赁中")
+            {
+                _logger.LogInformation("订单 {OrderNo} 已是 {Status}，重复通知忽略", outTradeNo, order.OrderStatus);
+                await tx.CommitAsync();
+                return (true, "订单已是「" + order.OrderStatus + "」，无需重复支付。");
+            }
+            if (order.OrderStatus == "已取消")
+            {
+                _logger.LogWarning("订单 {OrderNo} 已取消，仍收到支付通知，需人工退款。交易号 {TradeNo}",
+                    outTradeNo, tradeNo);
+                await tx.CommitAsync();
+                return (true, "订单已取消，该笔收款需人工退款处理。");
+            }
+            if (order.OrderStatus != "待支付")
+            {
+                _logger.LogWarning("订单 {OrderNo} 当前状态「{Status}」，不接受支付通知", outTradeNo, order.OrderStatus);
+                await tx.CommitAsync();
+                return (false, "订单当前状态为「" + order.OrderStatus + "」，不可支付。");
+            }
+
+            // ③ 金额核对：防止「改价」类伪造
+            var expect = order.TotalRent + order.Deposit;
+            if (decimal.TryParse(totalAmount, out var paid) && Math.Abs(paid - expect) > 0.01m)
+            {
+                _logger.LogWarning("订单 {OrderNo} 金额不符：通知 {Paid}，应付款 {Expect}",
+                    outTradeNo, paid, expect);
+                await tx.RollbackAsync();
+                return (false, $"支付金额不符：通知 ¥{paid:0.00}，订单应付 ¥{expect:0.00}。");
+            }
+
+            // ④ 入账：把订单置为已支付，写支付记录
+            order.OrderStatus = "已支付";
+
+            var record = await _db.PaymentRecords
+                .Where(p => p.OrderId == order.OrderId && p.PayStatus != "已支付")
+                .OrderByDescending(p => p.PayId).FirstOrDefaultAsync();
+
+            if (record == null)
+            {
+                _db.PaymentRecords.Add(new PaymentRecord
+                {
+                    OrderId = order.OrderId,
+                    PayAmount = order.TotalRent + order.Deposit,
+                    PayType = payType,
+                    PayStatus = "已支付",
+                    PayTime = DateTime.Now,
+                    TransactionNo = tradeNo
+                });
+            }
+            else
+            {
+                record.PayStatus = "已支付";
+                record.PayType = payType;
+                record.PayTime = DateTime.Now;
+                record.TransactionNo = tradeNo;
+                record.PayAmount = expect;
+            }
+
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+
+            _logger.LogInformation("订单 {OrderNo} 支付成功入账（{PayType}），交易号 {TradeNo}", outTradeNo, payType, tradeNo);
+            return (true, $"支付成功，订单 {outTradeNo} 已置为已支付。");
         }
-        else
+        catch (Exception ex)
         {
-            record.PayStatus = "已支付";
-            record.PayType = payType;
-            record.PayTime = DateTime.Now;
-            record.TransactionNo = tradeNo;
-            record.PayAmount = expect;
+            await tx.RollbackAsync();
+            // 入账失败必须留下可定位的堆栈：回调端点只会返回「服务端处理异常」，
+            // 没有这条日志时，线上只能看到支付宝一直重推而查不出原因。
+            // 只记订单号与技术异常，不记 form 里的签名等敏感字段。
+            _logger.LogError(ex, "订单 {OrderNo} 支付入账失败", outTradeNo);
+            throw;
         }
-
-        await _db.SaveChangesAsync();
-
-        _logger.LogInformation("订单 {OrderNo} 支付成功入账（{PayType}），交易号 {TradeNo}", outTradeNo, payType, tradeNo);
-        return (true, $"支付成功，订单 {outTradeNo} 已置为已支付。");
     }
 
     /// <summary>

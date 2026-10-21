@@ -1,3 +1,4 @@
+using System.Data;
 using ERental.Data;
 using ERental.DTOs;
 using ERental.Models;
@@ -5,10 +6,11 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-public class SettlementService(AppDbContext db, PaymentService payment)
+public class SettlementService(AppDbContext db, PaymentService payment, ILogger<SettlementService> logger)
 {
     private readonly AppDbContext _db = db;
     private readonly PaymentService _payment = payment;
+    private readonly ILogger<SettlementService> _logger = logger;
 
     public async Task<List<SettleRecord>> GetAll() =>
         await _db.SettleRecords.Include(s => s.RentalOrder).ThenInclude(o => o!.Customer)
@@ -103,41 +105,62 @@ public class SettlementService(AppDbContext db, PaymentService payment)
 
     public async Task<SettleResult> Settle(SettleOrderDto dto, int operatorId)
     {
-        var order = await _db.RentalOrders.FindAsync(dto.OrderId) ?? throw new Exception("订单不存在");
-        if (order.OrderStatus is not ("已支付" or "租赁中"))
-            throw new Exception("订单状态不可结算");
+        // 结算会碰三样「不能重复发生」的东西：结算单、押金退款、车辆释放。
+        // 两个前台同时点「结算」时，原实现都能通过状态判定，于是各生成一条结算单、各退一次押金。
+        // 这里用「订单行锁 + 唯一索引 + 死锁重试」三层来封死：
+        //   行锁让第二个请求排队，拿到锁后重读订单，状态已变「已完结」→ 直接拒绝；
+        //   uk_settle_order 兜住极端情况下漏过的并发；
+        //   真撞上死锁/等锁超时就整段重放（事务已回滚，重放安全）。
+        return await DbConcurrency.RunAsync(
+            () => SettleOnce(dto, operatorId), _logger, "订单结算",
+            reset: () => _db.ChangeTracker.Clear());
+    }
 
+    private async Task<SettleResult> SettleOnce(SettleOrderDto dto, int operatorId)
+    {
         if (dto.DamageFee < 0)
             throw new Exception("损坏费不能为负数");
 
-        var c = await CalculateAsync(order, dto.DamageFee);
-        var now = DateTime.Now;
-
-        // 本单成功支付的那条记录——退还押金/预付租金必须回到它上面，
-        // 否则会出现「结算单写着退了 ¥80，payment_record 一分没退」的对账黑洞。
-        var paid = await _db.PaymentRecords
-            .Where(p => p.OrderId == order.OrderId && (p.PayStatus == "已支付" || p.PayStatus == "部分退款"))
-            .OrderByDescending(p => p.PayId)
-            .FirstOrDefaultAsync();
-
-        var settle = new SettleRecord
-        {
-            OrderId = dto.OrderId,
-            ActualRent = c.ActualRent,
-            OverdueFee = c.OverdueFee,
-            DamageFee = dto.DamageFee,
-            RefundAmount = c.Refund,
-            SupplementAmount = c.Supplement,
-            Remark = dto.Remark,
-            OperatorId = operatorId
-        };
-        _db.SettleRecords.Add(settle);
-
-        // 结算记录落库、订单置「已完结」、车辆释放必须同进同退：
-        // 否则结算单已生成但订单仍停在「已支付」，或订单完结了车还挂在「在租」，都会让后续对账与派单失真。
-        await using var tx = await _db.Database.BeginTransactionAsync();
+        // READ COMMITTED：结算事务里只锁「自己读到的那一行」。
+        // 默认的 REPEATABLE READ 会对扫描到的区间加间隙锁，结算与下单同时在跑时极易互相咬死。
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         try
         {
+            // 等锁上限压到 5 秒（MySQL 默认 50 秒会让请求线程与连接池一起被拖住）
+            await DbRowLock.PrepareAsync(_db);
+
+            // 锁内重读：这一句之后的 order 才是「当前真实状态」，事务外读到的都可能已过期
+            var order = await DbRowLock.LockOrderAsync(_db, dto.OrderId)
+                        ?? throw new Exception("订单不存在");
+            if (order.OrderStatus is not ("已支付" or "租赁中"))
+                throw new Exception($"订单当前状态为「{order.OrderStatus}」，不可结算" +
+                                    "（可能已被其他同事结算或取消，请刷新后查看）");
+
+            var c = await CalculateAsync(order, dto.DamageFee);
+            var now = DateTime.Now;
+
+            // 本单成功支付的那条记录——退还押金/预付租金必须回到它上面，
+            // 否则会出现「结算单写着退了 ¥80，payment_record 一分没退」的对账黑洞。
+            var paid = await _db.PaymentRecords
+                .Where(p => p.OrderId == order.OrderId && (p.PayStatus == "已支付" || p.PayStatus == "部分退款"))
+                .OrderByDescending(p => p.PayId)
+                .FirstOrDefaultAsync();
+
+            var settle = new SettleRecord
+            {
+                OrderId = dto.OrderId,
+                ActualRent = c.ActualRent,
+                OverdueFee = c.OverdueFee,
+                DamageFee = dto.DamageFee,
+                RefundAmount = c.Refund,
+                SupplementAmount = c.Supplement,
+                Remark = dto.Remark,
+                OperatorId = operatorId
+            };
+            _db.SettleRecords.Add(settle);
+
+            // 结算记录落库、订单置「已完结」、车辆释放必须同进同退：
+            // 否则结算单已生成但订单仍停在「已支付」，或订单完结了车还挂在「在租」，都会让后续对账与派单失真。
             order.OrderStatus = "已完结";
             order.ActualReturn = now;
             await _db.SaveChangesAsync();
@@ -155,6 +178,14 @@ public class SettlementService(AppDbContext db, PaymentService payment)
 
             await tx.CommitAsync();
             return new SettleResult(settle, note);
+        }
+        catch (DbUpdateException ex) when (DbConcurrency.IsDuplicateKey(ex))
+        {
+            // 唯一索引 uk_settle_order 被触发：这张单已经有结算记录了。
+            // 走到这里说明有人绕过了行锁（例如另一实例在锁释放后才提交），金额一分不能多退。
+            await tx.RollbackAsync();
+            _logger.LogWarning(ex, "订单 {OrderId} 重复结算被唯一索引拦截", dto.OrderId);
+            throw new Exception("该订单已完成结算，请勿重复提交（如确需调整请走财务冲正流程）");
         }
         catch
         {

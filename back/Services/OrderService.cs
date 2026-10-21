@@ -1,13 +1,18 @@
-﻿using ERental.Data;
+﻿using System.Data;
+using ERental.Data;
 using ERental.DTOs;
 using ERental.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-public class OrderService(AppDbContext db)
+public class OrderService(AppDbContext db, ILogger<OrderService> logger)
 {
     private readonly AppDbContext _db = db;
+    private readonly ILogger<OrderService> _logger = logger;
+
+    /// <summary>超时单回收的单批上限。分批是为了不让一次清理锁住过多行、拖成长事务。</summary>
+    private const int CleanupBatchSize = 200;
 
     /// <summary>
     /// 租车交易的硬性门槛：**必须完成实名认证**（已登记身份证号 + 手机号）。
@@ -39,51 +44,102 @@ public class OrderService(AppDbContext db)
     public async Task<int> ReleaseExpiredPendingOrders()
     {
         var deadline = DateTime.Now.AddMinutes(-PendingPayTimeoutMinutes);
-        var expired = await _db.RentalOrders
-            .Where(o => o.OrderStatus == "待支付" && o.CreateTime < deadline)
-            .ToListAsync();
-        if (expired.Count == 0) return 0;
 
-        foreach (var o in expired)
+        // 快速失败：绝大多数请求到达时并没有超时单，不必为它们开事务、拿锁
+        if (!await _db.RentalOrders.AsNoTracking()
+                .AnyAsync(o => o.OrderStatus == "待支付" && o.CreateTime < deadline))
+            return 0;
+
+        // 分批处理：每批锁 200 行（SKIP LOCKED 跳过别人正在处理的），最多 20 批。
+        // 不分批的话，一次大促后的上千张超时单会被同一个事务全部锁住，
+        // 期间任何顾客下单/支付都要等这把锁，等于用清理任务把整个门店堵住。
+        var total = 0;
+        for (var batch = 0; batch < 20; batch++)
         {
-            o.OrderStatus = "已取消";
-            o.CancelReason = $"超过 {PendingPayTimeoutMinutes} 分钟未支付，系统自动取消并释放车辆";
+            var released = await DbConcurrency.RunAsync(
+                () => ReleaseBatchAsync(deadline), _logger, "超时订单回收",
+                reset: () => _db.ChangeTracker.Clear());
+            total += released;
+            if (released < CleanupBatchSize) break;
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// 回收一批超时单：全程在一个事务里，先用 <c>FOR UPDATE SKIP LOCKED</c> 圈定本批，
+    /// 再统一改状态、作废支付记录、释放车辆。
+    ///
+    /// 为什么必须锁：定时任务与「顾客点支付时的惰性回收」会同时触发，
+    /// 两个线程都可能读到同一张超时单 → 各自置「已取消」→ 各自尝试释放车辆。
+    /// 锁 + SKIP LOCKED 让它们自动分到不同的单，谁也碰不到对方正在处理的行。
+    /// </summary>
+    private async Task<int> ReleaseBatchAsync(DateTime deadline)
+    {
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        try
+        {
+            await DbRowLock.PrepareAsync(_db);
+
+            var expired = await DbRowLock.LockExpiredPendingAsync(_db, deadline, CleanupBatchSize);
+            if (expired.Count == 0)
+            {
+                await tx.CommitAsync();
+                return 0;
+            }
+
+            var ids = expired.Select(o => o.OrderId).ToList();
+            foreach (var o in expired)
+            {
+                o.OrderStatus = "已取消";
+                o.CancelReason = $"超过 {PendingPayTimeoutMinutes} 分钟未支付，系统自动取消并释放车辆";
+            }
 
             // 待支付的支付记录一并作废，避免财务对账时看到悬空的「待支付」流水
             var pending = await _db.PaymentRecords
-                .Where(p => p.OrderId == o.OrderId && p.PayStatus == "待支付")
+                .Where(p => ids.Contains(p.OrderId) && p.PayStatus == "待支付")
                 .ToListAsync();
             foreach (var p in pending) p.PayStatus = "已取消";
+
+            // 必须先把「已取消」落库，再做车辆归属判定：
+            // 归属判定要读 rental_order 表，若订单状态还停在「待支付」，
+            // 这辆车会被自己这张单判定成「仍被占用」而永远释放不掉。
+            await _db.SaveChangesAsync();
+
+            // 逐车释放：由 Guard 内的单条原子 UPDATE 完成
+            //「车辆处于在租 + 没有其它活跃订单占着」的判定，不在这里先查后写。
+            foreach (var o in expired)
+                await VehicleLeaseGuard.TryReleaseAsync(_db, o.VehicleId, o.OrderId);
+
+            await tx.CommitAsync();
+            return expired.Count;
         }
-
-        // 必须先把「已取消」落库，再做车辆归属判定：
-        // 归属判定要读 rental_order 表，若订单状态还停在「待支付」，
-        // 这辆车会被自己这张单判定成「仍被占用」而永远释放不掉。
-        await _db.SaveChangesAsync();
-
-        // 逐车释放：由 Guard 内的单条原子 UPDATE 完成
-        //「车辆处于在租 + 没有其它活跃订单占着」的判定，不在这里先查后写。
-        foreach (var o in expired)
-            await VehicleLeaseGuard.TryReleaseAsync(_db, o.VehicleId, o.OrderId);
-
-        return expired.Count;
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
     }
 
     /// <summary>顾客自助取消自己的待支付订单（已支付的单不允许自助取消，须走门店流程）</summary>
     public async Task CancelByCustomer(int orderId, int customerId)
     {
         await ReleaseExpiredPendingOrders();
-        var order = await _db.RentalOrders.FindAsync(orderId) ?? throw new Exception("订单不存在");
-        // 只能操作自己的订单：按 Token 里的 customerId 二次判定，不信任前端传参
-        if (order.CustomerId != customerId) throw new Exception("无权操作该订单");
-        if (order.OrderStatus != "待支付")
-            throw new Exception("仅「待支付」的订单可以自助取消；已支付订单请联系门店处理");
 
         // 订单作废、支付记录作废、车辆释放必须同进同退：
         // 否则「车辆释放失败」时前端收到报错，但订单其实已经取消，用户重试又提示「状态不可取消」。
-        await using var tx = await _db.Database.BeginTransactionAsync();
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         try
         {
+            await DbRowLock.PrepareAsync(_db);
+            // 锁内重读：顾客连点两次「取消」时，第二个请求会在这里排队，
+            // 拿到锁后状态已是「已取消」，从而给出正确提示而不是重复走一遍释放流程
+            var order = await DbRowLock.LockOrderAsync(_db, orderId)
+                        ?? throw new Exception("订单不存在");
+            // 只能操作自己的订单：按 Token 里的 customerId 二次判定，不信任前端传参
+            if (order.CustomerId != customerId) throw new Exception("无权操作该订单");
+            if (order.OrderStatus != "待支付")
+                throw new Exception("仅「待支付」的订单可以自助取消；已支付订单请联系门店处理");
+
             order.OrderStatus = "已取消";
             order.CancelReason = "顾客主动取消（未支付）";
 
@@ -359,9 +415,11 @@ public class OrderService(AppDbContext db)
         //  ① 原实现是「先写订单、再改车辆状态、再写支付记录」三次独立提交，
         //     中间任何一步失败都会留下残缺数据——有订单没支付记录，或订单在、车还空闲；
         //  ② 占车失败时订单必须一起消失，否则会留下「未占车的幽灵订单」。
-        await using var tx = await _db.Database.BeginTransactionAsync();
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         try
         {
+            await DbRowLock.PrepareAsync(_db);
+
             // ① 先原子占车，这是「一车多租」的唯一防线。
             //    调用方那次 vehicle_status != "空闲" 的预检查只是快速失败，
             //    两个并发请求可以同时通过它；真正的判定在这里：
@@ -450,14 +508,16 @@ public class OrderService(AppDbContext db)
 
     public async Task Cancel(int id, string reason)
     {
-        var order = await _db.RentalOrders.FindAsync(id) ?? throw new Exception("订单不存在");
-        if (order.OrderStatus is not ("待支付" or "已支付"))
-            throw new Exception("当前状态不可取消");
-
         // 取消 + 释放车辆同一事务：避免「车没释放成功但订单已取消」的半成品状态
-        await using var tx = await _db.Database.BeginTransactionAsync();
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         try
         {
+            await DbRowLock.PrepareAsync(_db);
+            // 行锁：与结算、支付回调共用同一把订单锁，避免「一边在结算、一边被取消」
+            var order = await DbRowLock.LockOrderAsync(_db, id) ?? throw new Exception("订单不存在");
+            if (order.OrderStatus is not ("待支付" or "已支付"))
+                throw new Exception("当前状态不可取消");
+
             order.OrderStatus = "已取消";
             order.CancelReason = reason;
             await _db.SaveChangesAsync();
@@ -477,29 +537,53 @@ public class OrderService(AppDbContext db)
     /// <summary>顾客申请还车（无论是否到期都可线上申请，到期后的超时费由结算时按倍数自动计）。订单必须是「已支付 / 租赁中」，且不能重复申请。</summary>
     public async Task RequestEarlyReturn(int orderId, int customerId)
     {
-        var order = await _db.RentalOrders.FindAsync(orderId) ?? throw new Exception("订单不存在");
-        // 顾客只能操作自己的订单：这里按 customerId 二次判定，不依赖前端传来的归属
-        if (order.CustomerId != customerId) throw new Exception("无权操作该订单");
-        if (order.OrderStatus is not ("已支付" or "租赁中"))
-            throw new Exception("当前订单状态不可申请还车");
-        if (order.EarlyReturnStatus == "待审核")
-            throw new Exception("已提交还车申请，请等待门店审核");
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        try
+        {
+            await DbRowLock.PrepareAsync(_db);
+            var order = await DbRowLock.LockOrderAsync(_db, orderId) ?? throw new Exception("订单不存在");
+            // 顾客只能操作自己的订单：这里按 customerId 二次判定，不依赖前端传来的归属
+            if (order.CustomerId != customerId) throw new Exception("无权操作该订单");
+            if (order.OrderStatus is not ("已支付" or "租赁中"))
+                throw new Exception("当前订单状态不可申请还车");
+            if (order.EarlyReturnStatus == "待审核")
+                throw new Exception("已提交还车申请，请等待门店审核");
 
-        order.EarlyReturnStatus = "待审核";
-        await _db.SaveChangesAsync();
+            order.EarlyReturnStatus = "待审核";
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
     }
 
     /// <summary>前台审核还车申请。rejectReason 非空即驳回，否则视为通过（清空申请状态）。</summary>
     public async Task ReviewEarlyReturn(int orderId, bool approve, string? rejectReason)
     {
-        var order = await _db.RentalOrders.FindAsync(orderId) ?? throw new Exception("订单不存在");
-        if (order.EarlyReturnStatus != "待审核") throw new Exception("该订单没有待审核的还车申请");
         if (!approve && string.IsNullOrWhiteSpace(rejectReason))
             throw new Exception("驳回时请填写原因，便于顾客了解后续处理方式");
 
-        order.EarlyReturnStatus = approve ? "" : null;
-        if (!approve) order.CancelReason = rejectReason;
-        await _db.SaveChangesAsync();
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        try
+        {
+            await DbRowLock.PrepareAsync(_db);
+            // 行锁防止「两个前台同时审核」：一个通过、一个驳回，后提交者会把前者的结论覆盖掉
+            var order = await DbRowLock.LockOrderAsync(_db, orderId) ?? throw new Exception("订单不存在");
+            if (order.EarlyReturnStatus != "待审核") throw new Exception("该订单没有待审核的还车申请");
+
+            order.EarlyReturnStatus = approve ? "" : null;
+            if (!approve) order.CancelReason = rejectReason;
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
     }
 
     /// <summary>

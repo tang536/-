@@ -1,18 +1,21 @@
-﻿using ERental.Data;
+﻿using System.Data;
+using ERental.Data;
 using ERental.DTOs;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ERental.Services;
 
 public class PaymentService(
     AppDbContext db, AlipayService alipay, PayConfigService payConfig,
-    WechatPayService wechat, BankPayService bank)
+    WechatPayService wechat, BankPayService bank, ILogger<PaymentService> logger)
 {
     private readonly AppDbContext _db = db;
     private readonly AlipayService _alipay = alipay;
     private readonly PayConfigService _payConfig = payConfig;
     private readonly WechatPayService _wechat = wechat;
     private readonly BankPayService _bank = bank;
+    private readonly ILogger<PaymentService> _logger = logger;
 
     /// <summary>
     /// 支付记录列表。用 AsNoTracking + Select 投影成 DTO：
@@ -72,7 +75,49 @@ public class PaymentService(
     /// <param name="reason">退款原因，写进通道退款单，便于对账</param>
     public async Task<RefundResult> Refund(int payId, decimal amount, string? reason = null)
     {
-        var p = await _db.PaymentRecords.FindAsync(payId)
+        // 退款有两个入口：财务在支付记录上直接退（独立事务），以及结算流程内部退押金（外层已有事务）。
+        // 已有事务就复用它——EF 不支持嵌套 BeginTransaction，硬开一次会直接抛
+        // "The connection is already in a transaction"。
+        var ownsTx = _db.Database.CurrentTransaction == null;
+        IDbContextTransaction? tx = null;
+        try
+        {
+            if (ownsTx)
+            {
+                tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+                await DbRowLock.PrepareAsync(_db);
+            }
+            var result = await RefundCoreAsync(payId, amount, reason);
+            if (tx != null) await tx.CommitAsync();
+            return result;
+        }
+        catch (DbUpdateException ex) when (DbConcurrency.IsDuplicateKey(ex))
+        {
+            // 唯一索引/注意点：退款本身不改唯一键，这里兜的是支付记录被并发写入的极端情况
+            if (tx != null) await tx.RollbackAsync();
+            _logger.LogWarning(ex, "支付记录 {PayId} 退款时发生唯一键冲突", payId);
+            throw new Exception("该笔退款正在被其他操作处理，请稍后刷新后重试");
+        }
+        catch
+        {
+            if (tx != null) await tx.RollbackAsync();
+            throw;
+        }
+        finally
+        {
+            if (tx != null) await tx.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// 退款主流程（必须在事务内、且已持有支付记录行锁的前提下调用）。
+    /// </summary>
+    private async Task<RefundResult> RefundCoreAsync(int payId, decimal amount, string? reason)
+    {
+        // 行锁是这里的关键：并发退同一笔款时，第二个请求阻塞在锁上；
+        // 第一个提交后它重读到的 refund_amount 已包含前一笔，于是「可退余额不足」被正确拦下。
+        // 没有这把锁的话，两笔各退 ¥100 的请求都会读到 refund_amount=0，累计只记 ¥100，实际却退了 ¥200。
+        var p = await DbRowLock.LockPaymentAsync(_db, payId)
                 ?? throw new Exception("支付记录不存在");
 
         if (p.PayStatus is "待支付" or "已取消")

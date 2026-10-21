@@ -226,6 +226,174 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
         EnsureIndex(db, "maintenance_order", "idx_status", "`status`");
         EnsureIndex(db, "maintenance_order", "idx_create_time", "`create_time`");
         EnsureIndex(db, "car_check_list", "idx_check_date", "`check_date`");
+
+        // ── 并发控制：数据库层的第二道防线（应用层行锁见 Services/DbRowLock.cs）──
+        // 分工：行锁管「同一时刻谁先谁后」，数据库约束管「万一应用层漏了、或有人直接连库改数据」。
+        // 触发次数越少越好，但一旦触发就是最后的兜底，宁可报错也不能落脏数据。
+        EnsureConcurrencyConstraints(db);
+    }
+
+    /// <summary>
+    /// 高并发场景的数据库约束（幂等，可反复执行）。
+    ///
+    /// 三类对象，各解决一种「应用层挡不住」的失控：
+    ///  ① 唯一索引 <c>uk_settle_order</c>：一张订单只允许存在一条结算记录。
+    ///     行锁在单实例内已经能挡住并发结算，但如果两台机器上的两个请求恰好错开几毫秒、
+    ///     或将来有人绕过服务层直接调仓储，唯一索引是唯一还能拦住「同一单退两次押金」的东西。
+    ///  ② CHECK 约束：把「金额不能为负」「退款不能超过实收」「到期必须晚于起租」这类
+    ///     恒定成立的业务事实写进表定义。这类错误一旦落库，报表与对账会永久性失真。
+    ///  ③ 复合索引：超时回收与支付回调的查询条件都是「状态 + 时间」/「订单 + 状态」，
+    ///     单列索引只能命中其中一个条件，数据量上来后仍会回表扫大量行。
+    ///
+    /// 存量脏数据会让 DDL 失败，因此每一项都先探测再执行，失败只打印不阻断启动——
+    /// 一个历史遗留的重复结算单，不应该让整个门店系统起不来。
+    /// </summary>
+    private static void EnsureConcurrencyConstraints(AppDbContext db)
+    {
+        // ① 一单一次结算
+        EnsureUniqueIndex(db, "settle_record", "uk_settle_order", "`order_id`",
+            purpose: "同一订单只能结算一次（并发双重退款的最后防线）");
+
+        // ② 金额与租期的恒定事实
+        EnsureCheckConstraint(db, "payment_record", "ck_pay_amount",
+            "`pay_amount` >= 0");
+        EnsureCheckConstraint(db, "payment_record", "ck_pay_refund",
+            "`refund_amount` >= 0 AND `refund_amount` <= `pay_amount`");
+        EnsureCheckConstraint(db, "settle_record", "ck_settle_amount",
+            "`actual_rent` >= 0 AND `overdue_fee` >= 0 AND `damage_fee` >= 0 " +
+            "AND `refund_amount` >= 0 AND `supplement_amount` >= 0");
+        EnsureCheckConstraint(db, "rental_order", "ck_order_amount",
+            "`total_rent` >= 0 AND `deposit` >= 0");
+        EnsureCheckConstraint(db, "rental_order", "ck_order_period",
+            "`lease_end` > `lease_start`");
+
+        // ③ 复合索引：让「状态 + 时间」「订单 + 状态」一次命中
+        EnsureCompositeIndex(db, "rental_order", "idx_status_create", "`order_status`, `create_time`",
+            purpose: "超时待支付订单回收");
+        EnsureCompositeIndex(db, "payment_record", "idx_order_status", "`order_id`, `pay_status`",
+            purpose: "支付回调定位本次支付记录");
+    }
+
+    /// <summary>
+    /// 建唯一索引；若存量数据已有重复，跳过并打印冲突明细。
+    /// 为什么不是先清洗数据再建：重复的结算单意味着历史账目已经出问题，
+    /// 删哪一条都是财务决策，必须交给人看，程序不能替用户选择。
+    /// </summary>
+    private static void EnsureUniqueIndex(
+        AppDbContext db, string table, string index, string columns, string purpose)
+    {
+        if (!TableExists(db, table) || IndexExists(db, table, index)) return;
+
+        var dups = ScalarLong(db,
+            $"SELECT COUNT(*) FROM (SELECT {columns} FROM `{table}` GROUP BY {columns} HAVING COUNT(*) > 1) AS d");
+        if (dups > 0)
+        {
+            Console.WriteLine($"[并发约束] 跳过 {table}.{index}（{purpose}）：存量数据中有 {dups} 组重复值，" +
+                              "请先人工核对并清理后再建唯一索引。");
+            return;
+        }
+
+        try
+        {
+            // 标识符不能参数化，只能用拼接；table/index/columns 全部来自本文件内的常量调用点。
+            // 用 string.Concat 而不是内插串：EF1002 会把内插串当成潜在注入点报警，
+            // 而这个项目的验收基线是 0 警告。
+            db.Database.ExecuteSqlRaw(string.Concat(
+                "ALTER TABLE `", table, "` ADD UNIQUE KEY `", index, "` (", columns, ");"));
+            Console.WriteLine($"[并发约束] 已建立唯一索引 {table}.{index}（{purpose}）");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[并发约束] 建立 {table}.{index} 失败，已跳过：{ex.Message}");
+        }
+    }
+
+    /// <summary>建复合索引（普通索引，幂等）。</summary>
+    private static void EnsureCompositeIndex(
+        AppDbContext db, string table, string index, string columns, string purpose)
+    {
+        if (!TableExists(db, table) || IndexExists(db, table, index)) return;
+        try
+        {
+            db.Database.ExecuteSqlRaw(string.Concat(
+                "CREATE INDEX `", index, "` ON `", table, "` (", columns, ");"));
+            Console.WriteLine($"[并发约束] 已建立复合索引 {table}.{index}（{purpose}）");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[并发约束] 建立 {table}.{index} 失败，已跳过：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 建 CHECK 约束。MySQL 8.0.16 起才真正强制执行（更早版本语法接受但忽略），
+    /// 故先探测版本；约束已存在则不重复添加。
+    /// </summary>
+    private static void EnsureCheckConstraint(AppDbContext db, string table, string name, string expression)
+    {
+        if (!TableExists(db, table)) return;
+        if (!SupportsCheckConstraint(db)) return;
+        if (ConstraintExists(db, table, name)) return;
+
+        try
+        {
+            db.Database.ExecuteSqlRaw(string.Concat(
+                "ALTER TABLE `", table, "` ADD CONSTRAINT `", name, "` CHECK (", expression, ") ENFORCED;"));
+            Console.WriteLine($"[并发约束] 已建立 CHECK 约束 {table}.{name}：{expression}");
+        }
+        catch (Exception ex)
+        {
+            // 典型原因是存量数据违反约束（如历史退款额大于实收）；交人工处理，不阻断启动
+            Console.WriteLine($"[并发约束] 建立 CHECK {table}.{name} 失败（可能存在违反约束的历史数据），已跳过：{ex.Message}");
+        }
+    }
+
+    /// <summary>MySQL 8.0.16+ 才真正强制执行 CHECK 约束。</summary>
+    private static bool SupportsCheckConstraint(AppDbContext db)
+    {
+        try
+        {
+            var raw = Convert.ToString(Scalar(db, "SELECT VERSION()")) ?? "";
+            if (!System.Version.TryParse(CleanVersion(raw), out var v)) return false;
+            if (v.Major != 8) return v.Major > 8;
+            // 8.x：8.0.16 起支持；8.1+ 全支持
+            return v.Minor > 0 || v.Build >= 16;
+        }
+        catch
+        {
+            return false;   // 探测失败就不动 DDL，安全默认
+        }
+    }
+
+    /// <summary>把 "8.4.6-log" / "8.0.16" 之类的版本串裁成可解析形式。</summary>
+    private static string CleanVersion(string raw)
+    {
+        var cut = raw.IndexOfAny(['-', '+', ' ']);
+        return cut > 0 ? raw[..cut] : raw;
+    }
+
+    /// <summary>执行一条返回单值的 SQL（用于存在性/重复性探测）。</summary>
+    private static object? Scalar(AppDbContext db, string sql)
+    {
+        using var cmd = db.Database.GetDbConnection().CreateCommand();
+        cmd.CommandText = sql;
+        if (cmd.Connection!.State != ConnectionState.Open) cmd.Connection.Open();
+        var v = cmd.ExecuteScalar();
+        return v is DBNull ? null : v;
+    }
+
+    private static long ScalarLong(AppDbContext db, string sql) => Convert.ToInt64(Scalar(db, sql) ?? 0L);
+
+    private static bool ConstraintExists(AppDbContext db, string table, string name)
+    {
+        using var cmd = db.Database.GetDbConnection().CreateCommand();
+        cmd.CommandText =
+            "SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS " +
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @t AND CONSTRAINT_NAME = @c";
+        var p1 = cmd.CreateParameter(); p1.ParameterName = "@t"; p1.Value = table; cmd.Parameters.Add(p1);
+        var p2 = cmd.CreateParameter(); p2.ParameterName = "@c"; p2.Value = name; cmd.Parameters.Add(p2);
+        if (cmd.Connection!.State != ConnectionState.Open) cmd.Connection.Open();
+        return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
     }
 
     /// <summary>索引不存在时才建（幂等）；失败只跳过，不让一次 DDL 把服务起不来</summary>

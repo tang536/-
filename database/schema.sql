@@ -109,7 +109,12 @@ CREATE TABLE IF NOT EXISTS `rental_order` (
   KEY `idx_vehicle_id` (`vehicle_id`),
   KEY `idx_create_time` (`create_time`),
   KEY `idx_lease_end` (`lease_end`),
-  KEY `idx_order_status` (`order_status`)
+  KEY `idx_order_status` (`order_status`),
+  -- 复合索引：超时待支付回收按「状态 + 创建时间」取数，单列索引只能命中其中一个条件
+  KEY `idx_status_create` (`order_status`, `create_time`),
+  -- 数据库层的恒定业务事实：金额不为负、到期必须晚于起租（应用层已校验，这里兜住绕过服务层的写入）
+  CONSTRAINT `ck_order_amount` CHECK (`total_rent` >= 0 AND `deposit` >= 0) ENFORCED,
+  CONSTRAINT `ck_order_period` CHECK (`lease_end` > `lease_start`) ENFORCED
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='租赁订单表';
 
 -- 8. 支付记录表
@@ -125,7 +130,12 @@ CREATE TABLE IF NOT EXISTS `payment_record` (
   PRIMARY KEY (`pay_id`),
   KEY `idx_order_id` (`order_id`),
   KEY `idx_pay_time` (`pay_time`),
-  KEY `idx_pay_status` (`pay_status`)
+  KEY `idx_pay_status` (`pay_status`),
+  -- 支付回调按「订单 + 状态」定位本次支付记录
+  KEY `idx_order_status` (`order_id`, `pay_status`),
+  -- 退款不得超过实收：并发退款的最后一道防线（应用层用支付记录行锁先在事务内排队）
+  CONSTRAINT `ck_pay_amount` CHECK (`pay_amount` >= 0) ENFORCED,
+  CONSTRAINT `ck_pay_refund` CHECK (`refund_amount` >= 0 AND `refund_amount` <= `pay_amount`) ENFORCED
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付记录表';
 
 -- 9. 结算记录表
@@ -141,7 +151,11 @@ CREATE TABLE IF NOT EXISTS `settle_record` (
   `supplement_amount` DECIMAL(10,2) DEFAULT 0 COMMENT '补缴金额',
   `remark` VARCHAR(200) DEFAULT NULL COMMENT '备注',
   PRIMARY KEY (`settle_id`),
-  KEY `idx_order_id` (`order_id`)
+  KEY `idx_order_id` (`order_id`),
+  -- 一张订单只能有一条结算记录：并发点「结算」时，重复的那次会被数据库直接拒绝
+  UNIQUE KEY `uk_settle_order` (`order_id`),
+  CONSTRAINT `ck_settle_amount` CHECK (`actual_rent` >= 0 AND `overdue_fee` >= 0
+    AND `damage_fee` >= 0 AND `refund_amount` >= 0 AND `supplement_amount` >= 0) ENFORCED
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算记录表';
 
 -- 10. 维保工单表
@@ -318,4 +332,34 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
 -- 后端启动时会自动补列，无需手工执行。
 -- ALTER TABLE `vehicle` ADD COLUMN `image_url` VARCHAR(255) NULL
 --   COMMENT '车辆图片相对路径，如 /uploads/vehicle/xxx.jpg' AFTER `deposit`;
+
+-- ============================================
+-- 高并发控制升级（已有数据库执行；后端启动时也会自动幂等执行同样的升级）
+-- ============================================
+-- 目标：把「先查状态、再写状态」的竞态收口到数据库层。应用层用行级悲观锁
+-- （SELECT ... FOR UPDATE，见 back/Services/DbRowLock.cs）让并发请求排队，
+-- 数据库层再用唯一索引与 CHECK 约束兜住「绕过服务层 / 多实例错峰」的极端情况。
+--
+-- 说明：下列 DDL 若因存量脏数据失败（例如历史上有重复结算单、退款额大于实收），
+-- 后端会捕获并在启动日志打印「[并发约束] 跳过…」「[并发约束] …失败」，
+-- 不会阻断启动；请按日志人工清理数据后重启，约束会自动补上。
+--
+-- ALTER TABLE `settle_record` ADD UNIQUE KEY `uk_settle_order` (`order_id`);
+-- ALTER TABLE `payment_record` ADD CONSTRAINT `ck_pay_amount`
+--   CHECK (`pay_amount` >= 0) ENFORCED;
+-- ALTER TABLE `payment_record` ADD CONSTRAINT `ck_pay_refund`
+--   CHECK (`refund_amount` >= 0 AND `refund_amount` <= `pay_amount`) ENFORCED;
+-- ALTER TABLE `settle_record` ADD CONSTRAINT `ck_settle_amount`
+--   CHECK (`actual_rent` >= 0 AND `overdue_fee` >= 0 AND `damage_fee` >= 0
+--          AND `refund_amount` >= 0 AND `supplement_amount` >= 0) ENFORCED;
+-- ALTER TABLE `rental_order` ADD CONSTRAINT `ck_order_amount`
+--   CHECK (`total_rent` >= 0 AND `deposit` >= 0) ENFORCED;
+-- ALTER TABLE `rental_order` ADD CONSTRAINT `ck_order_period`
+--   CHECK (`lease_end` > `lease_start`) ENFORCED;
+-- CREATE INDEX `idx_status_create` ON `rental_order` (`order_status`, `create_time`);
+-- CREATE INDEX `idx_order_status` ON `payment_record` (`order_id`, `pay_status`);
+--
+-- 会话级等锁上限：业务事务内执行 SET SESSION innodb_lock_wait_timeout = 5，
+-- 避免 MySQL 默认的 50 秒把请求线程与连接池一起拖住（见 DbRowLock.PrepareAsync）。
+-- 事务隔离级别统一用 READ COMMITTED，只锁命中的行，不额外加间隙锁。
 

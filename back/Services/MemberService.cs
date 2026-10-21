@@ -1,4 +1,5 @@
-﻿using ERental.Data;
+﻿using System.Data;
+using ERental.Data;
 using ERental.DTOs;
 using ERental.Models;
 using Microsoft.EntityFrameworkCore;
@@ -21,10 +22,11 @@ namespace ERental.Services;
 /// 异步回调与主动查单兜底两路都进 AlipayService.ApplyTradeResultAsync 的 HY 分支，
 /// 共用「幂等 + 金额校验」入账口径。
 /// </summary>
-public class MemberService(AppDbContext db, LogService log)
+public class MemberService(AppDbContext db, LogService log, ILogger<MemberService> logger)
 {
     private readonly AppDbContext _db = db;
     private readonly LogService _log = log;
+    private readonly ILogger<MemberService> _logger = logger;
 
     /// <summary>待支付购买意向的配置键前缀（SystemConfigService.GetAll 排除、参数页禁改）</summary>
     private const string PayPrefix = "memberpay.";
@@ -148,8 +150,31 @@ public class MemberService(AppDbContext db, LogService log)
     /// </summary>
     public async Task<(bool Ok, string Message, decimal Amount, string AlipayTradeNo)> ApplyPaidPurchaseAsync(
         string tradeNo, string alipayTradeNo, string payType, decimal paidAmount)
+        => await DbConcurrency.RunAsync(async () =>
+        {
+            // 「意向行 + 客户行」两把锁必须在同一事务里：先锁意向（防止同一笔交易被两个通知各升一次级），
+            // 再锁客户（防止升级写入与后台改档互相覆盖）。锁顺序固定为 意向 → 客户，与其它流程不交叉。
+            await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+            try
+            {
+                await DbRowLock.PrepareAsync(_db);
+                var r = await ApplyPaidPurchaseCoreAsync(tradeNo, alipayTradeNo, payType, paidAmount);
+                await tx.CommitAsync();
+                return r;
+            }
+            catch
+            {
+                await tx.RollbackAsync();
+                throw;
+            }
+        }, _logger, "会员购买入账", reset: () => _db.ChangeTracker.Clear());
+
+    /// <summary>入账本体（容器事务由调用方持有，这里只读锁内的最新值并做业务判定）。</summary>
+    private async Task<(bool Ok, string Message, decimal Amount, string AlipayTradeNo)>
+        ApplyPaidPurchaseCoreAsync(string tradeNo, string alipayTradeNo, string payType, decimal paidAmount)
     {
-        var cfg = await _db.SystemConfigs.FirstOrDefaultAsync(x => x.ConfigKey == PayPrefix + tradeNo);
+        // 锁住意向行：并发通知下，第二个请求在这里排队，拿到锁后能看到 done 标记，直接幂等返回
+        var cfg = await DbRowLock.LockConfigAsync(_db, PayPrefix + tradeNo);
         if (cfg == null)
             return (false, "会员购买记录不存在或已过期。", 0m, "");
 
@@ -174,7 +199,7 @@ public class MemberService(AppDbContext db, LogService log)
         if (Math.Abs(paidAmount - price) > 0.01m)
             return (false, $"支付金额不符：实付 ¥{paidAmount:0.00}，应付 ¥{price:0.00}。", 0m, "");
 
-        var c = await _db.Customers.FirstOrDefaultAsync(x => x.CustomerId == customerId);
+        var c = await DbRowLock.LockCustomerAsync(_db, customerId);
         if (c == null)
             return (false, "购买客户不存在，入账失败。", 0m, "");
 
