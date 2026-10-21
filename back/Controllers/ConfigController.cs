@@ -32,7 +32,7 @@ public class ConfigController(
     public async Task<IActionResult> Update(string key, [FromBody] string value)
     {
         try { await _svc.Update(key, value); return Ok(new ApiResponse<object> { Message = "配置更新成功" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>删除管理员自建的配置项（核心业务参数受保护，只能改值不能删）</summary>
@@ -40,7 +40,7 @@ public class ConfigController(
     public async Task<IActionResult> Delete(string key)
     {
         try { await _svc.Delete(key); return Ok(new ApiResponse<object> { Message = "配置项已删除" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     // ==================== 数据字典（需求 4.2.1） ====================
@@ -53,21 +53,21 @@ public class ConfigController(
     public async Task<IActionResult> AddDict([FromBody] DictRequest req)
     {
         try { return Ok(new ApiResponse<object> { Data = await _svc.AddDict(req), Message = "字典项已添加" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPut("dict/{id:int}")]
     public async Task<IActionResult> UpdateDict(int id, [FromBody] DictRequest req)
     {
         try { await _svc.UpdateDict(id, req); return Ok(new ApiResponse<object> { Message = "字典项已更新" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpDelete("dict/{id:int}")]
     public async Task<IActionResult> DeleteDict(int id)
     {
         try { await _svc.DeleteDict(id); return Ok(new ApiResponse<object> { Message = "字典项已删除" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>字典自更新：扫描车辆品牌、维保故障类型、会员权益等级，把库中实际值同步进字典</summary>
@@ -85,7 +85,7 @@ public class ConfigController(
                 Data = result.Select(r => new { group = r.Group, groupName = r.GroupName, added = r.Added })
             });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     // ==================== ComfyUI 地址（AI 生图） ====================
@@ -116,7 +116,7 @@ public class ConfigController(
         }
         catch (Exception ex)
         {
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false });
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
         }
     }
 
@@ -147,7 +147,7 @@ public class ConfigController(
             return Ok(new ApiResponse<object>
             {
                 Data = new { ok = false },
-                Message = $"连接失败：{ex.Message}"
+                Message = $"连接失败：{ErrorText.Safe(ex)}"
             });
         }
     }
@@ -165,6 +165,6 @@ public class ConfigController(
             var (tables, rows) = await _svc.ResetDatabaseAsync(CurrentUserId, ip);
             return Ok(new ApiResponse<object> { Message = $"初始化完成：已清空 {tables} 张表（共 {rows} 行），管理员账号、系统配置与支付配置保留" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 }

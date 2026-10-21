@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
@@ -46,7 +46,7 @@ public class CustomerController(CustomerService svc) : ControllerBase
         if (IsCustomer && id != CurrentUserId)
             return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权查看其他客户的资料", Success = false });
         try { return Ok(new ApiResponse<Customer> { Data = await _svc.GetById(id) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPost]
@@ -54,7 +54,7 @@ public class CustomerController(CustomerService svc) : ControllerBase
     public async Task<IActionResult> Create([FromBody] Customer c)
     {
         try { return Ok(new ApiResponse<Customer> { Data = await _svc.Create(c) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPut("{id:int}")]
@@ -62,7 +62,7 @@ public class CustomerController(CustomerService svc) : ControllerBase
     public async Task<IActionResult> Update(int id, [FromBody] Customer c)
     {
         try { await _svc.Update(id, c); return Ok(new ApiResponse<object> { Message = "更新成功" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpDelete("{id:int}")]
@@ -70,7 +70,7 @@ public class CustomerController(CustomerService svc) : ControllerBase
     public async Task<IActionResult> Delete(int id)
     {
         try { await _svc.Delete(id); return Ok(new ApiResponse<object> { Message = "删除成功" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -89,6 +89,6 @@ public class CustomerController(CustomerService svc) : ControllerBase
         if (IsCustomer && id != CurrentUserId)
             return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权查看其他客户的消费记录", Success = false });
         try { return Ok(new ApiResponse<CustomerRecordsDto> { Data = await _svc.GetRecordsAsync(id, from, to, status) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 }

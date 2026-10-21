@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
@@ -32,7 +32,7 @@ public class AuthController(AuthService auth) : ControllerBase
         }
         catch (Exception ex)
         {
-            return Unauthorized(new ApiResponse<object> { Code = 401, Message = ex.Message, Success = false });
+            return Unauthorized(new ApiResponse<object> { Code = 401, Message = ErrorText.Safe(ex), Success = false });
         }
     }
 
@@ -42,7 +42,7 @@ public class AuthController(AuthService auth) : ControllerBase
     public async Task<IActionResult> StaffLogin([FromBody] StaffLoginDto dto)
     {
         try { return Ok(new ApiResponse<LoginResponseDto> { Data = await _auth.StaffLogin(dto) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [AllowAnonymous]
@@ -51,7 +51,7 @@ public class AuthController(AuthService auth) : ControllerBase
     public async Task<IActionResult> CustomerLogin([FromBody] CustomerLoginDto dto)
     {
         try { return Ok(new ApiResponse<LoginResponseDto> { Data = await _auth.CustomerLogin(dto) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [AllowAnonymous]
@@ -64,7 +64,7 @@ public class AuthController(AuthService auth) : ControllerBase
             var c = await _auth.CustomerRegister(dto);
             return Ok(new ApiResponse<object> { Message = "注册成功", Data = new { c.CustomerId, c.LoginAccount, c.FullName } });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>顾客登录后自助补全租车资料（身份证号 / 手机号 / 真实姓名）</summary>
@@ -82,7 +82,7 @@ public class AuthController(AuthService auth) : ControllerBase
                 Data = new { c.CustomerId, c.FullName, c.IdCard, c.ContactPhone, c.ProfileCompleted }
             });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -100,7 +100,7 @@ public class AuthController(AuthService auth) : ControllerBase
             await _auth.ChangeCustomerPassword(id, dto);
             return Ok(new ApiResponse<object> { Message = "密码已修改，下次登录请使用新密码" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -134,7 +134,7 @@ public class AuthController(AuthService auth) : ControllerBase
             await _auth.Deactivate(id, userType, dto.Password);
             return Ok(new ApiResponse<object> { Message = "账号已注销" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>

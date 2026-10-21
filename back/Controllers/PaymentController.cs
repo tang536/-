@@ -186,7 +186,8 @@ public class PaymentController(
             // 同时把原始异常类型记进服务端日志（不回给前端）。
             _logger.LogWarning("保存支付配置失败（{ExType}）", ex.GetType().Name);
             await AuditAsync("保存支付配置", false, "保存失败");
-            var safe = SecretMasker.Scrub(ex.Message,
+            // 先按统一口径翻译（业务中文原样 / 驱动原文转中文），再对保留下来的细节做密钥脱敏。
+            var safe = SecretMasker.Scrub(ErrorText.Safe(ex),
                 dto.ProdPrivateKey, dto.ProdAlipayPublicKey,
                 dto.SandboxPrivateKey, dto.SandboxAlipayPublicKey,
                 dto.WechatApiV3Key, dto.WechatPrivateKey, dto.BankSignKey);
@@ -296,7 +297,7 @@ public class PaymentController(
         }
         catch (Exception ex)
         {
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false });
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
         }
     }
 
@@ -544,6 +545,6 @@ public class PaymentController(
             var r = await _svc.Refund(id, amount);
             return Ok(new ApiResponse<object> { Message = r.Message, Data = r });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 }

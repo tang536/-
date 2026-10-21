@@ -27,7 +27,7 @@ public class MemberController(
     public async Task<IActionResult> Center()
     {
         try { return Ok(new ApiResponse<MemberCenterDto> { Data = await _svc.GetCenter(CurrentUserId) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -72,7 +72,7 @@ public class MemberController(
                 }
             });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -86,7 +86,7 @@ public class MemberController(
     public async Task<IActionResult> Rights()
     {
         try { return Ok(new ApiResponse<List<MemberRightsDto>> { Data = await _svc.GetRights() }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>新增会员类型（管理员）</summary>
@@ -99,7 +99,7 @@ public class MemberController(
             var r = await _svc.CreateRight(dto, CurrentUserId);
             return Ok(new ApiResponse<MemberRightsDto> { Data = r, Message = $"会员类型「{r.MemberLevel}」已创建" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>编辑会员类型（管理员）：3NF——折扣/购买价即改即生效，客户档案不存折扣、无需同步</summary>
@@ -115,7 +115,7 @@ public class MemberController(
                 Message = "会员类型已更新，全体挂靠客户即刻按新折扣计价"
             });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>某客户的会员购买 / 调整记录（工作人员查看，来自操作日志；已注销客户同样可查）</summary>
@@ -124,6 +124,6 @@ public class MemberController(
     public async Task<IActionResult> History(int customerId)
     {
         try { return Ok(new ApiResponse<List<MemberPurchaseDto>> { Data = await _svc.GetMemberHistory(customerId) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 }

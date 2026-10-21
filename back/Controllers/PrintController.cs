@@ -1,4 +1,4 @@
-using ERental.Models;
+﻿using ERental.Models;
 using ERental.Services;
 using ERental.Authorization;
 using Microsoft.AspNetCore.Authorization;
@@ -45,7 +45,7 @@ public class PrintController(
             var text = await _svc.OrderReceipt(orderId);
             return Ok(new { content = text });
         }
-        catch (Exception ex) { return BadRequest(new { message = ex.Message }); }
+        catch (Exception ex) { return BadRequest(new { message = ErrorText.Safe(ex) }); }
     }
 
     /// <summary>结算单小票：随归还结算使用 → 管理员 / 前台（用况3）</summary>
@@ -58,7 +58,7 @@ public class PrintController(
             var text = await _svc.SettleReceipt(settleId);
             return Ok(new { content = text });
         }
-        catch (Exception ex) { return BadRequest(new { message = ex.Message }); }
+        catch (Exception ex) { return BadRequest(new { message = ErrorText.Safe(ex) }); }
     }
 
     /// <summary>营收报表导出：统计报表模块 → 仅财务（营收属资金口径，财务查看范围 > 管理员）</summary>

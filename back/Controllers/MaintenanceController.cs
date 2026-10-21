@@ -35,7 +35,7 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
             var dto = await _svc.Create(req, CurrentOperatorId());
             return Ok(new ApiResponse { Data = dto, Message = "工单创建成功" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -52,7 +52,7 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
             var url = await _svc.SaveImage(file);
             return Ok(new ApiResponse { Data = new { url }, Message = "照片上传成功" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>完成维保：入参为 { fee } 对象，避免裸数字绑定失败</summary>
@@ -61,7 +61,7 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
     public async Task<IActionResult> Complete(int id, [FromBody] CompleteReq req)
     {
         try { await _svc.Complete(id, req.Fee); return Ok(new ApiResponse { Message = "工单已完成" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>报废记录（管理员 / 前台可查）</summary>
@@ -80,7 +80,7 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
             await _svc.ScrapVehicle(req.VehicleId, req.Reason, CurrentOperatorId() ?? 0);
             return Ok(new ApiResponse { Message = "车辆已报废" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     private int? CurrentOperatorId() =>

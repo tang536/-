@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS `rental_order` (
   KEY `idx_order_status` (`order_status`),
   -- 复合索引：超时待支付回收按「状态 + 创建时间」取数，单列索引只能命中其中一个条件
   KEY `idx_status_create` (`order_status`, `create_time`),
+  -- 归还 SQL 的「按车 + 按状态」二维过滤：NOT EXISTS 子查询只在索引内判状态，不回表扫历史订单
+  KEY `idx_vehicle_status` (`vehicle_id`, `order_status`),
   -- 数据库层的恒定业务事实：金额不为负、到期必须晚于起租（应用层已校验，这里兜住绕过服务层的写入）
   CONSTRAINT `ck_order_amount` CHECK (`total_rent` >= 0 AND `deposit` >= 0) ENFORCED,
   CONSTRAINT `ck_order_period` CHECK (`lease_end` > `lease_start`) ENFORCED
@@ -175,7 +177,9 @@ CREATE TABLE IF NOT EXISTS `maintenance_order` (
   UNIQUE KEY `uk_work_order_no` (`work_order_no`),
   KEY `idx_vehicle_id` (`vehicle_id`),
   KEY `idx_status` (`status`),
-  KEY `idx_create_time` (`create_time`)
+  KEY `idx_create_time` (`create_time`),
+  -- 维保完工放行：按车 + 按工单状态判定「还有没有其它未完成工单」
+  KEY `idx_vehicle_status` (`vehicle_id`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='维保工单表';
 
 -- 11. 报废记录表
@@ -358,6 +362,21 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
 --   CHECK (`lease_end` > `lease_start`) ENFORCED;
 -- CREATE INDEX `idx_status_create` ON `rental_order` (`order_status`, `create_time`);
 -- CREATE INDEX `idx_order_status` ON `payment_record` (`order_id`, `pay_status`);
+-- CREATE INDEX `idx_vehicle_status` ON `rental_order` (`vehicle_id`, `order_status`);
+-- CREATE INDEX `idx_vehicle_status` ON `maintenance_order` (`vehicle_id`, `status`);
+--
+-- ⚠ 唯一键补建（DbInitializer.EnsureSchemaIndexes 启动时自动执行）
+-- 用 EF EnsureCreated 建库时，模型没有配置 HasIndex/IsUnique，只会生成主键与外键索引，
+-- 本文件上面声明的 UNIQUE KEY 一条都不会落地。实测本机库 9 类唯一键全部缺失，
+-- 导致同一账号/同一车牌/同一订单号可以被写入两次。后端启动时会逐条探测并补建：
+-- ALTER TABLE `system_user`       ADD UNIQUE KEY `uk_login_account` (`login_account`);
+-- ALTER TABLE `customer`          ADD UNIQUE KEY `uk_id_card` (`id_card`);
+-- ALTER TABLE `vehicle`           ADD UNIQUE KEY `uk_vehicle_no` (`vehicle_no`);
+-- ALTER TABLE `rental_order`      ADD UNIQUE KEY `uk_order_no` (`order_no`);
+-- ALTER TABLE `maintenance_order` ADD UNIQUE KEY `uk_work_order_no` (`work_order_no`);
+-- ALTER TABLE `system_config`     ADD UNIQUE KEY `uk_config_key` (`config_key`);
+-- ALTER TABLE `car_check_list`    ADD UNIQUE KEY `uk_check_no` (`check_no`);
+-- ALTER TABLE `check_report`      ADD UNIQUE KEY `uk_report_no` (`report_no`);
 --
 -- 会话级等锁上限：业务事务内执行 SET SESSION innodb_lock_wait_timeout = 5，
 -- 避免 MySQL 默认的 50 秒把请求线程与连接池一起拖住（见 DbRowLock.PrepareAsync）。

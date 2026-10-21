@@ -64,8 +64,15 @@ public static class DbRowLock
             "SELECT `order_id` FROM `rental_order` WHERE `order_id` = @id FOR UPDATE",
             ("@id", orderId), ct);
         if (hit is null) return null;
-        // 同一事务内、已持锁 → 这条查询读到的是最新已提交值，且不会再被别人插队改写
-        return await db.RentalOrders.FirstOrDefaultAsync(o => o.OrderId == orderId, ct);
+        // ⚠ 必须 Reload：EF 查询遇到「已被跟踪」的实体会返回跟踪器里的那个实例，
+        // 并且**不用数据库值覆盖它的属性**。也就是说，若本次请求在事务外先读过这张订单，
+        // 上面那句 FOR UPDATE 虽然拿到了锁，下面这句却会返回**加锁前的旧状态**，
+        // 状态判定照样基于旧值——锁白加，而且不报错。
+        // ReloadAsync 会让 EF 重新查一次并覆盖当前值/原始值，拿到的是锁内真实状态。
+        var order = await db.RentalOrders.FirstOrDefaultAsync(o => o.OrderId == orderId, ct);
+        if (order is null) return null;
+        await db.Entry(order).ReloadAsync(ct);
+        return order;
     }
 
     /// <summary>锁住一张订单（按订单号）。支付回调只拿得到 out_trade_no，故提供此重载。</summary>
@@ -76,7 +83,7 @@ public static class DbRowLock
             "SELECT `order_id` FROM `rental_order` WHERE `order_no` = @no FOR UPDATE",
             ("@no", orderNo), ct);
         var id = hit is null ? 0 : Convert.ToInt32(hit);
-        return id == 0 ? null : await db.RentalOrders.FirstOrDefaultAsync(o => o.OrderId == id, ct);
+        return id == 0 ? null : await LockOrderAsync(db, id, ct);
     }
 
     /// <summary>
@@ -90,7 +97,10 @@ public static class DbRowLock
             "SELECT `pay_id` FROM `payment_record` WHERE `pay_id` = @id FOR UPDATE",
             ("@id", payId), ct);
         if (hit is null) return null;
-        return await db.PaymentRecords.FirstOrDefaultAsync(p => p.PayId == payId, ct);
+        var pay = await db.PaymentRecords.FirstOrDefaultAsync(p => p.PayId == payId, ct);
+        if (pay is null) return null;
+        await db.Entry(pay).ReloadAsync(ct);   // 同上：覆盖跟踪器里的旧 refund_amount
+        return pay;
     }
 
     /// <summary>
@@ -104,7 +114,10 @@ public static class DbRowLock
             "SELECT `customer_id` FROM `customer` WHERE `customer_id` = @id FOR UPDATE",
             ("@id", customerId), ct);
         if (hit is null) return null;
-        return await db.Customers.FirstOrDefaultAsync(c => c.CustomerId == customerId, ct);
+        var c = await db.Customers.FirstOrDefaultAsync(x => x.CustomerId == customerId, ct);
+        if (c is null) return null;
+        await db.Entry(c).ReloadAsync(ct);     // 同上：覆盖跟踪器里的旧等级/余额
+        return c;
     }
 
     /// <summary>
@@ -118,7 +131,10 @@ public static class DbRowLock
             "SELECT `config_id` FROM `system_config` WHERE `config_key` = @k FOR UPDATE",
             ("@k", key), ct);
         if (hit is null) return null;
-        return await db.SystemConfigs.FirstOrDefaultAsync(c => c.ConfigKey == key, ct);
+        var cfg = await db.SystemConfigs.FirstOrDefaultAsync(c => c.ConfigKey == key, ct);
+        if (cfg is null) return null;
+        await db.Entry(cfg).ReloadAsync(ct);   // 同上：覆盖跟踪器里的旧配置值
+        return cfg;
     }
 
     /// <summary>
@@ -143,6 +159,8 @@ public static class DbRowLock
 
         if (ids.Count == 0) return [];
         var orders = await db.RentalOrders.Where(o => ids.Contains(o.OrderId)).ToListAsync(ct);
+        // 同 LockOrderAsync：本批次可能有一部分已被跟踪过，强制用锁内真实值覆盖
+        foreach (var o in orders) await db.Entry(o).ReloadAsync(ct);
         // 按 id 顺序返回，保证多批处理的顺序稳定、便于排查
         return [.. orders.OrderBy(o => o.OrderId)];
     }

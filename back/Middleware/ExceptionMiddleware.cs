@@ -38,8 +38,9 @@ public class ExceptionMiddleware(
         }
         catch (Exception ex)
         {
-            // 完整异常（含堆栈）只进日志。业务异常按 Information 记，其余按 Error 记。
-            var isBusiness = IsBusinessException(ex);
+            // 完整异常（含堆栈）只进日志。业务异常与并发冲突按 Information 记，
+            // 它们是预期内的用户/并发问题，不该污染 Error 级别。
+            var isBusiness = ErrorText.IsBusiness(ex) || ex is ConcurrentOperationException;
             if (isBusiness)
                 _logger.LogInformation("请求 {Method} {Path} 业务校验未通过：{Message}",
                     context.Request.Method, context.Request.Path, ex.Message);
@@ -54,14 +55,12 @@ public class ExceptionMiddleware(
             if (!isBusiness && !AuditModules.IsWriteMethod(context.Request.Method))
                 await WriteFaultLogAsync(context, ex);
 
-            var dbMessage = DescribeDatabaseError(ex);
-            // 业务异常与数据库异常的消息是我们自己写的中文文案，可以安全下发；
-            // 其余（未预期异常）一律用通用文案，避免细节与堆栈外泄。
-            var safeMessage = isBusiness ? ex.Message
-                : dbMessage ?? "服务内部错误，请稍后重试";
+            // 文案统一交给 ErrorText：业务中文原样、数据库异常分类翻译、其余走通用文案。
+            // 控制器层那 68 处 catch 现在调用的是同一个方法，两条出口口径一致。
+            var safeMessage = ErrorText.Safe(ex);
 
-            var status = isBusiness ? (int)HttpStatusCode.BadRequest
-                : dbMessage != null ? (int)HttpStatusCode.BadRequest
+            var status = isBusiness || ErrorText.DescribeDatabase(ex) != null
+                ? (int)HttpStatusCode.BadRequest
                 : (int)HttpStatusCode.InternalServerError;
 
             context.Response.ContentType = "application/json; charset=utf-8";
@@ -103,54 +102,5 @@ public class ExceptionMiddleware(
         {
             _logger.LogWarning(logEx, "系统故障日志落库失败（不影响主流程）");
         }
-    }
-
-    /// <summary>
-    /// 业务异常识别：本项目约定「业务校验失败」直接 throw Exception(中文文案)，
-    /// 且文案里不含技术细节（见各 Service 的 throw 语句）。
-    /// 这里用「不含字母堆栈特征」做粗判——消息里出现空格分隔的英文标识符、
-    /// 或含 stack/at /Exception 等词，就当作未预期异常，走通用文案。
-    /// 宁可把个别业务提示降级成通用提示，也不能把技术细节漏出去。
-    /// </summary>
-    private static bool IsBusinessException(Exception ex)
-    {
-        // 明确的技术异常类型一律不算业务异常
-        if (ex is TaskCanceledException or OperationCanceledException
-            or TimeoutException or UnauthorizedAccessException) return false;
-        if (ex.GetType() != typeof(Exception)) return false;   // 自定义/框架异常类型不视作业务异常
-
-        // Exception.Message 契约上非 null，无需 ?? 兜底
-        var m = ex.Message;
-        if (m.Length is 0 or > 120) return false;
-        // 含异常技术特征 → 不是业务异常
-        return !(m.Contains("Exception") || m.Contains("    at ") || m.Contains("stack")
-            || m.Contains("System.") || m.Contains("Microsoft."));
-    }
-
-    /// <summary>
-    /// 沿 InnerException 链识别数据库异常并翻译成中文。
-    /// 按类型名匹配而不直接引用 MySqlConnector 类型，避免与 Pomelo 的传递依赖强耦合。
-    /// </summary>
-    private static string? DescribeDatabaseError(Exception ex)
-    {
-        for (var e = ex; e != null; e = e.InnerException)
-        {
-            var typeName = e.GetType().Name;
-            if (typeName is not ("MySqlException" or "DbUpdateException")) continue;
-
-            var detail = e.InnerException?.Message ?? e.Message;
-            if (detail.Contains("Duplicate entry"))
-                return "该数据已存在（编号 / 账号 / 身份证号等唯一字段重复），请修改后重试";
-            if (detail.Contains("foreign key constraint"))
-                return "该数据已被其他业务记录引用，无法删除或修改";
-            if (detail.Contains("Data too long"))
-                return "填写的内容超出长度限制，请精简后重试";
-            if (detail.Contains("doesn't have a default value") || detail.Contains("cannot be null"))
-                return "缺少必填字段，请补全后重试";
-            if (detail.Contains("Unknown column") || detail.Contains("doesn't exist"))
-                return "数据库结构与程序不一致，请先执行 database/schema.sql，或重启后端自动升级表结构";
-            return "数据库操作失败，请检查填写内容后重试";
-        }
-        return null;
     }
 }

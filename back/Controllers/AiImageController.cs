@@ -1,4 +1,4 @@
-using ERental.DTOs;
+﻿using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
 using ERental.Authorization;
@@ -61,7 +61,7 @@ public class AiImageController(AiImageService svc, AiProgressTracker tracker, IL
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "AI schema 生成失败：{Template}", template);
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false });
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
         }
     }
 
@@ -90,7 +90,7 @@ public class AiImageController(AiImageService svc, AiProgressTracker tracker, IL
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "AI 文生图失败：模板 {Template}", req.Template);
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false });
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
         }
     }
 
@@ -116,7 +116,7 @@ public class AiImageController(AiImageService svc, AiProgressTracker tracker, IL
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "AI 图生图失败：模板 {Template}", req.Template);
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false });
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
         }
     }
 }

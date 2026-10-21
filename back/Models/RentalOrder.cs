@@ -41,6 +41,17 @@ public class RentalOrder
     [Column("deposit", TypeName = "decimal(10,2)")]
     public decimal Deposit { get; init; }
 
+    /// <summary>
+    /// 订单状态。**带乐观并发令牌**（理由同 <see cref="Vehicle.VehicleStatus"/>）。
+    ///
+    /// 订单状态的写入有两条路径：锁内改（<c>DbRowLock.LockOrderAsync</c> 重读后写，安全）
+    /// 与裸 SQL / 另一实例的写入。没有并发令牌时，EF 的
+    /// <c>UPDATE rental_order SET order_status=@new WHERE order_id=@id</c>
+    /// 会把「读」与「写」之间别人做的状态迁移**静默覆盖**——
+    /// 典型是超时回收把「已支付」的单改成「已取消」，钱收了单没了。
+    /// 加上之后 EF 会比对原值，冲突就抛 <c>DbUpdateConcurrencyException</c>，由调用方重读重判。
+    /// </summary>
+    [ConcurrencyCheck]
     [MaxLength(10)]
     [Column("order_status")]
     public string OrderStatus { get; set; } = "待支付";

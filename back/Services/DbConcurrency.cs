@@ -3,19 +3,32 @@ using System.Reflection;
 namespace ERental.Services;
 
 /// <summary>
+/// 并发冲突（等锁超时 / 数据被他人抢先修改）的业务异常。
+///
+/// 单独定义类型而不是 <c>throw new Exception("中文")</c>，是为了让
+/// <see cref="ErrorText.Safe"/> 能明确区分「这是我们自己写的可读文案」与
+/// 「驱动抛上来的英文原文」——后者绝不能下发到前端。
+/// </summary>
+public sealed class ConcurrentOperationException(string message) : Exception(message);
+
+/// <summary>
 /// 数据库并发冲突的识别与重试。
 ///
-/// 引入行级锁之后，「等锁超时」和「死锁」从理论问题变成了**必然会发生**的正常事件：
-/// InnoDB 检测到环形等待时会主动回滚其中一方（错误 1213），等锁超过
-/// <see cref="DbRowLock.LockWaitTimeoutSeconds"/> 秒会报 1205。这两种情况都不是业务错误，
-/// 正确做法是**整段事务重来一次**——数据库已经回滚干净，重放是安全的。
+/// 引入行级锁之后，「等锁超时」和「死锁」从理论问题变成了**必然会发生**的正常事件。
+/// 但两者性质完全不同，处理方式也必须分开：
+///
+///   ① 死锁（1213）：InnoDB 检测到环形等待，已经**主动回滚了其中一方**的事务。
+///      数据库处于干净状态，重放整段事务是安全的，重试有效 → 最多 3 次。
+///   ② 等锁超时（1205）：持锁者的**事务还在跑**（典型场景：结算事务里正在调支付网关）。
+///      重试时锁依然被占着，几乎必然再次超时。原实现把两者都重试 3 次，
+///      实测一次并发结算要 5s × 3 = **15.36 秒**才返回，而前端 axios 的超时正好是 15000ms
+///      （front/src/api/index.ts）——用户看到的是「请求超时，请检查网络」，
+///      真实原因（同事正在处理这张单）一个字都没传达到。
+///      现在改为：等锁超时**不重试**，立即翻译成「该单据正在被其他同事处理，请稍后刷新后重试」。
 ///
 /// 为什么必须重放整段事务而不是只重试那条 SQL：
 /// 死锁回滚的是整个事务，事务内已经执行过的写入全部失效；若只重试最后一句，
 /// 会写出一半的数据（例如订单已置「已完结」但结算单被回滚）。
-///
-/// 重试次数取 3：单次冲突概率很低，连续三次撞上说明有长事务在压着同一批行，
-/// 继续重试只是把请求拖长，不如把错误抛给前台（文案里已经提示「请重试」）。
 /// </summary>
 public static class DbConcurrency
 {
@@ -30,18 +43,33 @@ public static class DbConcurrency
 
     private const int DefaultAttempts = 3;
 
-    /// <summary>该异常是否属于「可以整段重放」的并发冲突。</summary>
-    public static bool IsRetryable(Exception ex)
+    /// <summary>等锁超时时给用户看的话。前端会把这句话原样弹出来。</summary>
+    private const string BusyMessage = "该单据正在被其他同事处理，请稍后刷新后重试";
+
+    /// <summary>死锁（事务已被回滚，可整段重放）。</summary>
+    public static bool IsDeadlock(Exception ex)
     {
         foreach (var e in Walk(ex))
         {
-            if (ReadNumber(e) is ErDeadlock or ErLockWaitTimeout) return true;
-            // 兜底：某些包装层会吞掉 Number，只留原始英文消息（如连接池重置后暴露的 SQL 文本）
+            if (ReadNumber(e) is ErDeadlock) return true;
             if (e.Message.Contains("Deadlock found", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>等锁超时（持锁者仍在事务中，重试没有意义）。</summary>
+    public static bool IsLockWaitTimeout(Exception ex)
+    {
+        foreach (var e in Walk(ex))
+        {
+            if (ReadNumber(e) is ErLockWaitTimeout) return true;
             if (e.Message.Contains("Lock wait timeout exceeded", StringComparison.OrdinalIgnoreCase)) return true;
         }
         return false;
     }
+
+    /// <summary>是否属于「可以整段重放」的并发冲突。只剩死锁一种。</summary>
+    public static bool IsRetryable(Exception ex) => IsDeadlock(ex);
 
     /// <summary>该异常是否是唯一键冲突（调用方据此把「重复写入」翻译成业务文案）。</summary>
     public static bool IsDuplicateKey(Exception ex)
@@ -55,14 +83,14 @@ public static class DbConcurrency
     }
 
     /// <summary>
-    /// 执行一段「自带事务」的操作，遇到死锁/等锁超时自动整段重放。
+    /// 执行一段「自带事务」的操作：遇到死锁整段重放，遇到等锁超时立即失败。
     /// <paramref name="action"/> 内部必须自己 <c>BeginTransaction</c> 并在异常时回滚，
     /// 这样每次重放都是一次干净的事务。
     /// </summary>
     /// <param name="action">要执行的操作（每次调用都应是全新的 DbContext 状态或已回滚的事务）</param>
     /// <param name="logger">日志；冲突重试会以 Warning 记录，便于观察真实并发压力</param>
     /// <param name="scope">日志里的场景名，如「订单结算」</param>
-    /// <param name="attempts">最多尝试次数（含首次）</param>
+    /// <param name="attempts">最多尝试次数（含首次），只对死锁生效</param>
     /// <param name="reset">
     /// 重试前的清理动作（通常是 <c>() =&gt; db.ChangeTracker.Clear()</c>）。
     /// 事务虽然已回滚，但 DbContext 的变更跟踪器仍保留上次的临时状态，不清掉会重复提交。
@@ -77,7 +105,7 @@ public static class DbConcurrency
             {
                 return await action();
             }
-            catch (Exception ex) when (IsRetryable(ex) && attempt < attempts)
+            catch (Exception ex) when (IsDeadlock(ex) && attempt < attempts)
             {
                 // 事务已回滚，但 DbContext 的变更跟踪器还记着上次的临时状态（新增实体、已改属性），
                 // 不清掉的话重放时会把同一批写入再提交一遍。
@@ -86,9 +114,15 @@ public static class DbConcurrency
                 // 抖动退避：20ms / 40ms 再叠 0~20ms 随机，避免两个冲突方按同一节奏再次对撞
                 var delay = (20 * attempt) + Random.Shared.Next(0, 20);
                 logger.LogWarning(ex,
-                    "{Scope} 遇到数据库并发冲突（第 {Attempt}/{Total} 次），{Delay}ms 后整段重试",
+                    "{Scope} 遇到死锁（第 {Attempt}/{Total} 次），{Delay}ms 后整段重试",
                     scope, attempt, attempts, delay);
                 await Task.Delay(delay);
+            }
+            catch (Exception ex) when (IsLockWaitTimeout(ex))
+            {
+                // 不再重试：锁还压在别人手里，再等 10 秒只会把「5 秒知道结果」拖成「15 秒后超时」。
+                logger.LogWarning(ex, "{Scope} 等锁超时，判定为并发冲突，直接返回业务提示", scope);
+                throw new ConcurrentOperationException(BusyMessage);
             }
         }
     }

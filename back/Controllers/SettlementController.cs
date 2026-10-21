@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
@@ -30,7 +30,7 @@ public class SettlementController(SettlementService svc) : ControllerBase
     public async Task<IActionResult> Preview(int orderId)
     {
         try { return Ok(new ApiResponse<SettlePreviewDto> { Data = await _svc.Preview(orderId) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPost("settle")]
@@ -42,6 +42,6 @@ public class SettlementController(SettlementService svc) : ControllerBase
             var result = await _svc.Settle(dto, opId);
             return Ok(new ApiResponse<object> { Data = result.Record, Message = result.Message });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 }

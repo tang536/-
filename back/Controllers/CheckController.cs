@@ -23,7 +23,7 @@ public class CheckController(CheckService svc) : ControllerBase
     public async Task<IActionResult> AddCheck([FromBody] CheckRequest req)
     {
         try { return Ok(new ApiResponse<CarCheckList> { Data = await _svc.AddCheck(req.VehicleId, req.ActualStatus, req.DiffDesc) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpGet("reports")]

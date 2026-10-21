@@ -23,6 +23,6 @@ public class RenewalController(RenewalService svc) : ControllerBase
     public async Task<IActionResult> Create([FromBody] RenewalRequest req)
     {
         try { return Ok(new ApiResponse<RenewalRecord> { Data = await _svc.Create(req.OrderId, req.Hours) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 }

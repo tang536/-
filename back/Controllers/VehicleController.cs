@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
@@ -51,7 +51,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     public async Task<IActionResult> GetById(int id)
     {
         try { return Ok(new ApiResponse<Vehicle> { Data = await _svc.GetById(id) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -68,7 +68,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     public async Task<IActionResult> GetByQrCode([FromQuery] string? code)
     {
         try { return Ok(new ApiResponse<VehicleQrDetailDto> { Data = await _svc.GetByQrCode(code) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>某辆车的租赁记录（车辆档案详情弹窗与二维码弹窗共用）</summary>
@@ -77,7 +77,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     public async Task<IActionResult> GetOrderHistory(int id)
     {
         try { return Ok(new ApiResponse<List<VehicleOrderBriefDto>> { Data = await _svc.GetOrderHistory(id) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>最近热销车辆：顾客线上租车页的推荐位，故对顾客一并开放</summary>
@@ -105,7 +105,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
             var url = await _svc.SetImage(id, file);
             return Ok(new ApiResponse<object> { Data = new { url }, Message = "车辆图片已上传" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -121,7 +121,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
             await _svc.SetImageUrl(id, dto.Url);
             return Ok(new ApiResponse<object> { Message = string.IsNullOrWhiteSpace(dto.Url) ? "车辆图片已清除" : "车辆图片已更新" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>清除车辆图片</summary>
@@ -134,7 +134,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
             await _svc.SetImage(id, null);
             return Ok(new ApiResponse<object> { Message = "车辆图片已清除" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPost]
@@ -142,7 +142,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     public async Task<IActionResult> Create([FromBody] Vehicle v)
     {
         try { return Ok(new ApiResponse<Vehicle> { Data = await _svc.Create(v) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -164,7 +164,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
                     : $"成功 {data.SuccessCount} / 共 {data.Total} 辆"
             });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -191,7 +191,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
                     : $"成功 {data.SuccessCount} / 共 {data.Total} 辆"
             });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -212,7 +212,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
             await _svc.Update(id, v, uid);
             return Ok(new ApiResponse<object> { Message = "更新成功" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpDelete("{id:int}")]
@@ -220,7 +220,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     public async Task<IActionResult> Delete(int id)
     {
         try { await _svc.Delete(id); return Ok(new ApiResponse<object> { Message = "删除成功" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -240,6 +240,6 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
             await _svc.UpdateStatus(id, dto.Status, uid);
             return Ok(new ApiResponse<object> { Message = "状态更新成功" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 }

@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
@@ -86,7 +86,7 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
         catch (Exception ex)
         {
             // 与下钻同处理：明细块失败只让这一块显示「异常 + 重试」，不拖垮整个报表页
-            return Ok(new ApiResponse<VehicleStatDto> { Code = 500, Success = false, Message = ex.Message, Data = null });
+            return Ok(new ApiResponse<VehicleStatDto> { Code = 500, Success = false, Message = ErrorText.Safe(ex), Data = null });
         }
     }
 
@@ -106,7 +106,7 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
         }
         catch (Exception ex)
         {
-            return Ok(new ApiResponse<MaintenanceStatDto> { Code = 500, Success = false, Message = ex.Message, Data = null });
+            return Ok(new ApiResponse<MaintenanceStatDto> { Code = 500, Success = false, Message = ErrorText.Safe(ex), Data = null });
         }
     }
 
@@ -135,7 +135,7 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
             {
                 Code = 500,
                 Success = false,
-                Message = ex.Message,
+                Message = ErrorText.Safe(ex),
                 Data = null
             });
         }
@@ -147,6 +147,6 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
     public async Task<IActionResult> Reconcile(DateTime from, DateTime to)
     {
         try { return Ok(new ApiResponse<object> { Data = await _settleSvc.Reconcile(from, to) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 }

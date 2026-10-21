@@ -231,6 +231,69 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
         // 分工：行锁管「同一时刻谁先谁后」，数据库约束管「万一应用层漏了、或有人直接连库改数据」。
         // 触发次数越少越好，但一旦触发就是最后的兜底，宁可报错也不能落脏数据。
         EnsureConcurrencyConstraints(db);
+
+        // ── 表定义里声明、但历史上没落地的唯一键与复合索引 ──
+        // 见 EnsureSchemaIndexes 的注释：这是本轮审计发现的「schema.sql 与真实库不一致」。
+        EnsureSchemaIndexes(db);
+    }
+
+    /// <summary>
+    /// 补齐 <c>database/schema.sql</c> 里声明、但实际库里**从来没有建过**的唯一键与复合索引。
+    ///
+    /// ── 为什么会漏 ──
+    /// 建表走的是 EF 的 <c>EnsureCreated</c>：它按实体模型生成 DDL，而模型里没有配置
+    /// <c>HasIndex</c> / <c>IsUnique</c>，于是只产出主键 + 外键自动索引（名字是 <c>IX_xxx</c>）。
+    /// <c>schema.sql</c> 里那些 <c>UNIQUE KEY uk_xxx</c> 只在「手工导入 schema.sql」时才会生效，
+    /// 用程序建库的路径一条都没落地。实测本机库：17 张表只有主键与 8 个外键索引，
+    /// 9 类唯一键全部缺失。
+    ///
+    /// ── 缺了会怎样（不是理论问题）──
+    ///   · <c>system_user.uk_login_account</c>：同一账号可被注册两次，登录时取到哪条全看执行计划；
+    ///   · <c>system_config.uk_config_key</c>：会员购买意向键可重复插入，
+    ///     而 <see cref="DbRowLock.LockConfigAsync"/> 锁的是「已存在的行」——
+    ///     行不存在时 <c>FOR UPDATE</c> 锁不住任何东西，两个并发请求会各插一条，各发一次货；
+    ///   · <c>rental_order.uk_order_no</c>：订单号撞车不再报错，两张不同的单共用一个号，
+    ///     支付回调按 order_no 反查会命中先插入的那条；
+    ///   · <c>vehicle.uk_vehicle_no</c> / <c>customer.uk_id_card</c>：同一辆车、同一个身份证可重复建档。
+    ///
+    /// ── 为什么放在这里用代码补，而不是改 schema.sql ──
+    /// 老库已经跑起来了，改 <c>CREATE TABLE</c> 语句不会回头影响已存在的表。
+    /// 只有「启动时幂等补建」才能让存量库和新库走出同一个结果。
+    /// 存量重复数据会跳过该项并打印，不阻断启动。
+    /// </summary>
+    private static void EnsureSchemaIndexes(AppDbContext db)
+    {
+        // ① 唯一键：与 database/schema.sql 的声明逐条对应
+        EnsureUniqueIndex(db, "system_user", "uk_login_account", "`login_account`",
+            "同一登录账号只能存在一个用户");
+        EnsureUniqueIndex(db, "customer", "uk_id_card", "`id_card`",
+            "同一身份证只能绑定一个客户档案");
+        EnsureUniqueIndex(db, "vehicle", "uk_vehicle_no", "`vehicle_no`",
+            "同一车牌号只能有一辆车");
+        EnsureUniqueIndex(db, "rental_order", "uk_order_no", "`order_no`",
+            "订单号唯一（支付回调按 order_no 反查，重复会串单）");
+        EnsureUniqueIndex(db, "maintenance_order", "uk_work_order_no", "`work_order_no`",
+            "工单号唯一");
+        EnsureUniqueIndex(db, "system_config", "uk_config_key", "`config_key`",
+            "配置键唯一（并发锁依赖它锁到确定的行）");
+        EnsureUniqueIndex(db, "car_check_list", "uk_check_no", "`check_no`",
+            "盘点单号唯一");
+        EnsureUniqueIndex(db, "check_report", "uk_report_no", "`report_no`",
+            "盘点报表号唯一");
+
+        // ② 复合索引：归还/占用的核心 SQL 都是「按车 + 按状态」二维过滤
+        //
+        // VehicleLeaseGuard.TryReleaseAsync 的语义是
+        //   UPDATE vehicle ... WHERE vehicle_id=? AND NOT EXISTS (
+        //       SELECT 1 FROM rental_order WHERE vehicle_id=? AND order_id<>? AND order_status IN (...))
+        // 只有单列 vehicle_id 索引时，执行计划是「按车取出全部历史订单 → 回表 → 过滤状态」，
+        // 一辆跑了两年的车会拖着上百条已完结订单一起回表。加上 (vehicle_id, order_status)
+        // 之后状态过滤落在索引里，回表行数只剩「仍在占用的订单」——通常 0~1 条。
+        EnsureCompositeIndex(db, "rental_order", "idx_vehicle_status",
+            "`vehicle_id`, `order_status`", "车辆占用/归还判定：按车 + 按状态");
+        // 维保完工放行同理：WHERE vehicle_id=? AND work_order_id<>? AND status<>'已完成'
+        EnsureCompositeIndex(db, "maintenance_order", "idx_vehicle_status",
+            "`vehicle_id`, `status`", "维保放行判定：按车 + 按工单状态");
     }
 
     /// <summary>

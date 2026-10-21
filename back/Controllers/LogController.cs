@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using ERental.Models;
 using ERental.Services;
 using ERental.Authorization;
@@ -68,7 +68,7 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
         }
         catch (Exception ex)
         {
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = $"备份失败：{ex.Message}", Success = false });
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = $"备份失败：{ErrorText.Safe(ex)}", Success = false });
         }
     }
 
@@ -89,7 +89,7 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
         }
         catch (Exception ex)
         {
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false });
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
         }
     }
 
@@ -124,9 +124,9 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
         }
         catch (Exception ex)
         {
-            await _svc.WriteLog(CurrentUserId, $"从备份 {req.FileName} 恢复失败：{ex.Message}",
+            await _svc.WriteLog(CurrentUserId, $"从备份 {req.FileName} 恢复失败（{ex.GetType().Name}）",
                 "系统管理", "失败", ClientIp);
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = $"恢复失败：{ex.Message}", Success = false });
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = $"恢复失败：{ErrorText.Safe(ex)}", Success = false });
         }
     }
 

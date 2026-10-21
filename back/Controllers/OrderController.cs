@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
@@ -47,7 +47,7 @@ public class OrderController(OrderService svc) : ControllerBase
                 return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权查看该订单", Success = false });
             return Ok(new ApiResponse<object> { Data = order });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>线下开单。客户信息系统中不存在时，服务端自动建档再生成订单</summary>
@@ -60,7 +60,7 @@ public class OrderController(OrderService svc) : ControllerBase
             var order = await _svc.Create(dto, CurrentUserId);
             return Ok(new ApiResponse<object> { Data = OrderResult(order), Message = "订单创建成功" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>线上下单（仅顾客）：必须先完成实名认证；客户身份取自 Token，忽略前端传入的 ID</summary>
@@ -73,7 +73,7 @@ public class OrderController(OrderService svc) : ControllerBase
             var order = await _svc.CreateOnline(CurrentUserId, dto);
             return Ok(new ApiResponse<object> { Data = OrderResult(order), Message = "线上下单成功，可打印小票" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>线上可租车辆（仅顾客）：只返回空闲车辆的窄字段，不暴露经营数据</summary>
@@ -88,7 +88,7 @@ public class OrderController(OrderService svc) : ControllerBase
     public async Task<IActionResult> Estimate(DateTime leaseStart, DateTime leaseEnd, int? vehicleId)
     {
         try { return Ok(new ApiResponse<RentEstimateDto> { Data = await _svc.Estimate(CurrentUserId, leaseStart, leaseEnd, vehicleId) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -101,7 +101,7 @@ public class OrderController(OrderService svc) : ControllerBase
     public async Task<IActionResult> StaffEstimate(int customerId, DateTime leaseStart, DateTime leaseEnd, int? vehicleId)
     {
         try { return Ok(new ApiResponse<RentEstimateDto> { Data = await _svc.Estimate(customerId, leaseStart, leaseEnd, vehicleId) }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPut("{id:int}/cancel")]
@@ -109,7 +109,7 @@ public class OrderController(OrderService svc) : ControllerBase
     public async Task<IActionResult> Cancel(int id, [FromBody] string reason)
     {
         try { await _svc.Cancel(id, reason); return Ok(new ApiResponse<object> { Message = "订单已取消" }); }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>
@@ -126,7 +126,7 @@ public class OrderController(OrderService svc) : ControllerBase
             await _svc.CancelByCustomer(id, CurrentUserId);
             return Ok(new ApiResponse<object> { Message = "订单已取消，车辆已释放" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>顾客申请还车（无论是否到期）。审核留给前台：顾客自己点就把钱退了，门店对车况与费用会失去控制</summary>
@@ -139,7 +139,7 @@ public class OrderController(OrderService svc) : ControllerBase
             await _svc.RequestEarlyReturn(id, CurrentUserId);
             return Ok(new ApiResponse<object> { Message = "还车申请已提交，请等待门店审核" });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>前台审核还车申请：approve=true 通过（随后走归还结算，超时费按倍数自动计），false 驳回。</summary>
@@ -155,7 +155,7 @@ public class OrderController(OrderService svc) : ControllerBase
                 Message = dto.Approve ? "已通过还车申请，请完成归还结算" : "已驳回该还车申请"
             });
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ex.Message, Success = false }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     /// <summary>开单结果投影：只回传前端需要的字段，避免直接序列化 EF 实体形成导航环</summary>
