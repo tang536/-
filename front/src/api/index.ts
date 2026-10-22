@@ -492,7 +492,10 @@ export const logApi = {
 // 续租
 export const renewalApi = {
   list: (orderId?: number) => api.get('/renewal', { params: { orderId } }),
-  create: (data: { orderId: number; days: number }) => api.post('/renewal', data)
+  // 界面按「天」录入，后端按「小时」计费（RenewalRequest.Hours）：
+  // 换算放在这一层，调用方继续传 days，避免界面与接口口径各写一遍。
+  create: (data: { orderId: number; days: number }) =>
+    api.post('/renewal', { orderId: data.orderId, hours: data.days * 24 })
 }
 
 // 车辆盘点
