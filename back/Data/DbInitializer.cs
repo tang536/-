@@ -417,7 +417,7 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
         try
         {
             var raw = Convert.ToString(Scalar(db, "SELECT VERSION()")) ?? "";
-            if (!System.Version.TryParse(CleanVersion(raw), out var v)) return false;
+            if (!Version.TryParse(CleanVersion(raw), out var v)) return false;
             if (v.Major != 8) return v.Major > 8;
             // 8.x：8.0.16 起支持；8.1+ 全支持
             return v.Minor > 0 || v.Build >= 16;
