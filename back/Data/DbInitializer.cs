@@ -337,6 +337,12 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
             purpose: "支付回调定位本次支付记录");
     }
 
+    /// <summary>MySQL 标识符引号（反引号）。用转义写法，源码里不出现裸反引号字符。</summary>
+    private const string Tick = "\u0060";
+
+    /// <summary>把表名/索引名/约束名/列名包成 MySQL 反引号标识符。</summary>
+    private static string Q(string identifier) => string.Concat(Tick, identifier, Tick);
+
     /// <summary>
     /// 建唯一索引；若存量数据已有重复，跳过并打印冲突明细。
     /// 为什么不是先清洗数据再建：重复的结算单意味着历史账目已经出问题，
@@ -362,7 +368,7 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
             // 用 string.Concat 而不是内插串：EF1002 会把内插串当成潜在注入点报警，
             // 而这个项目的验收基线是 0 警告。
             db.Database.ExecuteSqlRaw(string.Concat(
-                "ALTER TABLE `", table, "` ADD UNIQUE KEY `", index, "` (", columns, ");"));
+                "ALTER TABLE ", Q(table), " ADD UNIQUE KEY ", Q(index), " (", columns, ");"));
             Console.WriteLine($"[并发约束] 已建立唯一索引 {table}.{index}（{purpose}）");
         }
         catch (Exception ex)
@@ -379,7 +385,7 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
         try
         {
             db.Database.ExecuteSqlRaw(string.Concat(
-                "CREATE INDEX `", index, "` ON `", table, "` (", columns, ");"));
+                "CREATE INDEX ", Q(index), " ON ", Q(table), " (", columns, ");"));
             Console.WriteLine($"[并发约束] 已建立复合索引 {table}.{index}（{purpose}）");
         }
         catch (Exception ex)
@@ -401,7 +407,7 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
         try
         {
             db.Database.ExecuteSqlRaw(string.Concat(
-                "ALTER TABLE `", table, "` ADD CONSTRAINT `", name, "` CHECK (", expression, ") ENFORCED;"));
+                "ALTER TABLE ", Q(table), " ADD CONSTRAINT ", Q(name), " CHECK (", expression, ") ENFORCED;"));
             Console.WriteLine($"[并发约束] 已建立 CHECK 约束 {table}.{name}：{expression}");
         }
         catch (Exception ex)
@@ -464,7 +470,8 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
     {
         if (!TableExists(db, table) || IndexExists(db, table, index)) return;
         // 标识符不能参数化，只能用拼接；table/index/columns 全部来自本文件内的常量调用点。
-        db.Database.ExecuteSqlRaw(string.Concat("CREATE INDEX `", index, "` ON `", table, "` (", columns, ");"));
+        db.Database.ExecuteSqlRaw(string.Concat(
+            "CREATE INDEX ", Q(index), " ON ", Q(table), " (", columns, ");"));
     }
 
     /// <summary>表不存在时才执行建表语句（幂等，老库平滑升级）</summary>

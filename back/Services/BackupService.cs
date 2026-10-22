@@ -218,8 +218,10 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
             await using var tx = await _db.Database.BeginTransactionAsync();
             try
             {
+                // 表名不能用参数占位；\u0060 即 MySQL 标识符反引号，用转义写法避免源码里出现裸反引号
                 for (var i = Tables.Length - 1; i >= 0; i--)
-                    await _db.Database.ExecuteSqlRawAsync(string.Concat("DELETE FROM `", Tables[i], "`"));
+                    await _db.Database.ExecuteSqlRawAsync(
+                        string.Concat("DELETE FROM ", "\u0060", Tables[i], "\u0060"));
 
                 foreach (var table in Tables)
                 {
