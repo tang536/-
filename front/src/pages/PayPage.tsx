@@ -6,6 +6,7 @@ import Icon from '@/components/Icon'
 import ReceiptModal from '@/components/ReceiptModal'
 // 渠道的图标/配色/说明集中在 utils/payChannels.ts（支付页、模拟收银台、结果页共用一份）
 import { PAY_CHANNEL_META, PAY_CHANNELS, DEFAULT_PAY_TYPE } from '../utils/payChannels'
+import { qrSvg } from '../utils/qrcode'
 
 /** 轮询间隔与上限：30 次 × 3s ≈ 90s，超时提示用户手动刷新，避免无限轮询 */
 const POLL_INTERVAL = 3000
@@ -25,6 +26,9 @@ export default function PayPage() {
   const [paid, setPaid] = useState(false)
   const [receipt, setReceipt] = useState<string | null>(null)
   const [pollCount, setPollCount] = useState(0)
+  // 微信 Native 扫码：下单拿到 code_url 后在本页渲成二维码，页面不跳转，靠轮询感知入账。
+  // 与 payUrl 二选一——服务端保证两者互斥，这里据「有没有二维码」决定走哪条渲染分支。
+  const [qrHtml, setQrHtml] = useState('')
   // 待支付倒计时（本地每秒递减），与「我的订单」页保持同一套超时口径
   const [now, setNow] = useState(Date.now())
 
@@ -105,10 +109,16 @@ export default function PayPage() {
     setPaying(true)
     try {
       const res: any = await paymentApi.create({ orderNo: order.orderNo, payType })
-      const { payUrl, realPay } = res.data
+      const { payUrl, realPay, qrCode } = res.data
 
-      if (realPay) {
-        // 真实支付宝：跳转官方沙箱收银台。付款后支付宝会跳回 return_url，
+      if (qrCode) {
+        // 微信 Native 扫码：不跳页。下单已拿到 code_url，渲成二维码等用户扫，
+        // 入账仍以微信异步回调为准，这里只开轮询感知状态变化。
+        setQrHtml(await qrSvg(qrCode, { size: 240 }))
+        startPolling()
+        toast('请用微信扫描二维码完成支付', 'info')
+      } else if (realPay) {
+        // 真实跳转通道（支付宝网关 / 微信 H5）：付款后平台会跳回 return_url，
         // 同时服务端收到异步回调完成入账；这里开轮询兜底感知。
         startPolling()
         window.location.href = payUrl
@@ -211,7 +221,7 @@ export default function PayPage() {
                 <div
                   key={name}
                   className={`pay-method ${payType === name ? 'active' : ''}`}
-                  onClick={() => setPayType(name)}
+                  onClick={() => { setPayType(name); setQrHtml('') }}
                 >
                   <span className="pay-method-icon" style={{ background: meta.color }}>
                     <Icon name={meta.icon} size={18} color="#fff" />
@@ -224,6 +234,16 @@ export default function PayPage() {
                 </div>
               ))}
             </div>
+
+            {qrHtml && (
+              <div className="pay-qr">
+                <div className="pay-qr-code" dangerouslySetInnerHTML={{ __html: qrHtml }} />
+                <div className="pay-qr-tip">
+                  <strong>请用微信「扫一扫」完成付款</strong>
+                  <p>付款后本页会自动更新为已支付，无需手动刷新；二维码有效期与订单待支付时限一致。</p>
+                </div>
+              </div>
+            )}
 
             <div className="form-actions" style={{ marginTop: 16 }}>
               <button className="btn-sm btn-sm-primary" onClick={handlePay} disabled={paying || (payRemain !== null && payRemain <= 0)}>

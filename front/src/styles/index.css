@@ -2157,6 +2157,23 @@ a.header-icon-btn { color: inherit; text-decoration: none; }
 }
 .pay-radio.on { border-color: var(--primary, #2563eb); background: radial-gradient(circle, var(--primary, #2563eb) 0 5px, transparent 5px); }
 
+/* ---- 微信 Native 扫码区（下单后留在本页，不跳转） ---- */
+.pay-qr {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin-top: 16px; padding: 16px;
+  border: 1.5px dashed #07c160; border-radius: var(--radius-sm);
+  background: rgba(7, 193, 96, .04);
+}
+.pay-qr-code {
+  width: 168px; height: 168px; flex: none; padding: 6px;
+  background: #fff; border-radius: 8px; box-shadow: 0 1px 6px rgba(15, 23, 42, .08);
+}
+/* qrcode 库出的是 svg：强制填满容器，避免固定 width/height 撑破卡片 */
+.pay-qr-code svg { display: block; width: 100%; height: 100%; }
+.pay-qr-tip { flex: 1; min-width: 200px; }
+.pay-qr-tip strong { display: block; font-size: 14px; color: var(--text); margin-bottom: 4px; }
+.pay-qr-tip p { font-size: 12px; line-height: 1.6; color: var(--text-muted); margin: 0; }
+
 /* ---- 模拟收银台（独立全屏页） ---- */
 .mock-pay-wrap {
   min-height: 100vh; display: flex; align-items: center; justify-content: center;

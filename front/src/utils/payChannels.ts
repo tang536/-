@@ -13,7 +13,7 @@ import type { IconName } from '@/components/Icon'
  */
 export const PAY_CHANNEL_META: Record<string, { icon: IconName; color: string; desc: string }> = {
   支付宝: { icon: 'settlements', color: '#1677ff', desc: '跳转支付宝沙箱收银台（真实对接）' },
-  微信: { icon: 'qrcode', color: '#07c160', desc: '微信支付 H5 收银台（配置商户凭证后走正式通道）' },
+  微信: { icon: 'qrcode', color: '#07c160', desc: '微信支付（扫码或 H5，按支付配置下发；凭证齐全后走正式通道）' },
   银行卡: { icon: 'print', color: '#7c3aed', desc: '储蓄卡 / 信用卡（配置网关凭证后走正式通道）' },
 }
 

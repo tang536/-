@@ -68,6 +68,10 @@ interface FormState {
   wechatCertSerial: string
   wechatPrivateKey: string
   wechatNotifyUrl: string
+  /** 微信支付公钥：**只**用于回调验签；不填则回调一律验签失败（能付款、不入账） */
+  wechatPlatformKey: string
+  /** 下单方式：h5 = 跳转收银台（企业+备案域名）；native = 页面出二维码让用户扫 */
+  wechatPayMode: 'h5' | 'native'
 
   // 银行卡（通用收银网关正式通道）
   bankEnabled: boolean
@@ -88,6 +92,7 @@ const EMPTY_FORM: FormState = {
   sandboxAppId: '', sandboxPid: '', sandboxPrivateKey: '', sandboxAlipayPublicKey: '', sandboxGateway: '',
   wechatEnabled: false,
   wechatAppId: '', wechatMchId: '', wechatApiV3Key: '', wechatCertSerial: '', wechatPrivateKey: '', wechatNotifyUrl: '',
+  wechatPlatformKey: '', wechatPayMode: 'h5',
   bankEnabled: false,
   bankMerchantNo: '', bankGateway: '', bankSignKey: '', bankNotifyUrl: '', bankRefundUrl: '',
   notifyUrl: '', returnUrl: '',
@@ -246,6 +251,9 @@ export default function PayConfigPanel() {
         wechatCertSerial: '',
         wechatPrivateKey: '',
         wechatNotifyUrl: d.wechatNotifyUrl || '',
+        // 密钥类字段一律回显空串：后端只下发脱敏值，留空表示「保持不变」
+        wechatPlatformKey: '',
+        wechatPayMode: d.wechatPayMode === 'native' ? 'native' : 'h5',
         bankEnabled: !!d.bankEnabled,
         bankMerchantNo: d.bankMerchantNo || '',
         bankGateway: d.bankGateway || '',
@@ -298,6 +306,7 @@ export default function PayConfigPanel() {
         wechatMchId: form.wechatMchId.trim(),
         wechatCertSerial: form.wechatCertSerial.trim(),
         wechatNotifyUrl: form.wechatNotifyUrl.trim(),
+        wechatPayMode: form.wechatPayMode,
         bankEnabled: form.bankEnabled,
         bankMerchantNo: form.bankMerchantNo.trim(),
         bankGateway: form.bankGateway.trim(),
@@ -312,6 +321,7 @@ export default function PayConfigPanel() {
       if (form.sandboxAlipayPublicKey.trim()) payload.sandboxAlipayPublicKey = form.sandboxAlipayPublicKey.trim()
       if (form.wechatApiV3Key.trim()) payload.wechatApiV3Key = form.wechatApiV3Key.trim()
       if (form.wechatPrivateKey.trim()) payload.wechatPrivateKey = form.wechatPrivateKey.trim()
+      if (form.wechatPlatformKey.trim()) payload.wechatPlatformKey = form.wechatPlatformKey.trim()
       if (form.bankSignKey.trim()) payload.bankSignKey = form.bankSignKey.trim()
 
       const res: any = await paymentApi.saveConfig(payload)
@@ -532,9 +542,11 @@ export default function PayConfigPanel() {
           <ReadRow label="AppId" value={form.wechatAppId} />
           <ReadRow label="商户号 MchId" value={form.wechatMchId} />
           <ReadRow label="证书序列号" value={form.wechatCertSerial} />
+          <ReadRow label="下单方式" value={form.wechatPayMode === 'native' ? 'Native 扫码' : 'H5 跳转'} />
           <ReadRow label="通知地址 notify_url" value={form.wechatNotifyUrl} />
           <SecretRow label="APIv3 密钥" isSet={view?.wechatApiV3KeySet} />
           <SecretRow label="商户 API 私钥" isSet={view?.wechatPrivateKeySet} />
+          <SecretRow label="微信支付公钥" isSet={!!view?.wechatPlatformKeyMasked} />
         </div>
       </PaySection>
 
@@ -670,6 +682,14 @@ export default function PayConfigPanel() {
               </div>
               <div className="form-grid">
                 <div className="field">
+                  <label className="field-label">下单方式<span className="field-label-hint">决定调用哪个微信下单接口</span></label>
+                  <select className="field-input" value={form.wechatPayMode}
+                    onChange={e => set('wechatPayMode', e.target.value as 'h5' | 'native')}>
+                    <option value="native">Native 扫码（页面出二维码，个体工商户可开通）</option>
+                    <option value="h5">H5 跳转（限企业主体，需 ICP 备案域名）</option>
+                  </select>
+                </div>
+                <div className="field">
                   <label className="field-label">AppId<span className="field-label-hint">公众号 / 小程序 / APP 的 AppId</span></label>
                   <input className="field-input mono" value={form.wechatAppId} onChange={e => set('wechatAppId', e.target.value)} placeholder="wx0123456789abcdef" />
                 </div>
@@ -695,6 +715,11 @@ export default function PayConfigPanel() {
                   <label className="field-label">商户 API 私钥<span className="field-label-hint">apiclient_key.pem 内容，用于 V3 请求签名</span></label>
                   <SecretInput value={form.wechatPrivateKey} onChange={v => set('wechatPrivateKey', v)} isSet={!!view?.wechatPrivateKeySet}
                     placeholder={view?.wechatPrivateKeyMasked ? `已保存：${view.wechatPrivateKeyMasked}（留空保持不变）` : '-----BEGIN PRIVATE KEY----- 开头的整段私钥'} />
+                </div>
+                <div className="field field-full">
+                  <label className="field-label">微信支付公钥<span className="field-label-hint">仅用于回调验签，漏填会「能付款、不入账」</span></label>
+                  <SecretInput value={form.wechatPlatformKey} onChange={v => set('wechatPlatformKey', v)} isSet={!!view?.wechatPlatformKeyMasked}
+                    placeholder={view?.wechatPlatformKeyMasked ? `已保存：${view.wechatPlatformKeyMasked}（留空保持不变）` : '-----BEGIN PUBLIC KEY----- 开头的整段公钥'} />
                 </div>
               </div>
             </div>
