@@ -80,8 +80,12 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     // ══════════════════════════════════════════════════════════════════
 
     // ── 微信支付（APIv3） ──
-    // cert_serial：公钥模式下填「微信支付公钥序号」（PUB 开头）；平台证书模式下填商户证书序列号。
-    // platform_key：微信支付公钥（验回调签名用）。回调验签二选一：公钥模式（本字段）或平台证书。
+    // cert_serial：**商户 API 证书序列号**（40 位十六进制）。请求签名的 Authorization 头里 serial_no 用它，
+    //   填错（例如填成 PUB 开头的微信支付公钥序号）会让本系统发出的每一笔请求都验签失败。
+    // platform_key：微信支付公钥 PEM，**只**用于回调验签。回调头里的 Wechat-Serial（PUB 开头）目前仅记录日志、
+    //   不参与校验，因此不需要、也不应该把它填进 cert_serial。
+    // pay_mode：h5 = 浏览器跳转微信 H5 收银台（仅企业主体，且需 ICP 备案域名、类目审核、经营数据）；
+    //   native = 下单返回 code_url 由前端渲染二维码让用户扫码（个体工商户即可开通，无备案与类目要求）。
     public const string KeyWechatEnabled = Prefix + "wechat_enabled";
     public const string KeyWechatAppId = Prefix + "wechat_appid";
     public const string KeyWechatMchId = Prefix + "wechat_mchid";
@@ -91,6 +95,13 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     public const string KeyWechatNotifyUrl = Prefix + "wechat_notify_url";
     public const string KeyWechatGateway = Prefix + "wechat_gateway";
     public const string KeyWechatPlatformKey = Prefix + "wechat_platform_key";
+    public const string KeyWechatPayMode = Prefix + "wechat_pay_mode";
+
+    /// <summary>微信支付方式：H5 跳转（历史默认）</summary>
+    public const string WechatPayModeH5 = "h5";
+
+    /// <summary>微信支付方式：Native 扫码</summary>
+    public const string WechatPayModeNative = "native";
 
     // ── 银行卡支付（通用收银网关） ──
     // 网关协议采用业内通行的「参数签名跳转 + 回调验签」：选定机构后填其网关地址与签名密钥即可。
@@ -107,6 +118,15 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     public const string ModeProd = "生产";
     private const string ModeSandbox = "沙箱";
     public const string ModeMock = "模拟";
+
+    /// <summary>
+    /// 把支付方式归一到合法取值。只认 <c>native</c>，其余（含 null、空串、历史脏值）一律按 h5 处理，
+    /// 这样老数据升级后行为不变，配置面板也不会因为一个错值把通道打成不可用。
+    /// </summary>
+    public static string NormalizeWechatPayMode(string? value) =>
+        string.Equals(value?.Trim(), WechatPayModeNative, StringComparison.OrdinalIgnoreCase)
+            ? WechatPayModeNative
+            : WechatPayModeH5;
 
     private const string DefaultProdGateway = "https://openapi.alipay.com/gateway.do";
     private const string DefaultSandboxGateway = "https://openapi-sandbox.dl.alipaydev.com/gateway.do";
@@ -419,6 +439,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             WechatNotifyUrl = FallbackLocalUrl(Get(KeyWechatNotifyUrl), "api/payment/wechat/notify"),
             WechatGateway = Get(KeyWechatGateway),
             WechatPlatformKeyMasked = Mask(Get(KeyWechatPlatformKey)),
+            WechatPayMode = NormalizeWechatPayMode(Get(KeyWechatPayMode)),
             WechatApiV3KeySet = wxV3Key.Length > 0,
             WechatPrivateKeySet = wxPriv.Length > 0,
 
@@ -481,17 +502,23 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             (KeySandboxAlipayPublicKey, KeepIfEmpty(dto.SandboxAlipayPublicKey, KeySandboxAlipayPublicKey), "支付-沙箱支付宝公钥"),
             (KeySandboxGateway, KeepIfEmpty(dto.SandboxGateway, KeySandboxGateway), "支付-沙箱网关"),
 
-            // 微信支付（正式通道：WechatPayService 走 APIv3——H5 下单 + 查单 + 回调解密验签；
+            // 微信支付（正式通道：WechatPayService 走 APIv3——下单 + 查单 + 回调解密验签；
+            // 下单方式按 wechat_pay_mode 分派：h5 跳转收银台 / native 扫码；
             // 凭证不齐全期间自动退回内置模拟收银台，与支付宝的降级思路一致）
             (KeyWechatEnabled, dto.WechatEnabled is true ? "1" : "0", "支付-启用微信支付"),
             (KeyWechatAppId, KeepIfEmpty(dto.WechatAppId, KeyWechatAppId), "支付-微信 AppId"),
             (KeyWechatMchId, KeepIfEmpty(dto.WechatMchId, KeyWechatMchId), "支付-微信商户号 MchId"),
             (KeyWechatApiV3Key, KeepIfEmpty(dto.WechatApiV3Key, KeyWechatApiV3Key), "支付-微信 APIv3 密钥（回调解密用）"),
-            (KeyWechatCertSerial, KeepIfEmpty(dto.WechatCertSerial, KeyWechatCertSerial), "支付-微信支付公钥序号/商户证书序列号"),
+            (KeyWechatCertSerial, KeepIfEmpty(dto.WechatCertSerial, KeyWechatCertSerial), "支付-微信商户 API 证书序列号（请求签名用）"),
             (KeyWechatPrivateKey, KeepIfEmpty(dto.WechatPrivateKey, KeyWechatPrivateKey), "支付-微信商户私钥（请求签名用）"),
             (KeyWechatNotifyUrl, KeepIfEmpty(dto.WechatNotifyUrl, KeyWechatNotifyUrl), "支付-微信异步回调地址"),
             (KeyWechatGateway, KeepIfEmpty(dto.WechatGateway, KeyWechatGateway), "支付-微信 APIv3 网关（留空用官方默认）"),
             (KeyWechatPlatformKey, KeepIfEmpty(dto.WechatPlatformKey, KeyWechatPlatformKey), "支付-微信支付公钥（回调验签用）"),
+            // 支付方式不走 KeepIfEmpty 的「留空保持」语义：下拉框永远有值，空值只可能来自旧版前端，
+            // 此时保持库里原值，避免一次无关保存把已经选好的 native 打回 h5。
+            (KeyWechatPayMode, string.IsNullOrWhiteSpace(dto.WechatPayMode)
+                ? raw.GetValueOrDefault(KeyWechatPayMode, WechatPayModeH5)
+                : NormalizeWechatPayMode(dto.WechatPayMode), "支付-微信支付方式（h5 跳转 / native 扫码）"),
 
             // 银行卡支付（正式通道：BankPayService 走通用收银网关——签名跳转 + 回调验签；
             // 通用网关没有统一查单协议，入账依赖异步回调，回调地址须公网可达）

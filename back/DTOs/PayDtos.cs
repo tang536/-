@@ -20,7 +20,16 @@ public class CreatePayResultDto
     /// <summary>收银台跳转地址（真实支付宝为官方网关；未配置时为内置模拟收银台）</summary>
     public string PayUrl { get; init; } = string.Empty;
 
-    /// <summary>是否真实对接支付宝（false 表示走模拟收银台）</summary>
+    /// <summary>
+    /// 需要前端渲染成二维码的内容（微信 Native 下单返回的 code_url）。
+    /// 与 <see cref="PayUrl"/> 互斥：本字段非空时前端应展示二维码并轮询，而不是整页跳转。
+    /// </summary>
+    public string QrCode { get; init; } = string.Empty;
+
+    /// <summary>实际生效的微信下单方式：h5 / native。非微信通道为空串</summary>
+    public string PayMode { get; init; } = string.Empty;
+
+    /// <summary>是否真实对接支付通道（false 表示走内置模拟收银台）</summary>
     public bool RealPay { get; init; }
 }
 
@@ -219,6 +228,8 @@ public class PayConfigViewDto
     public string WechatGateway { get; init; } = string.Empty;
     /// <summary>微信支付公钥（验回调签名，脱敏回显）</summary>
     public string WechatPlatformKeyMasked { get; init; } = string.Empty;
+    /// <summary>下单方式：h5 = 跳转 H5 收银台（企业主体 + 备案域名）；native = 返回二维码让用户扫</summary>
+    public string WechatPayMode { get; init; } = string.Empty;
     public bool WechatApiV3KeySet { get; init; }
     public bool WechatPrivateKeySet { get; init; }
 
@@ -275,6 +286,8 @@ public class SavePayConfigDto
     public string? WechatNotifyUrl { get; init; }
     public string? WechatGateway { get; init; }
     public string? WechatPlatformKey { get; init; }
+    /// <summary>下单方式：h5 / native。留空表示不修改（旧版前端不传时不会覆盖已选值）</summary>
+    public string? WechatPayMode { get; init; }
 
     // ── 银行卡支付（正式通道） ──
     public bool? BankEnabled { get; init; }

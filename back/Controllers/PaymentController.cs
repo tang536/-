@@ -259,7 +259,11 @@ public class PaymentController(
             // 按渠道路由到各自的支付服务。三个服务内部遵循同一套降级约定：
             // 凭证齐全 → 真实通道（返回官方/网关收银台地址）；不齐全 → 内置模拟收银台。
             // 返回 (payUrl, real) 的服务当场告诉你走的是哪一档，前端按 real 决定跳转方式。
+            // 微信是唯一有两个真实分支的通道：h5 回跳转地址、native 回二维码内容，两者互斥，
+            // 前端先看 qrCode 再决定「渲染二维码 + 轮询」还是「整页跳转」。
             string payUrl;
+            string qrCode = "";
+            string payMode = "";
             bool realPay;
             switch (payType)
             {
@@ -269,10 +273,16 @@ public class PaymentController(
                     break;
 
                 case "微信":
-                    (payUrl, realPay) = await _wechat.CreatePayAsync(
+                {
+                    var wx = await _wechat.CreatePayAsync(
                         order.OrderNo, $"电动车租赁订单 {order.OrderNo}", amount,
                         await BuildReturnUrl(order.OrderNo, "微信"));
+                    payUrl = wx.PayUrl;
+                    qrCode = wx.QrCode;
+                    payMode = wx.PayMode;
+                    realPay = wx.Real;
                     break;
+                }
 
                 case "银行卡":
                     (payUrl, realPay) = await _bank.CreatePayAsync(
@@ -291,6 +301,8 @@ public class PaymentController(
                     PayType = payType,
                     Amount = amount,
                     PayUrl = payUrl,
+                    QrCode = qrCode,
+                    PayMode = payMode,
                     RealPay = realPay
                 }
             });

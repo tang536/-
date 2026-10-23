@@ -44,7 +44,7 @@ public class WechatPayService(
     /// <summary>一次微信支付调用所需的运行参数（由配置解析而来）。</summary>
     public sealed record WechatRuntime(
         string AppId, string MchId, string ApiV3Key, string CertSerial,
-        string PrivateKey, string NotifyUrl, string Gateway)
+        string PrivateKey, string NotifyUrl, string Gateway, string PayMode)
     {
         /// <summary>五项必填凭证是否齐全（缺任何一项都无法完成 APIv3 签名/解密）</summary>
         public bool CredentialsComplete =>
@@ -52,6 +52,14 @@ public class WechatPayService(
             && !string.IsNullOrWhiteSpace(ApiV3Key) && !string.IsNullOrWhiteSpace(CertSerial)
             && !string.IsNullOrWhiteSpace(PrivateKey);
     }
+
+    /// <summary>
+    /// 一次下单的结果。
+    /// <para><see cref="PayUrl"/>：需要跳转的收银台地址（H5 真实通道 / 模拟收银台）。</para>
+    /// <para><see cref="QrCode"/>：需要前端渲染成二维码的内容（Native 真实通道的 code_url），其余情况为空。</para>
+    /// 两个字段互斥：前端先看 QrCode，为空再跳 PayUrl——这样 H5 与 Native 共用同一条下单接口。
+    /// </summary>
+    public sealed record WechatPayResult(string PayUrl, string QrCode, bool Real, string PayMode);
 
     /// <summary>
     /// 读取本通道凭证并判定是否可走真实通道。
@@ -73,32 +81,95 @@ public class WechatPayService(
             _payConfig.FallbackChannelUrl(Get(PayConfigService.KeyWechatNotifyUrl), "api/payment/wechat/notify"),
             Get(PayConfigService.KeyWechatGateway).Length > 0
                 ? Get(PayConfigService.KeyWechatGateway)
-                : DefaultGateway);
+                : DefaultGateway,
+            PayConfigService.NormalizeWechatPayMode(Get(PayConfigService.KeyWechatPayMode)));
 
         return (rt, enabled && rt.CredentialsComplete);
     }
 
     /// <summary>
-    /// 创建支付：凭证齐全 → 微信 H5 下单，返回可跳转的收银台 URL；
-    /// 否则 → 内置模拟收银台（带 payType=微信 标记，回调按微信入账）。
+    /// 创建支付：凭证齐全 → 按下单方式走真实通道；否则 → 内置模拟收银台
+    /// （带 payType=微信 标记，回调按微信入账）。
+    ///
+    /// 两种下单方式的差别**只在下单接口与返回值**，签名、查单、回调入账完全共用：
+    ///   · h5     → <c>/v3/pay/transactions/h5</c>，返回 h5_url，前端整页跳转；
+    ///   · native → <c>/v3/pay/transactions/native</c>，返回 code_url，前端渲染二维码。
+    /// 之所以要两套：H5 只对企业主体开放（还要求 ICP 备案域名、类目审核、经营数据），
+    /// 个体工商户与小微商户只能开 Native；且 H5 只能在微信外部的移动端浏览器里唤起，
+    /// PC 端演示体验也差。配置项 <c>pay.wechat_pay_mode</c> 决定走哪条，换资质不用改代码。
     /// </summary>
     /// <param name="orderNo">商户订单号（即 out_trade_no，用于微信侧对账与回调查单）</param>
     /// <param name="subject">商品描述（展示在用户微信收银台上的订单标题）</param>
     /// <param name="amount">支付金额（单位：元；内部换算成分提交微信）</param>
-    /// <param name="returnUrl">支付完成后引导用户返回的前端地址（拼进 h5_url 的 redirect_url）</param>
-    public async Task<(string PayUrl, bool Real)> CreatePayAsync(
+    /// <param name="returnUrl">支付完成后引导用户返回的前端地址（H5 拼进 redirect_url，Native 不用）</param>
+    public async Task<WechatPayResult> CreatePayAsync(
         string orderNo, string subject, decimal amount, string returnUrl)
     {
         var (rt, real) = await ResolveAsync();
         if (!real)
         {
             _logger.LogInformation("微信支付凭证不全，订单 {OrderNo} 使用内置模拟收银台", orderNo);
-            return (MockUrl(orderNo, amount, subject), false);
+            return new WechatPayResult(MockUrl(orderNo, amount, subject), "", false, rt.PayMode);
         }
 
         // 金额单位：微信用**分**（整数），支付宝用元——转换点只在这里，后面全部元
         var totalFen = (int)Math.Round(amount * 100m, MidpointRounding.AwayFromZero);
 
+        return rt.PayMode == PayConfigService.WechatPayModeNative
+            ? await CreateNativeAsync(rt, orderNo, subject, totalFen)
+            : await CreateH5Async(rt, orderNo, subject, totalFen, returnUrl);
+    }
+
+    /// <summary>
+    /// Native 下单：返回 code_url（<c>weixin://wxpay/bizpayurl?pr=...</c>），由前端渲染成二维码。
+    ///
+    /// 与 H5 报文的差异：**不传 scene_info**——Native 没有浏览器环境，也就没有 payer_client_ip
+    /// 与 h5_info，多传反而可能被拒。其余字段与 H5 完全一致，两种方式共用同一套签名与入账。
+    /// </summary>
+    private async Task<WechatPayResult> CreateNativeAsync(
+        WechatRuntime rt, string orderNo, string subject, int totalFen)
+    {
+        var body = JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["appid"] = rt.AppId,
+            ["mchid"] = rt.MchId,
+            ["description"] = subject,
+            ["out_trade_no"] = orderNo,
+            ["notify_url"] = rt.NotifyUrl,
+            ["amount"] = new Dictionary<string, object?> { ["total"] = totalFen, ["currency"] = "CNY" }
+        });
+
+        var url = $"{rt.Gateway.TrimEnd('/')}/v3/pay/transactions/native";
+        // operation 传具体动作：网关拒绝时日志能直接看出走的是扫码还是 H5，省得靠上下文猜
+        var respBody = await PostSignedAsync(rt, url, body, "扫码下单");
+
+        string? codeUrl = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(respBody);
+            if (doc.RootElement.TryGetProperty("code_url", out var el))
+                codeUrl = el.GetString();
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning("微信 Native 下单响应解析失败（{ExType}）", ex.GetType().Name);
+        }
+
+        if (string.IsNullOrWhiteSpace(codeUrl))
+        {
+            // 只回类型不回响应体：响应体可能回显报文片段，不能进日志/异常消息
+            throw new Exception("微信扫码下单未返回二维码内容，请检查商户凭证、网关配置与 Native 支付权限");
+        }
+
+        _logger.LogInformation("已为订单 {OrderNo} 生成微信扫码支付二维码（金额 {Amount}）",
+            orderNo, totalFen / 100m);
+        return new WechatPayResult("", codeUrl, true, PayConfigService.WechatPayModeNative);
+    }
+
+    /// <summary>H5 下单：返回可跳转的收银台地址（h5_url 追加 redirect_url）。</summary>
+    private async Task<WechatPayResult> CreateH5Async(
+        WechatRuntime rt, string orderNo, string subject, int totalFen, string returnUrl)
+    {
         var body = JsonSerializer.Serialize(new Dictionary<string, object?>
         {
             ["appid"] = rt.AppId,
@@ -116,7 +187,7 @@ public class WechatPayService(
         });
 
         var url = $"{rt.Gateway.TrimEnd('/')}/v3/pay/transactions/h5";
-        var respBody = await PostSignedAsync(rt, url, body);
+        var respBody = await PostSignedAsync(rt, url, body, "H5 下单");
 
         string? h5Url = null;
         try
@@ -139,8 +210,9 @@ public class WechatPayService(
         // redirect_url：用户在微信侧完成/关闭支付后点「返回商家」落回的前端页（需 URL 编码）
         var sep = h5Url.Contains('?') ? "&" : "?";
         var payUrl = $"{h5Url}{sep}redirect_url={Uri.EscapeDataString(returnUrl)}";
-        _logger.LogInformation("已为订单 {OrderNo} 生成微信 H5 收银台链接（金额 {Amount}）", orderNo, amount);
-        return (payUrl, true);
+        _logger.LogInformation("已为订单 {OrderNo} 生成微信 H5 收银台链接（金额 {Amount}）",
+            orderNo, totalFen / 100m);
+        return new WechatPayResult(payUrl, "", true, PayConfigService.WechatPayModeH5);
     }
 
     /// <summary>
