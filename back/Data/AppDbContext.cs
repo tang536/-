@@ -21,7 +21,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<RenewalRecord> RenewalRecords => Set<RenewalRecord>();
     public DbSet<CarCheckList> CarCheckLists => Set<CarCheckList>();
     public DbSet<CheckReport> CheckReports => Set<CheckReport>();
-    public DbSet<NotificationRead> NotificationReads => Set<NotificationRead>();
+    public DbSet<AppMessage> Messages => Set<AppMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -33,5 +33,25 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasValue<AdminUser>("admin")
             .HasValue<ReceptionUser>("reception")
             .HasValue<FinanceUser>("finance");
+
+        // 支付记录：biz_type 设为必填且默认 'order'，与数据库 ALTER 的 DEFAULT 保持一致；
+        // out_trade_no 可空（首付款为空、回退到 order_no）。
+        modelBuilder.Entity<PaymentRecord>(e =>
+        {
+            e.Property(p => p.BizType).IsRequired().HasDefaultValue("order");
+            e.Property(p => p.OutTradeNo).IsRequired(false);
+            e.HasIndex(p => new { p.OrderId, p.BizType, p.PayStatus })
+                .HasDatabaseName("idx_pay_order_biz_status");
+            e.HasIndex(p => p.OutTradeNo).HasDatabaseName("idx_pay_out_trade_no");
+        });
+
+        modelBuilder.Entity<AppMessage>(e =>
+        {
+            e.HasIndex(m => new { m.ReceiverType, m.ReceiverId, m.IsRead })
+                .HasDatabaseName("idx_msg_receiver");
+            e.HasIndex(m => new { m.ReceiverType, m.ReceiverId, m.RefType, m.RefId })
+                .HasDatabaseName("uk_msg_biz")
+                .IsUnique();
+        });
     }
 }

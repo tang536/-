@@ -246,6 +246,8 @@ builder.Services.AddScoped<AlipayService>();
 // 微信（APIv3）与银行卡（通用收银网关）正式通道：与支付宝同一套降级约定（凭证齐全走真实，否则模拟收银台）
 builder.Services.AddScoped<WechatPayService>();
 builder.Services.AddScoped<BankPayService>();
+// 顾客消息（退款去向 / 逾期线上补缴单 / 补缴成功回执）：结算与补缴环节写入，顾客端读取
+builder.Services.AddScoped<MessageService>();
 
 // 局域网接入：手机/另一台电脑连同一 Wi-Fi 即可访问。开关由启动脚本注入
 // （Lan__Enabled=true），未开启时行为与改造前完全一致。

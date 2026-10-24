@@ -135,67 +135,106 @@ public class PaymentService(
         var requestNo = RefundKey.For(p.PayId, newTotal);
         var payType = p.PayType ?? "";
 
-        // ① 支付宝真实通道：必须走网关
+        // 商户订单号（out_trade_no）：首付款沿用租赁订单号；补缴单用独立 SP- 号。
+        // 这才是退款时各通道用来定位原交易的「商户订单号」——绝不能用 payment_record.transaction_no
+        // （那是网关交易号 trade_no），把两者搞混正是之前「交易不存在」的根因。
+        var merchantOutTradeNo = !string.IsNullOrWhiteSpace(p.OutTradeNo)
+            ? p.OutTradeNo!
+            : await OrderNoOfAsync(p.OrderId);
+
+        // ① 支付宝真实通道：必须走网关。
+        // 退款用商户订单号（merchantOutTradeNo），并把网关交易号（transaction_no）一并带上，
+        // 任一带得到原交易即可。若网关明确「交易不存在」——通常是当初走的是模拟收银台、
+        // 或订单号不匹配——说明没有真实资金流，自动降级为账面退款并告知线下退现金，
+        // 绝不把账面退伪装成原路退。
         if (string.Equals(payType, "支付宝", StringComparison.Ordinal))
         {
             var rt = await _payConfig.ResolveAsync();
             if (rt.IsReal && rt.CredentialsComplete)
             {
-                if (string.IsNullOrWhiteSpace(p.TransactionNo))
-                    throw new Exception("该笔支付宝支付缺少交易号，无法原路退款；请到支付宝商户后台按订单号手工退款。");
+                if (string.IsNullOrWhiteSpace(merchantOutTradeNo))
+                    throw new Exception("该笔支付宝支付缺少商户订单号，无法原路退款；请到支付宝商户后台按交易号手工退款。");
 
-                var (ok, msg) = await _alipay.RefundAsync(p.TransactionNo!, requestNo, amount, reason);
-                if (!ok) throw new Exception(msg);
-
-                return await ApplyRefundedAsync(p, newTotal, amount, "支付宝", requestNo);
+                var (ok, msg) = await _alipay.RefundAsync(merchantOutTradeNo, p.TransactionNo, requestNo, amount, reason);
+                if (ok) return await ApplyRefundedAsync(p, newTotal, amount, "支付宝", requestNo);
+                if (IsTradeNotFound(msg))
+                    return await LedgerRefundAsync(p, newTotal, amount, "支付宝",
+                        "该笔支付宝收款在网关侧未找到对应交易（可能为模拟支付或订单号不匹配）");
+                throw new Exception(msg);
             }
         }
 
-        // ② 微信真实通道：APIv3 退款，金额单位为分（服务内部换算）
+        // ② 微信真实通道：APIv3 退款，金额单位为分（服务内部换算）。
+        // 同样用商户订单号定位，网关报「交易不存在」时降级为账面退款。
         if (string.Equals(payType, "微信", StringComparison.Ordinal))
         {
             var (_, real) = await _wechat.ResolveAsync();
             if (real)
             {
-                var tradeNo = string.IsNullOrWhiteSpace(p.TransactionNo)
-                    ? await OrderNoOfAsync(p.OrderId)
-                    : p.TransactionNo!;
-                var (ok, msg) = await _wechat.RefundAsync(tradeNo, requestNo, amount, p.PayAmount, reason);
-                if (!ok) throw new Exception(msg);
-
-                return await ApplyRefundedAsync(p, newTotal, amount, "微信", requestNo);
+                if (string.IsNullOrWhiteSpace(merchantOutTradeNo))
+                    throw new Exception("该笔微信支付缺少商户订单号，无法原路退款；请到微信商户平台按订单号手工退款。");
+                var (ok, msg) = await _wechat.RefundAsync(merchantOutTradeNo, requestNo, amount, p.PayAmount, reason);
+                if (ok) return await ApplyRefundedAsync(p, newTotal, amount, "微信", requestNo);
+                if (IsTradeNotFound(msg))
+                    return await LedgerRefundAsync(p, newTotal, amount, "微信",
+                        "该笔微信收款在网关侧未找到对应交易（可能为模拟支付或订单号不匹配）");
+                throw new Exception(msg);
             }
         }
 
-        // ③ 银行卡真实通道：通用收银网关退款（按同一套 HMAC 签名）
+        // ③ 银行卡真实通道：通用收银网关退款（按同一套 HMAC 签名）。
+        // 同样用商户订单号定位，网关报「交易不存在」时降级为账面退款。
         if (string.Equals(payType, "银行卡", StringComparison.Ordinal))
         {
             var (_, real) = await _bank.ResolveAsync();
             if (real)
             {
-                var tradeNo = await OrderNoOfAsync(p.OrderId);
-                if (string.IsNullOrWhiteSpace(tradeNo) && string.IsNullOrWhiteSpace(p.TransactionNo))
-                    throw new Exception("该笔银行卡支付缺少订单号与流水号，无法原路退款；请在收单机构后台手工退款。");
-
-                var (ok, msg) = await _bank.RefundAsync(
-                    string.IsNullOrWhiteSpace(tradeNo) ? p.TransactionNo! : tradeNo,
-                    requestNo, amount, p.PayAmount, reason);
-                if (!ok) throw new Exception(msg);
-
-                return await ApplyRefundedAsync(p, newTotal, amount, "银行卡", requestNo);
+                if (string.IsNullOrWhiteSpace(merchantOutTradeNo))
+                    throw new Exception("该笔银行卡支付缺少商户订单号，无法原路退款；请在收单机构后台手工退款。");
+                var (ok, msg) = await _bank.RefundAsync(merchantOutTradeNo, requestNo, amount, p.PayAmount, reason);
+                if (ok) return await ApplyRefundedAsync(p, newTotal, amount, "银行卡", requestNo);
+                if (IsTradeNotFound(msg))
+                    return await LedgerRefundAsync(p, newTotal, amount, "银行卡",
+                        "该笔银行卡收款在网关侧未找到对应交易（可能为模拟支付或订单号不匹配）");
+                throw new Exception(msg);
             }
         }
 
-        // ④ 模拟 / 凭证不全：只记账，如实告知
-        p.RefundAmount = newTotal;
-        p.PayStatus = newTotal >= p.PayAmount ? "已退款" : "部分退款";
-        await _db.SaveChangesAsync();
-
+        // ④ 模拟 / 凭证不全：未进入任何真实通道，只记账、如实告知
         var why = string.IsNullOrEmpty(payType) || payType == "支付宝"
             ? "当前为模拟支付模式，没有真实资金流"
             : $"{payType}通道未配置真实凭证（收款走的是模拟收银台）";
+        return await LedgerRefundAsync(p, newTotal, amount, payType, why);
+    }
+
+    /// <summary>网关侧「交易不存在」类错误的识别：覆盖支付宝/微信/银行卡的中英文表述。</summary>
+    private static bool IsTradeNotFound(string msg)
+    {
+        if (string.IsNullOrWhiteSpace(msg)) return false;
+        return msg.Contains("不存在") || msg.Contains("未找到")
+            || msg.Contains("not exist", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("not_found", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("TRADE_NOT_EXIST", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("ORDER_NOT_EXIST", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("NO_SUCH", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("RESOURCE_NOT_EXISTS", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("INVALID_TRANSACTION", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 账面退款（无真实资金流）：写累计退款额、按是否退满改状态，返回如实告知的文案。
+    /// 用于两种情形：① 全局为模拟/凭证不全；② 真实模式下该笔收款在网关侧查无交易
+    /// （当初走模拟收银台、或订单号不匹配），此时绝不能把账面退伪装成已原路退。
+    /// </summary>
+    private async Task<RefundResult> LedgerRefundAsync(
+        Models.PaymentRecord p, decimal newTotal, decimal amount, string channel, string cause)
+    {
+        p.RefundAmount = newTotal;
+        p.PayStatus = newTotal >= p.PayAmount ? "已退款" : "部分退款";
+        await _db.SaveChangesAsync();
+        var name = string.IsNullOrWhiteSpace(channel) ? "支付宝" : channel;
         return new RefundResult(
-            $"已完成账面退款 ¥{amount:0.00}（累计 ¥{newTotal:0.00}）；{why}，请线下退还现金并留存凭证。",
+            $"{cause}，已对{name}作账面退款 ¥{amount:0.00}（累计 ¥{newTotal:0.00}）；未发生真实资金划转，请线下退还现金并留存凭证。",
             false, newTotal, p.PayStatus);
     }
 

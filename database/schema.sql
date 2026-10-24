@@ -129,12 +129,16 @@ CREATE TABLE IF NOT EXISTS `payment_record` (
   `pay_time` DATETIME DEFAULT NULL COMMENT '支付时间',
   `refund_amount` DECIMAL(10,2) DEFAULT 0 COMMENT '退款金额',
   `transaction_no` VARCHAR(50) DEFAULT NULL COMMENT '交易流水号',
+  `biz_type` VARCHAR(10) NOT NULL DEFAULT 'order' COMMENT '业务类型（order=首付款，supplement=线上补缴）',
+  `out_trade_no` VARCHAR(64) DEFAULT NULL COMMENT '通道侧商户订单号（补缴单单独有，全局唯一）',
   PRIMARY KEY (`pay_id`),
   KEY `idx_order_id` (`order_id`),
   KEY `idx_pay_time` (`pay_time`),
   KEY `idx_pay_status` (`pay_status`),
   -- 支付回调按「订单 + 状态」定位本次支付记录
   KEY `idx_order_status` (`order_id`, `pay_status`),
+  KEY `idx_pay_order_biz_status` (`order_id`, `biz_type`, `pay_status`),
+  KEY `idx_pay_out_trade_no` (`out_trade_no`),
   -- 退款不得超过实收：并发退款的最后一道防线（应用层用支付记录行锁先在事务内排队）
   CONSTRAINT `ck_pay_amount` CHECK (`pay_amount` >= 0) ENFORCED,
   CONSTRAINT `ck_pay_refund` CHECK (`refund_amount` >= 0 AND `refund_amount` <= `pay_amount`) ENFORCED
@@ -263,18 +267,29 @@ CREATE TABLE IF NOT EXISTS `check_report` (
   UNIQUE KEY `uk_report_no` (`report_no`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='盘点报表表';
 
--- 17. 通知已读记录表（顶栏「通知与预警」的已读状态）
--- 通知内容是实时算出来的（逾期/到期/待支付/维保/保养），没有业务表可挂主键，
--- 因此单独用一张小表按「用户 + 通知条目 ID」记录已读事实；Id 为业务生成的稳定字符串
--- （overdue-12 / expiring-8 / maintenance / maintain-due 等），跨请求可复现。
-CREATE TABLE IF NOT EXISTS `notification_read` (
-  `read_id` INT NOT NULL AUTO_INCREMENT,
-  `user_id` INT NOT NULL COMMENT '用户ID（工作人员 system_user.user_id）',
-  `notification_id` VARCHAR(60) NOT NULL COMMENT '通知条目ID（业务生成，稳定可复现）',
-  `read_time` DATETIME NOT NULL COMMENT '已读时间',
-  PRIMARY KEY (`read_id`),
-  UNIQUE KEY `uk_user_notification` (`user_id`, `notification_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知已读记录表';
+-- 17. 通用消息表（统一通知中心）
+-- 顾客事件通知与工作人员预警消息都在此落库，并按
+-- (receiver_type, receiver_id, ref_type, ref_id) 幂等（同一条业务通知对每个接收人仅一行）。
+--   · receiver_type='customer' 时 receiver_id=customer.customer_id（退款去向/线上补缴单/补缴成功回执）；
+--   · receiver_type='staff'    时 receiver_id=system_user.user_id（逾期/到期/待支付/维保/资料/保养预警）。
+-- 已读状态直接落在消息行（is_read/read_at），不再有独立的已读表。
+CREATE TABLE IF NOT EXISTS `message` (
+  `message_id` INT NOT NULL AUTO_INCREMENT,
+  `receiver_type` VARCHAR(10) NOT NULL COMMENT '接收人类型（customer=顾客 / staff=工作人员）',
+  `receiver_id` INT NOT NULL COMMENT '接收人ID（customer 时为 customer_id；staff 时为 system_user.user_id）',
+  `ref_type` VARCHAR(20) NOT NULL COMMENT '业务类型（refund/supplement/supplement_paid/overdue/expiring/pending/maintenance/profile_incomplete/maintain_due）',
+  `ref_id` VARCHAR(60) DEFAULT NULL COMMENT '业务实体ID（订单号/车辆ID等），用于幂等去重与跳转定位',
+  `title` VARCHAR(120) NOT NULL COMMENT '消息标题',
+  `content` TEXT NOT NULL COMMENT '消息正文',
+  `level` VARCHAR(10) DEFAULT NULL COMMENT '预警级别（danger/warning/info/success），顾客事件消息可为空',
+  `link` VARCHAR(120) DEFAULT NULL COMMENT '点击跳转的前端路由',
+  `is_read` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已读（0未读 1已读）',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `read_at` DATETIME DEFAULT NULL COMMENT '已读时间',
+  PRIMARY KEY (`message_id`),
+  UNIQUE KEY `uk_msg_biz` (`receiver_type`, `receiver_id`, `ref_type`, `ref_id`),
+  KEY `idx_msg_receiver` (`receiver_type`, `receiver_id`, `is_read`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通用消息表（统一通知中心）';
 
 -- ============================================
 -- 升级脚本（已有数据库执行；后端启动时也会自动幂等执行同样的升级）
@@ -316,7 +331,7 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
 -- ALTER TABLE `maintenance_order` ADD COLUMN `fault_image` VARCHAR(500) NULL
 --   COMMENT '故障现场照片路径（多张逗号分隔，锁定维保位置）' AFTER `fault_description`;
 --
--- 通知已读记录表：建表语句见上方第 17 张表，老库由后端启动时自动补建，无需手工执行。
+-- 通用消息表（统一通知中心）：建表语句见上方第 17–18 张表，老库由后端启动时自动补建，无需手工执行。
 --
 -- 车辆独立计价：每辆车有自己的日租金与押金（不同车型定价本就不同），
 -- 留 NULL 表示该车未单独定价，下单/试算/结算/续租统一回退 system_config 的

@@ -109,6 +109,15 @@ export default function Landing() {
             <a href="#flow" className="landing-nav-link">使用流程</a>
           </nav>
           <div className="landing-nav-actions">
+            {/* 深浅主题切换：与系统内顶栏同一套 sun/moon，偏好共用 localStorage */}
+            <button
+              className="landing-theme-btn"
+              title={isDark ? '切换为浅色主题' : '切换为深色主题'}
+              aria-label={isDark ? '切换为浅色主题' : '切换为深色主题'}
+              onClick={toggleTheme}
+            >
+              <Icon name={isDark ? 'sun' : 'moon'} size={17} />
+            </button>
             {/* GitHub 直达：与系统顶栏共用 utils/links.ts 里的同一个地址 */}
             <a
               className="landing-theme-btn"
@@ -120,15 +129,6 @@ export default function Landing() {
             >
               <Icon name="github" size={17} strokeWidth={0.6} />
             </a>
-            {/* 深浅主题切换：与系统内顶栏同一套 sun/moon，偏好共用 localStorage */}
-            <button
-              className="landing-theme-btn"
-              title={isDark ? '切换为浅色主题' : '切换为深色主题'}
-              aria-label={isDark ? '切换为浅色主题' : '切换为深色主题'}
-              onClick={toggleTheme}
-            >
-              <Icon name={isDark ? 'sun' : 'moon'} size={17} />
-            </button>
           </div>
         </div>
       </header>

@@ -6,8 +6,8 @@ import ReceiptModal from '@/components/ReceiptModal'
 import { useAuth, ROLE } from '@/hooks/useAuth'
 import { fmtDT } from '@/utils/datetime'
 
-/** 结算弹窗的初始值：逾期费/损坏费默认 0，备注空 */
-const emptyForm = () => ({ orderId: 0, overdueFee: 0, damageFee: 0, remark: '' })
+/** 结算弹窗的初始值：逾期费/损坏费默认 0，备注空；补缴方式默认线下收款 */
+const emptyForm = () => ({ orderId: 0, overdueFee: 0, damageFee: 0, remark: '', supplementPayMethod: '线下' })
 
 export default function Settlements() {
   const { toast, confirm } = useUI()
@@ -532,6 +532,47 @@ export default function Settlements() {
                 </div>
               </>
             )}
+              {/* 补缴方式：仅当核算出需顾客补缴时出现。选「线上补缴」会生成独立补缴单并通知顾客回顾客端在线支付，不阻断结算主流程 */}
+              {preview && (form.damageFee || 0) - preview.refundAmount > 0 && (
+                <div className="form-group">
+                  <label>补缴方式</label>
+                  <div className="pay-methods" style={{ marginTop: 6 }}>
+                    <div
+                      className={`pay-method ${form.supplementPayMethod === '线下' ? 'active' : ''}`}
+                      onClick={() => setForm({ ...form, supplementPayMethod: '线下' })}
+                    >
+                      <span className="pay-method-icon" style={{ background: '#64748b' }}>
+                        <Icon name="refund" size={18} color="#fff" />
+                      </span>
+                      <div className="pay-method-text">
+                        <strong>线下收款</strong>
+                        <small>顾客当场支付 / 到店交</small>
+                      </div>
+                      <span className={`pay-radio ${form.supplementPayMethod === '线下' ? 'on' : ''}`} />
+                    </div>
+                    <div
+                      className={`pay-method ${form.supplementPayMethod === '线上' ? 'active' : ''}`}
+                      onClick={() => setForm({ ...form, supplementPayMethod: '线上' })}
+                    >
+                      <span className="pay-method-icon" style={{ background: '#2563eb' }}>
+                        <Icon name="bell" size={18} color="#fff" />
+                      </span>
+                      <div className="pay-method-text">
+                        <strong>线上补缴</strong>
+                        <small>生成补缴单，顾客端在线支付</small>
+                      </div>
+                      <span className={`pay-radio ${form.supplementPayMethod === '线上' ? 'on' : ''}`} />
+                    </div>
+                  </div>
+                  <div className="field-hint" style={{ marginTop: 8 }}>
+                    <Icon name="info" size={14} />
+                    {form.supplementPayMethod === '线上'
+                      ? '选「线上补缴」后，系统生成独立补缴单并通知顾客，顾客回到「我的订单 → 待补缴」即可缴款，结算仍正常完成。'
+                      : '选「线下收款」需当面收齐补缴款；若顾客想回去再交，请改选「线上补缴」。'}
+                  </div>
+                </div>
+              )}
+
               <div className="form-group">
                 <label>结算备注</label>
                 <input

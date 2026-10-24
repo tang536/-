@@ -241,9 +241,9 @@ eRentalSystem/
 | 权限与用户 | `role`、`permission`、`system_user`（TPH 判别列 `user_type`：admin / reception / finance）、`customer` |
 | 车辆资产 | `vehicle`、`maintenance_order`、`scrap_record`、`car_check_list`、`check_report` |
 | 租赁与资金 | `rental_order`、`renewal_record`、`payment_record`、`settle_record`、`member_rights` |
-| 系统支撑 | `system_config`、`system_log`、`notification_read` |
+| 系统支撑 | `system_config`、`system_log`、`message`（通用消息表：顾客事件通知 + 工作人员预警，含已读状态） |
 
-字段名、类型、长度与《唐荣强 .docx》图 4-1 ~ 图 4-17 逐项一致。单点登录、数据字典、通知已读均复用现有表，不额外建表。
+字段名、类型、长度与《唐荣强 .docx》图 4-1 ~ 图 4-17 逐项一致。单点登录、数据字典、通知消息均复用现有表，不额外建表。
 实体类 22 个而库表 17 张，差额来自 TPH 继承——`AdminUser` / `ReceptionUser` / `FinanceUser` 共用一张 `system_user`。
 
 表级约束由 `DbInitializer` 在启动时**幂等补建**（已存在则跳过，重复启动不报错），老库升级无需手工执行 DDL。

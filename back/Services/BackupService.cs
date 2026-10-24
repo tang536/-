@@ -51,7 +51,7 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
         "role", "permission", "system_user", "customer", "member_rights", "vehicle",
         "rental_order", "payment_record", "settle_record", "maintenance_order", "scrap_record",
         "system_config", "system_log", "renewal_record", "car_check_list", "check_report",
-        "notification_read"
+        "message"
     ];
 
     private static readonly JsonSerializerOptions JsonOpts = new()

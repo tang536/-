@@ -344,7 +344,7 @@ public class SystemConfigService(AppDbContext db)
         rows += await _db.ScrapRecords.ExecuteDeleteAsync();
         rows += await _db.CarCheckLists.ExecuteDeleteAsync();
         rows += await _db.CheckReports.ExecuteDeleteAsync();
-        rows += await _db.NotificationReads.ExecuteDeleteAsync();
+        rows += await _db.Messages.ExecuteDeleteAsync();
         rows += await _db.SystemLogs.ExecuteDeleteAsync();
         rows += await _db.Customers.ExecuteDeleteAsync();
         rows += await _db.Vehicles.ExecuteDeleteAsync();

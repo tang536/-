@@ -6,7 +6,7 @@ import { ROUTE_ROLES, canAccess } from '../permissions'
 import { useUI } from './UIProvider'
 import Icon, { type IconName } from './Icon'
 import Avatar from './Avatar'
-import { authApi, customerApi, orderApi, reportApi, vehicleApi } from '../api'
+import { authApi, customerApi, orderApi, reportApi, vehicleApi, messageApi } from '../api'
 import { logoutEverywhere } from '../utils/session'
 import { GITHUB_URL } from '../utils/links'
 import useTableLabels from '../hooks/useTableLabels'
@@ -99,11 +99,17 @@ export default function Layout() {
   const [notifyOpen, setNotifyOpen] = useState(false)
   const [notifyLoading, setNotifyLoading] = useState(false)
 
+  // ===== 顾客消息中心（退款去向 / 逾期线上补缴单 / 补缴成功回执）=====
+  const [custMessages, setCustMessages] = useState<any[]>([])
+  const [custNotifyOpen, setCustNotifyOpen] = useState(false)
+  const [custUnread, setCustUnread] = useState(0)
+
   // ===== 账号菜单（退出登录 / 注销账号）=====
   const [userMenuOpen, setUserMenuOpen] = useState(false)
 
   const searchBoxRef = useRef<HTMLDivElement>(null)
   const notifyBoxRef = useRef<HTMLDivElement>(null)
+  const custNotifyBoxRef = useRef<HTMLDivElement>(null)
   const userBoxRef = useRef<HTMLDivElement>(null)
 
   const roleName = user?.roleName || ''
@@ -154,6 +160,7 @@ export default function Layout() {
       const t = e.target as Node
       if (searchBoxRef.current && !searchBoxRef.current.contains(t)) setSearchOpen(false)
       if (notifyBoxRef.current && !notifyBoxRef.current.contains(t)) setNotifyOpen(false)
+      if (custNotifyBoxRef.current && !custNotifyBoxRef.current.contains(t)) setCustNotifyOpen(false)
       if (userBoxRef.current && !userBoxRef.current.contains(t)) setUserMenuOpen(false)
     }
     document.addEventListener('mousedown', onDocDown)
@@ -239,7 +246,81 @@ export default function Layout() {
     return () => window.clearInterval(timer)
   }, [loadNotifications])
 
-  // 已读状态全部以服务端 notification_read 为准（localStorage 换账号/换设备就失效，也无法逐条区分）
+  // ===== 顾客消息：仅顾客加载，轮询拉取未读角标 =====
+  const loadCustMessages = useCallback(async () => {
+    if (!isCustomer) return
+    try {
+      const res: any = await messageApi.list()
+      const data = res.data || {}
+      setCustMessages(data.items || [])
+      setCustUnread(data.unread || 0)
+    } catch { /* 顾客侧通知失败不打扰用户 */ }
+  }, [isCustomer])
+
+  useEffect(() => {
+    if (!isCustomer) return
+    loadCustMessages()
+    const timer = window.setInterval(() => loadCustMessages(), 60000)
+    return () => window.clearInterval(timer)
+  }, [loadCustMessages])
+
+  const openCustNotify = () => {
+    setCustNotifyOpen(true)
+    loadCustMessages()
+  }
+
+  /**
+   * 顾客铃铛关闭 = 已浏览列表 → 把剩余未读一键标记已读（与服务端一致）。
+   */
+  const prevCustOpen = useRef(false)
+  useEffect(() => {
+    if (prevCustOpen.current && !custNotifyOpen) {
+      if (custUnread > 0) {
+        messageApi.markRead([])
+          .then(() => loadCustMessages())
+          .catch(() => { /* 失败不打扰，下次打开仍显示未读 */ })
+      }
+    }
+    prevCustOpen.current = custNotifyOpen
+  }, [custNotifyOpen, custUnread, loadCustMessages])
+
+  /** 点开某条顾客消息：标记该条已读 */
+  const openCustMessage = (m: any) => {
+    setCustNotifyOpen(false)
+    if (!m.isRead) {
+      setCustMessages(prev => prev.map(x => (x.MessageId === m.MessageId ? { ...x, isRead: true, readAt: new Date().toISOString() } : x)))
+      setCustUnread(c => Math.max(0, c - 1))
+      messageApi.markRead([m.MessageId]).catch(() => loadCustMessages())
+    }
+  }
+
+  const markCustAllRead = async () => {
+    try {
+      await messageApi.markRead([])
+      setCustMessages(prev => prev.map(m => ({ ...m, isRead: true, readAt: new Date().toISOString() })))
+      setCustUnread(0)
+    } catch { /* 忽略 */ }
+  }
+
+  /** 删除单条顾客消息（后端按消息主键精确删除，归属由 Token 决定） */
+  const delCustMessage = async (m: any) => {
+    try {
+      await messageApi.delete([m.MessageId])
+      setCustMessages(prev => prev.filter(x => x.MessageId !== m.MessageId))
+      if (!m.isRead) setCustUnread(c => Math.max(0, c - 1))
+    } catch { /* 忽略 */ }
+  }
+
+  /** 清空全部顾客消息 */
+  const clearCustMessages = async () => {
+    try {
+      await messageApi.delete([])
+      setCustMessages([])
+      setCustUnread(0)
+    } catch { /* 忽略 */ }
+  }
+
+  // 已读状态全部以服务端 message 表为准（localStorage 换账号/换设备就失效，也无法逐条区分）
   const unreadCount = useMemo(() => notifications.filter(n => !n.isRead).length, [notifications])
 
   /** 打开通知面板：重新拉取（让用户看到最新的未读/已读状态） */
@@ -277,9 +358,9 @@ export default function Layout() {
   /** 点开某条通知：先把它标记为已读，再跳转 */
   const openNotification = (n: NotificationItem) => {
     setNotifyOpen(false)
-    if (!n.isRead) {
-      setNotifications(prev => prev.map(x => (x.id === n.id ? { ...x, isRead: true, readTime: new Date().toISOString() } : x)))
-      reportApi.markRead([n.id]).catch(() => loadNotifications(true))
+    if (!n.isRead && n.messageId != null) {
+      setNotifications(prev => prev.map(x => (x.messageId === n.messageId ? { ...x, isRead: true, readTime: new Date().toISOString() } : x)))
+      reportApi.markRead([n.messageId]).catch(() => loadNotifications(true))
     }
     navigate(notificationTarget(n))
   }
@@ -536,6 +617,76 @@ export default function Layout() {
                     )}
                     <div className="dropdown-foot notify-foot">
                       共 {notifications.length} 条，未读 {unreadCount} 条<Icon name="info" size={13} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 顾客消息中心：退款去向 / 逾期补缴单 / 补缴成功回执（仅顾客端） */}
+            {isCustomer && (
+              <div className="notify-wrap" ref={custNotifyBoxRef}>
+                <button
+                  className={`header-icon-btn ${custNotifyOpen ? 'active' : ''}`}
+                  title="我的消息"
+                  onClick={() => {
+                    if (custNotifyOpen) setCustNotifyOpen(false)
+                    else openCustNotify()
+                  }}
+                >
+                  <Icon name="bell" size={19} />
+                  {custUnread > 0 && <span className="badge">{custUnread > 99 ? '99+' : custUnread}</span>}
+                </button>
+
+                {custNotifyOpen && (
+                  <div className="dropdown notify-dropdown">
+                    <div className="dropdown-head">
+                      <span>我的消息</span>
+                      <div className="dropdown-head-actions">
+                        <button title="全部已读" onClick={markCustAllRead}><Icon name="check" size={14} /></button>
+                        <button title="清空消息" onClick={clearCustMessages}>清空</button>
+                      </div>
+                    </div>
+                    {custMessages.length === 0 ? (
+                      <div className="dropdown-empty"><Icon name="success" size={26} chip /><span>暂无消息</span></div>
+                    ) : (
+                      <div className="dropdown-list notify-list">
+                        {custMessages.map(m => (
+                          <div
+                            key={m.MessageId}
+                            className={`notify-item ${m.isRead ? 'is-read' : 'is-unread'}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openCustMessage(m)}
+                            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCustMessage(m) } }}
+                          >
+                            <Icon
+                              name={m.RefType === 'refund' ? 'success' : m.RefType === 'supplement_paid' ? 'success' : 'info'}
+                              size={18}
+                              chip
+                            />
+                            <span className="notify-main">
+                              <span className="notify-title">
+                                {m.Title}
+                                <span className={`notify-read-tag ${m.isRead ? 'read' : 'unread'}`}>
+                                  {m.isRead ? '已读' : '未读'}
+                                </span>
+                              </span>
+                              <span className="notify-desc">{m.Content}</span>
+                              <span className="notify-time">{new Date(m.CreatedAt).toLocaleString('zh-CN')}</span>
+                            </span>
+                            <span
+                              className="notify-del"
+                              title="删除这条消息"
+                              style={{ marginLeft: 'auto', padding: '2px 8px', cursor: 'pointer', opacity: 0.55, fontSize: 15, lineHeight: 1 }}
+                              onClick={e => { e.stopPropagation(); delCustMessage(m) }}
+                            >×</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="dropdown-foot notify-foot">
+                      共 {custMessages.length} 条，未读 {custUnread} 条<Icon name="info" size={13} />
                     </div>
                   </div>
                 )}

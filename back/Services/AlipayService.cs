@@ -27,11 +27,12 @@ namespace ERental.Services;
 /// </summary>
 public class AlipayService(
     AppDbContext db, PayConfigService payConfig, IOptions<AlipayOptions> opt,
-    MemberService member, ILogger<AlipayService> logger, IHttpClientFactory httpFactory)
+    MemberService member, MessageService messages, ILogger<AlipayService> logger, IHttpClientFactory httpFactory)
 {
     private readonly AppDbContext _db = db;
     private readonly PayConfigService _payConfig = payConfig;
     private readonly MemberService _member = member;
+    private readonly MessageService _messages = messages;
     private readonly ILogger<AlipayService> _logger = logger;
     private readonly IHttpClientFactory _httpFactory = httpFactory;
 
@@ -217,6 +218,13 @@ public class AlipayService(
             return (mOk, mMsg);
         }
 
+        // 线上补缴单（SP- 开头交易号）：同一租赁订单上的第二条支付记录（biz_type='supplement'），
+        // 金额是逾期/损坏补缴款，与首付款相互独立。入账只改这条支付记录、不动订单状态。
+        if (outTradeNo.StartsWith("SP-"))
+        {
+            return await ApplySupplementPaidAsync(outTradeNo, tradeNo, totalAmount, payType);
+        }
+
         // 租赁订单入账：整段放进「订单行锁 + 事务」里。
         // 触发源不止一个——支付宝会重推通知，前端轮询查单也可能与回调同时到达
         //（一个走 notify、一个走 trade.query，两者是不同线程）。
@@ -323,6 +331,74 @@ public class AlipayService(
             // 只记订单号与技术异常，不记 form 里的签名等敏感字段。
             _logger.LogError(ex, "订单 {OrderNo} 支付入账失败", outTradeNo);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// 线上补缴单入账：与首付款入账同一套幂等 + 行锁 + 金额校验，但只改这条补缴支付记录、不动订单状态。
+    /// 订单在结算时已是「已完结」，补缴款是后续的独立应收。
+    /// </summary>
+    private async Task<(bool Ok, string Message)> ApplySupplementPaidAsync(
+        string outTradeNo, string tradeNo, string totalAmount, string payType)
+    {
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        try
+        {
+            await DbRowLock.PrepareAsync(_db);
+
+            // 先按 out_trade_no 找到待支付的补缴记录（无锁读），拿到 payId 后再锁这一行，
+            // 让并发回调在锁内重读，避免重复入账。
+            var pending = await _db.PaymentRecords
+                .FirstOrDefaultAsync(p => p.OutTradeNo == outTradeNo
+                                         && p.BizType == "supplement"
+                                         && p.PayStatus == "待支付");
+            if (pending == null)
+            {
+                await tx.CommitAsync();
+                return (true, "补缴单不存在或已支付，忽略重复通知。");
+            }
+
+            var p = await DbRowLock.LockPaymentAsync(_db, pending.PayId);
+            if (p == null || p.PayStatus != "待支付")
+            {
+                await tx.CommitAsync();
+                return (true, "补缴单已处理，忽略重复通知。");
+            }
+
+            // 金额核对（防止伪造）：实付与补缴金额不符直接拒收
+            if (decimal.TryParse(totalAmount, out var paid) && Math.Abs(paid - p.PayAmount) > 0.01m)
+            {
+                _logger.LogWarning("补缴单 {OutTradeNo} 金额不符：通知 {Paid}，应收 {Expect}",
+                    outTradeNo, paid, p.PayAmount);
+                await tx.RollbackAsync();
+                return (false, $"支付金额不符：通知 ¥{paid:0.00}，补缴应付 ¥{p.PayAmount:0.00}。");
+            }
+
+            p.PayStatus = "已支付";
+            p.PayType = payType;
+            p.PayTime = DateTime.Now;
+            p.TransactionNo = tradeNo;
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+
+            // 入账成功后通知顾客补缴成功（与退款/补缴通知共用顾客消息通道）
+            var orderNo = await _db.RentalOrders.Where(o => o.OrderId == p.OrderId)
+                .Select(o => o.OrderNo).FirstOrDefaultAsync() ?? "";
+            var cust = await _db.RentalOrders.Where(o => o.OrderId == p.OrderId)
+                .Select(o => o.CustomerId).FirstOrDefaultAsync();
+            if (cust > 0)
+                await _messages.SendAsync("customer", cust, "supplement_paid", orderNo, "补缴成功通知",
+                    $"订单 {orderNo} 的逾期补缴 ¥{p.PayAmount:0.00} 已成功支付，感谢您的配合。");
+
+            _logger.LogInformation("补缴单 {OutTradeNo} 支付成功入账（{PayType}），金额 ¥{Amount}",
+                outTradeNo, payType, p.PayAmount);
+            return (true, $"补缴成功，订单 {orderNo} 补缴 ¥{p.PayAmount:0.00} 已收讫。");
+        }
+        catch (Exception ex)
+        {
+            await tx.RollbackAsync();
+            _logger.LogError(ex, "补缴单 {OutTradeNo} 入账异常", outTradeNo);
+            return (false, "补缴入账处理异常，请稍后重试。");
         }
     }
 
@@ -529,10 +605,14 @@ public class AlipayService(
     /// </summary>
     /// <returns>Ok=false 时 Message 是可直接展示给前台/财务的中文原因。</returns>
     public async Task<(bool Ok, string Message)> RefundAsync(
-        string outTradeNo, string outRequestNo, decimal amount, string? reason = null)
+        string outTradeNo, string? tradeNo, string outRequestNo, decimal amount, string? reason = null)
     {
-        if (string.IsNullOrWhiteSpace(outTradeNo))
-            return (false, "缺少支付宝交易号，无法原路退款；请在支付宝商户后台按订单号手工退款。");
+        // 退款定位：out_trade_no（商户订单号）与 trade_no（支付宝交易号）二选一，
+        // 两者都带时支付宝优先用 trade_no。payment_record.transaction_no 存的是支付宝 trade_no，
+        // 首付款/补缴单的商户订单号另由调用方用 outTradeNo 传入（订单号 或 SP- 补缴号），
+        // 绝不能再把 trade_no 当成 out_trade_no 去查，否则会报「交易不存在」。
+        if (string.IsNullOrWhiteSpace(outTradeNo) && string.IsNullOrWhiteSpace(tradeNo))
+            return (false, "缺少支付宝订单号/交易号，无法原路退款；请在支付宝商户后台按订单号手工退款。");
         if (amount <= 0)
             return (false, "退款金额必须大于 0。");
 
@@ -542,7 +622,8 @@ public class AlipayService(
 
         var bizContent = new Dictionary<string, string?>
         {
-            ["out_trade_no"] = outTradeNo,
+            ["out_trade_no"] = string.IsNullOrWhiteSpace(outTradeNo) ? null : outTradeNo,
+            ["trade_no"] = string.IsNullOrWhiteSpace(tradeNo) ? null : tradeNo,
             ["refund_amount"] = amount.ToString("0.00"),
             ["out_request_no"] = outRequestNo,
             ["refund_reason"] = string.IsNullOrWhiteSpace(reason) ? null : SecretMasker.Truncate(reason.Trim(), 200)

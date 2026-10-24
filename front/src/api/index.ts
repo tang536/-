@@ -395,7 +395,7 @@ export const maintenanceApi = {
 export const reportApi = {
   dashboard: () => api.get('/report/dashboard'),
   notifications: () => api.get('/report/notifications'),
-  markRead: (ids: string[]) => api.post('/report/notifications/read', { ids }),
+  markRead: (ids: number[]) => api.post('/report/notifications/read', { ids }),
   markAllRead: () => api.post('/report/notifications/read-all'),
   /** from/to 为可选统计时间段（YYYY-MM-DD，闭区间），不传沿用累计口径 */
   summary: (from?: string, to?: string) => api.get('/report/summary', { params: { from, to } }),
@@ -487,6 +487,33 @@ export const logApi = {
     api.get(`/log/backups/${encodeURIComponent(fileName)}/download`, { responseType: 'blob' }),
   /** 恢复数据库：confirm 必须是 RESTORE，后端据此拒绝误调用 */
   restore: (fileName: string) => api.post('/log/restore', { fileName, confirm: 'RESTORE' })
+}
+
+// 线上补缴（逾期 / 损坏费用）：顾客回到顾客端在线支付
+export const supplementApi = {
+  /** 顾客本人的补缴单列表（含待支付 / 已支付） */
+  mine: () => api.get('/supplement/mine'),
+  /**
+   * 发起补缴支付：复用支付宝 / 微信 / 银行卡三通道。
+   * payType 以 JSON 字符串发送（后端 [FromBody] string 绑定），返回
+   * { orderNo, payType, amount, payUrl, realPay, qrCode, payMode }。
+   */
+  pay: (payId: number, payType: string) =>
+    api.post(`/supplement/${payId}/pay`, JSON.stringify(payType), {
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  /** 查询补缴支付状态（含通道查单兜底），paid=true 表示已入账 */
+  status: (payId: number) => api.get(`/supplement/${payId}/status`),
+}
+
+// 顾客消息中心（统一走通用 message 表：退款去向 / 逾期线上补缴单 / 补缴成功回执）
+export const messageApi = {
+  /** 顾客消息列表 + 未读计数 */
+  list: () => api.get('/message/customer'),
+  /** 标记已读：ids 为消息主键，空数组 = 全部已读 */
+  markRead: (ids: number[] = []) => api.post('/message/customer/read', { ids }),
+  /** 删除消息：ids 为消息主键，空数组 = 清空全部 */
+  delete: (ids: number[] = []) => api.post('/message/customer/delete', { ids }),
 }
 
 // 续租

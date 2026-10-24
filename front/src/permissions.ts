@@ -47,6 +47,8 @@ export const ROUTE_ROLES: Record<string, string[]> = {
   // 旧路径：支付配置已并入「系统配置」页（/config?tab=pay），仅保留登记以兼容旧链接
   '/pay-config': [ROLE.ADMIN],
   '/my-orders': [ROLE.CUSTOMER],
+  // 线上补缴支付页：顾客为逾期 / 损坏费用在线缴款（独立于首付款通道）
+  '/supplement-pay': [ROLE.CUSTOMER],
   '/rent': [ROLE.CUSTOMER],
   '/vehicle-catalog': [ROLE.CUSTOMER],
   '/profile': [ROLE.CUSTOMER],

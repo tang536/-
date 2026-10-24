@@ -6,10 +6,11 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-public class SettlementService(AppDbContext db, PaymentService payment, ILogger<SettlementService> logger)
+public class SettlementService(AppDbContext db, PaymentService payment, MessageService messages, ILogger<SettlementService> logger)
 {
     private readonly AppDbContext _db = db;
     private readonly PaymentService _payment = payment;
+    private readonly MessageService _messages = messages;
     private readonly ILogger<SettlementService> _logger = logger;
 
     public async Task<List<SettleRecord>> GetAll() =>
@@ -174,7 +175,15 @@ public class SettlementService(AppDbContext db, PaymentService payment, ILogger<
             //     订单仍是「租赁中」，前台可以修好配置后重试，不会出现"订单已完结、钱没退"的状态；
             //   · 模拟 / 微信 / 银行卡 → 只记账，并在返回文案里说清"未发生资金划转"。
             // 网关调用放在事务里，事务会多持有几百毫秒到十几秒；门店并发极低，可接受。
-            string note = await SettleNoteAsync(order, c, paid);
+            //
+            // 补缴分两种口径（仅当本次结算产生补缴金额时生效）：
+            //   · 线下（默认）→ 顾客当场付款，结算单记录补缴金额即可，不生成线上账单；
+            //   · 线上 → 生成一张独立的「线上补缴单」（待支付支付记录）并通知顾客回顾客端在线支付，
+            //     顾客不想当场交钱时走这条路。两种都和结算同进同退。
+            string note =
+                (c.Supplement > 0 && dto.SupplementPayMethod.Equals("线上", StringComparison.Ordinal))
+                    ? await CreateOnlineSupplementAsync(order, c)
+                    : await SettleNoteAsync(order, c, paid);
 
             await tx.CommitAsync();
             return new SettleResult(settle, note);
@@ -200,19 +209,77 @@ public class SettlementService(AppDbContext db, PaymentService payment, ILogger<
     /// 单独拆出来是为了让 <see cref="Settle"/> 的事务体保持"改状态 → 释放车 → 退款 → 提交"的直线结构；
     /// 三种结果（已原路退回 / 无支付记录 / 仅登记应收补缴）互斥，文案必须让前台一眼看出
     /// **钱到底动没动**，不能统一回一句"结算成功"。
+    ///
+    /// 退款成功时同步向顾客推送「退款去向」通知（需求：提前还车/正常结算的退款按原支付渠道原路退回，
+    /// 顾客需明确知道钱退到了哪里）——这是把"退款去向"落到顾客侧的关键一步。
     /// </summary>
     private async Task<string> SettleNoteAsync(RentalOrder order, SettleCalc c, PaymentRecord? paid)
     {
         if (c.Refund <= 0)
             return c.Supplement > 0
-                ? $"结算完成；顾客需补缴 ¥{c.Supplement:0.00}（系统仅登记应收，未发起线上收款）。"
+                ? $"结算完成；顾客需补缴 ¥{c.Supplement:0.00}（系统仅登记应收，未发起线上收款，请线下收取）。"
                 : "结算完成，无需退款或补缴。";
 
         if (paid == null)
+        {
+            await _messages.SendAsync(
+                "customer", order.CustomerId, "refund", order.OrderNo, "结算退款通知",
+                $"订单 {order.OrderNo} 已结算，应退 ¥{c.Refund:0.00}，但未找到有效支付记录，门店将线下为您办理退款，请留意门店通知。");
             return $"应退 ¥{c.Refund:0.00}，但未找到该订单的有效支付记录，未执行退款，请财务核实。";
+        }
 
         var r = await _payment.Refund(paid.PayId, c.Refund, $"订单 {order.OrderNo} 归还结算");
+
+        // 向顾客说明退款去向：真实通道 = 原路退回；模拟/凭证不全 = 账面登记、请到门店领现金。
+        var dest = r.RealMoney
+            ? $"将按原支付渠道（{paid.PayType}）原路退回，预计到账 1-3 个工作日，请注意查收。"
+            : $"当前为模拟收银台，退款 ¥{c.Refund:0.00} 已作账面登记，请到门店领取现金并留存凭证。";
+        await _messages.SendAsync(
+            "customer", order.CustomerId, "refund", order.OrderNo, "结算退款通知",
+            $"订单 {order.OrderNo} 已结算，应退 ¥{c.Refund:0.00}。{dest}");
+
         return $"结算完成。{r.Message}";
+    }
+
+    /// <summary>
+    /// 生成「线上补缴单」：为逾期/损坏产生的补缴金额创建一条独立的待支付支付记录
+    /// （biz_type='supplement' + 全局唯一的 out_trade_no），并向顾客推送补缴通知。
+    ///
+    /// 与首付款的区别：首付款以租赁订单号作为 out_trade_no；补缴单必须拥有全局唯一的交易号
+    /// （支付宝/微信会拒绝与历史交易重复的 out_trade_no），故单独生成并存储。
+    /// 顾客回到顾客自助端后，用这张待支付记录发起与原首付款一致的真实通道支付。
+    /// </summary>
+    private async Task<string> CreateOnlineSupplementAsync(RentalOrder order, SettleCalc c)
+    {
+        var outTradeNo = BuildSupplementOutTradeNo(order.OrderNo);
+        _db.PaymentRecords.Add(new PaymentRecord
+        {
+            OrderId = order.OrderId,
+            PayAmount = c.Supplement,
+            PayType = null,                 // 顾客在支付页自选，付款时再写入
+            PayStatus = "待支付",
+            BizType = "supplement",
+            OutTradeNo = outTradeNo
+        });
+        await _db.SaveChangesAsync();
+
+        await _messages.SendAsync(
+            "customer", order.CustomerId, "supplement", order.OrderNo, "逾期补缴通知",
+            $"订单 {order.OrderNo} 已结算，您尚有余款 ¥{c.Supplement:0.00} 待补缴（逾期/损坏费用）。" +
+            $"门店已为您生成线上补缴单，请登录顾客端「我的订单 → 待补缴」在线支付，逾期可能影响后续租车。");
+
+        return $"结算完成；已生成线上补缴单 ¥{c.Supplement:0.00} 并通知顾客在线支付（顾客回到顾客端即可缴款）。";
+    }
+
+    /// <summary>
+    /// 生成全局唯一的补缴交易号：SP + 订单号 + 时间戳 + 随机后缀。
+    /// 同一订单即便历史补缴已支付，也能保证 out_trade_no 不重复（通道拒绝重复订单号）。
+    /// </summary>
+    private static string BuildSupplementOutTradeNo(string orderNo)
+    {
+        var ts = DateTime.Now.ToString("yyyyMMddHHmmssfff");
+        var rnd = new Random().Next(1000, 9999);
+        return $"SP-{orderNo}-{ts}-{rnd}";
     }
 
     /// <summary>

@@ -19,6 +19,7 @@ import VehiclesCatalog from './pages/Vehicles'
 import Profile from './pages/Profile'
 import Membership from './pages/Membership'
 import PayPage from './pages/PayPage'
+import SupplementPayPage from './pages/SupplementPayPage'
 import MockPay from './pages/MockPay'
 import PayResult from './pages/PayResult'
 
@@ -128,6 +129,7 @@ export default function App() {
         <Route path="profile" element={<CustomerGuard pathKey="/profile"><Profile /></CustomerGuard>} />
         <Route path="membership" element={<CustomerGuard pathKey="/membership"><Membership /></CustomerGuard>} />
         <Route path="pay/:orderNo" element={<CustomerGuard pathKey="/my-orders"><PayPage /></CustomerGuard>} />
+        <Route path="supplement-pay/:payId" element={<CustomerGuard pathKey="/supplement-pay"><SupplementPayPage /></CustomerGuard>} />
 
         {/* ===== 工作人员端 ===== */}
         <Route path="dashboard" element={<Guard roles={R('/dashboard')}><Dashboard /></Guard>} />

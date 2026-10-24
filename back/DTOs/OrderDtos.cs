@@ -39,6 +39,15 @@ public class SettleOrderDto
     /// <summary>逾期费由后端按实际还车时间与租期计算，不由前端决定</summary>
     public decimal DamageFee { get; init; }
     public string? Remark { get; init; }
+
+    /// <summary>
+    /// 补缴方式（仅当本次结算产生补缴金额时生效）：
+    ///   · "线下" = 顾客当场线下付款（现金/扫码），门店直接收讫，结算单记录补缴金额即可；
+    ///   · "线上" = 顾客不想当场付，系统生成一张「线上补缴单」（独立的待支付支付记录）
+    ///     并向顾客推送通知，顾客回到顾客自助端在线支付。
+    /// 默认线下，保持与旧行为一致（无补缴时此字段无意义）。
+    /// </summary>
+    public string SupplementPayMethod { get; init; } = "线下";
 }
 
 /// <summary>
@@ -169,6 +178,8 @@ public class RentEstimateDto
 /// <summary>预警/通知条目（首页预警提醒区、顶栏通知中心）</summary>
 public class NotificationDto
 {
+    /// <summary>落库后的消息主键（通用 message 表），已读/删除按此定位</summary>
+    public int MessageId { get; init; }
     public string Id { get; init; } = string.Empty;
     /// <summary>danger / warning / info / success</summary>
     public string Level { get; init; } = "info";
@@ -178,7 +189,7 @@ public class NotificationDto
     public DateTime Time { get; init; } = DateTime.Now;
     /// <summary>点击后跳转的前端路由</summary>
     public string? Link { get; init; }
-    /// <summary>当前登录用户是否已读（按 notification_read 表判定，逐条独立）</summary>
+    /// <summary>当前登录用户是否已读（按通用 message 表的消息行判定，逐条独立）</summary>
     public bool IsRead { get; set; }
     /// <summary>已读时间（未读为 null）</summary>
     public DateTime? ReadTime { get; set; }
@@ -192,10 +203,10 @@ public class EarlyReturnReviewDto
     public string? RejectReason { get; init; }
 }
 
-/// <summary>标记通知已读入参：Ids 为空表示「全部标记已读」</summary>
+/// <summary>标记通知已读入参：Ids 为消息主键（message_id）列表，为空表示「全部标记已读」</summary>
 public class NotificationReadRequest
 {
-    public List<string>? Ids { get; init; }
+    public List<int>? Ids { get; init; }
 }
 
 /// <summary>续租入参</summary>

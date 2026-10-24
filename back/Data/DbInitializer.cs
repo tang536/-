@@ -131,18 +131,6 @@ CREATE TABLE IF NOT EXISTS `check_report` (
                 "ALTER TABLE `maintenance_order` ADD COLUMN `fault_image` VARCHAR(500) NULL COMMENT '故障现场照片路径（多张逗号分隔）' AFTER `fault_description`;");
         }
 
-        // 通知已读表：通知本身由业务实时算出、不落库，这里只记「谁读过哪条」
-        EnsureTable(db, "notification_read", """
-CREATE TABLE IF NOT EXISTS `notification_read` (
-  `read_id` INT NOT NULL AUTO_INCREMENT,
-  `user_id` INT NOT NULL COMMENT '用户ID（工作人员 system_user.user_id）',
-  `notification_id` VARCHAR(60) NOT NULL COMMENT '通知条目ID（业务生成，稳定可复现）',
-  `read_time` DATETIME NOT NULL COMMENT '已读时间',
-  PRIMARY KEY (`read_id`),
-  UNIQUE KEY `uk_user_notification` (`user_id`, `notification_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知已读记录表';
-""");
-
         // 车辆独立计价：两列留 NULL 表示未单独定价，由 PricingResolver 回退 system_config，
         // 历史车辆无需补录即可继续出租
         if (!ColumnExists(db, "vehicle", "daily_rent"))
@@ -177,6 +165,42 @@ CREATE TABLE IF NOT EXISTS `notification_read` (
             "UPDATE `vehicle` SET `qr_code` = CONCAT('ERENTAL:VEHICLE:', `vehicle_id`) " +
             "WHERE `qr_code` IS NULL OR `qr_code` = '';");
 
+
+        // 支付记录业务类型 + 独立交易号：支持「逾期线上补缴」——补缴单是同一订单上的第二条
+        // 支付记录（biz_type='supplement'），且必须拥有全局唯一的 out_trade_no（通道拒绝重复订单号）。
+        if (!ColumnExists(db, "payment_record", "biz_type"))
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE `payment_record` ADD COLUMN `biz_type` VARCHAR(10) NOT NULL DEFAULT 'order' COMMENT '业务类型（order=首付款，supplement=线上补缴）' AFTER `transaction_no`;");
+        }
+        if (!ColumnExists(db, "payment_record", "out_trade_no"))
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE `payment_record` ADD COLUMN `out_trade_no` VARCHAR(64) NULL COMMENT '通道侧商户订单号（补缴单独有，全局唯一）' AFTER `biz_type`;");
+        }
+
+        // 通用消息表（统一通知中心）：顾客事件通知与工作人员预警消息都落这一张表，
+        // 接收人按 receiver_type（customer/staff）+ receiver_id 区分，已读状态直接记录在消息行，
+        // 不再单独维护已读表。老库缺表时自动补建，幂等可反复执行。
+        EnsureTable(db, "message", """
+CREATE TABLE IF NOT EXISTS `message` (
+  `message_id` INT NOT NULL AUTO_INCREMENT,
+  `receiver_type` VARCHAR(10) NOT NULL COMMENT '接收人类型（customer=顾客 / staff=工作人员）',
+  `receiver_id` INT NOT NULL COMMENT '接收人ID（customer 时为 customer_id；staff 时为 system_user.user_id）',
+  `ref_type` VARCHAR(20) NOT NULL COMMENT '业务类型（refund/supplement/supplement_paid/overdue/expiring/pending/maintenance/profile_incomplete/maintain_due）',
+  `ref_id` VARCHAR(60) DEFAULT NULL COMMENT '业务实体ID（订单号/车辆ID等），用于幂等去重与跳转定位',
+  `title` VARCHAR(120) NOT NULL COMMENT '消息标题',
+  `content` TEXT NOT NULL COMMENT '消息正文',
+  `level` VARCHAR(10) DEFAULT NULL COMMENT '预警级别（danger/warning/info/success），顾客事件消息可为空',
+  `link` VARCHAR(120) DEFAULT NULL COMMENT '点击跳转的前端路由',
+  `is_read` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已读（0未读 1已读）',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `read_at` DATETIME DEFAULT NULL COMMENT '已读时间',
+  PRIMARY KEY (`message_id`),
+  UNIQUE KEY `uk_msg_biz` (`receiver_type`, `receiver_id`, `ref_type`, `ref_id`),
+  KEY `idx_msg_receiver` (`receiver_type`, `receiver_id`, `is_read`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通用消息表（统一通知中心）';
+""");
 
         // 安全网：用 EF 模型反查数据库，补上任何遗漏的**可空列**（非空列只打印 ALTER 建议）。
         // 必须在第二阶段之前执行，否则回填查询又会撞上缺列

@@ -150,6 +150,8 @@ export interface CheckReport {
 
 /** 预警/通知条目 */
 export interface NotificationItem {
+  /** 落库后的消息主键（通用 message 表），已读/删除按此定位 */
+  messageId?: number
   id: string
   level: 'danger' | 'warning' | 'info' | 'success'
   category: string
@@ -157,7 +159,7 @@ export interface NotificationItem {
   description: string
   time: string
   link?: string
-  /** 当前登录用户是否已读（后端按 notification_read 表逐条返回） */
+  /** 当前登录用户是否已读（后端按通用 message 表的消息行逐条返回） */
   isRead?: boolean
   /** 已读时间（未读为空） */
   readTime?: string

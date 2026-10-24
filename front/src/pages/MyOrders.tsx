@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { orderApi, printApi, customerApi } from '@/api'
+import { orderApi, printApi, customerApi, supplementApi } from '@/api'
 import { useUI } from '@/components/UIProvider'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
@@ -31,6 +31,8 @@ export default function MyOrders() {
   const [receipt, setReceipt] = useState<string | null>(null)
   // 待支付倒计时：每秒减 1，用于给「待支付」订单展示剩余支付时间（超时会被系统自动取消）
   const [now, setNow] = useState(Date.now())
+  // 线上补缴单（门店结算选「线上补缴」生成），顾客在此去支付
+  const [supplements, setSupplements] = useState<any[]>([])
 
   const load = () => {
     setLoading(true)
@@ -38,6 +40,10 @@ export default function MyOrders() {
       .then((res: any) => setList(res.data || []))
       .catch((e: any) => toast(e?.message || '订单加载失败', 'error'))
       .finally(() => setLoading(false))
+    // 补缴列表失败不影响订单主流程
+    supplementApi.mine()
+      .then((res: any) => setSupplements(res.data || []))
+      .catch(() => { /* 忽略，下次刷新再试 */ })
   }
 
   useEffect(() => { load() }, [keyword])
@@ -124,6 +130,8 @@ export default function MyOrders() {
 
   const active = list.filter(o => o.orderStatus === '已支付' || o.orderStatus === '租赁中' || o.orderStatus === '待支付')
   const finished = list.filter(o => o.orderStatus === '已完成' || o.orderStatus === '已完结')
+  // 门店结算选「线上补缴」生成的待支付补缴单，顾客在此在线缴款
+  const pendingSupplements = supplements.filter((s: any) => s.PayStatus === '待支付')
 
   const summary = [
     { label: '累计订单', value: list.length, icon: 'orders' as const, tone: 'sky' },
@@ -262,6 +270,40 @@ export default function MyOrders() {
           <div className="table-foot-note">累计租金合计：<strong>¥{list.reduce((s, o) => s + Number(o.totalRent || 0), 0).toFixed(2)}</strong></div>
         )}
       </div>
+
+      {/* 待补缴费用：门店结算时选「线上补缴」生成的独立补缴单，顾客回到顾客端在线支付 */}
+      {pendingSupplements.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-title">
+            <Icon name="warning" size={18} chip />待补缴费用
+            <span className="card-title-count">{pendingSupplements.length} 笔待支付</span>
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>关联订单</th><th className="num">补缴金额</th><th>支付方式</th><th>状态</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingSupplements.map((s: any) => (
+                  <tr key={s.PayId}>
+                    <td className="mono">{s.OrderNo}</td>
+                    <td className="num">¥{Number(s.PayAmount).toFixed(2)}</td>
+                    <td>{s.PayType || '—'}</td>
+                    <td><span className="status-tag status-warning">待支付</span></td>
+                    <td>
+                      <button className="btn-sm btn-sm-primary" onClick={() => navigate(`/supplement-pay/${s.PayId}`)}>
+                        <Icon name="rent" size={13} color="#fff" />去支付
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {receipt !== null && (
         <ReceiptModal

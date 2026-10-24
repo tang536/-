@@ -5,9 +5,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-public class ReportService(AppDbContext db)
+public class ReportService(AppDbContext db, MessageService messages)
 {
     private readonly AppDbContext _db = db;
+    private readonly MessageService _messages = messages;
 
     /// <summary>统计看板。from/to 为可选时间段：传了只统计区间内，不传统计全部（累计口径）</summary>
     public async Task<VisualReport> GetDashboard(DateTime? from = null, DateTime? to = null)
@@ -334,64 +335,95 @@ public class ReportService(AppDbContext db)
         public decimal Refund { get; init; }
     }
 
-    /// <summary>通知中心数据（需求 4.2.4 / 6.1）。userId 用于合并已读记录，逐条返回 isRead / readTime</summary>
+    /// <summary>
+    /// 通知中心数据（需求 4.2.4 / 6.1）。
+    ///
+    /// 先把实时预警幂等落库到通用 message 表（receiver_type='staff'），
+    /// 再从 message 表读取该员工的全部消息（含历史已读、以及删除后的结果），
+    /// 已读状态直接落在消息行，与顾客消息共用同一张表、同一套已读语义。
+    /// </summary>
     public async Task<List<NotificationDto>> GetNotifications(int userId)
     {
-        var list = await BuildNotifications();
-        if (list.Count == 0) return list;
-
-        var reads = await _db.NotificationReads.AsNoTracking()
-            .Where(r => r.UserId == userId)
-            .ToDictionaryAsync(r => r.NotificationId, r => r.ReadTime);
-
-        foreach (var n in list)
+        // ① 实时预警 → 幂等 upsert 进通用消息表（同一条业务预警对同一员工只保留一行）
+        foreach (var a in await BuildNotifications())
         {
-            if (reads.TryGetValue(n.Id, out var t))
-            {
-                n.IsRead = true;
-                n.ReadTime = t;
-            }
+            var (refType, refId) = SplitAlertId(a.Id);
+            await _messages.SendAsync("staff", userId, refType, refId,
+                a.Title, a.Description, a.Level, a.Link);
         }
-        return list;
+
+        // ② 从 message 表读取（含历史已读状态），按时间倒序
+        var rows = await _db.Messages.AsNoTracking()
+            .Where(m => m.ReceiverType == "staff" && m.ReceiverId == userId)
+            .OrderByDescending(m => m.CreatedAt)
+            .ToListAsync();
+
+        return rows.Select(m => new NotificationDto
+        {
+            MessageId = m.MessageId,
+            Id = string.IsNullOrEmpty(m.RefId) ? m.RefType : $"{m.RefType}-{m.RefId}",
+            Level = m.Level ?? "info",
+            Category = CategoryOf(m.RefType),
+            Title = m.Title,
+            Description = m.Content,
+            Time = m.CreatedAt,
+            Link = m.Link,
+            IsRead = m.IsRead,
+            ReadTime = m.ReadAt
+        }).ToList();
     }
 
     /// <summary>
-    /// 标记已读。ids 为空表示全部已读，以实时算出的通知集合为准。
-    ///
-    /// 幂等必须由数据库唯一键 uk_user_notification 兜底，**不能**写成
-    /// 「查差集 → AddRange → SaveChanges」：那样两个并发请求会各自查到空差集、各自插入，
-    /// 后者撞唯一键抛 DbUpdateException，被 ExceptionMiddleware 兜成 500
-    /// （用户双击「全部已读」即可命中）。改成 INSERT IGNORE 逐条落库后，
-    /// 重复行由 MySQL 原子忽略、不抛错，check-then-act 的竞态窗口随之消失。
+    /// 标记已读：ids 为消息主键（message_id）列表；为空表示「全部标记已读」。
+    /// 直接更新 message 表中的 is_read / read_at，按 (staff, userId) 限定归属。
     /// </summary>
-    public async Task MarkRead(int userId, List<string>? ids)
+    public async Task MarkRead(int userId, List<int>? ids)
     {
-        var target = ids == null || ids.Count == 0 || ids.All(string.IsNullOrWhiteSpace)
-            ? (await BuildNotifications()).Select(n => n.Id).Distinct().ToList()
-            : ids.Where(i => !string.IsNullOrWhiteSpace(i))
-                  .Select(i => i.Trim())
-                  .Select(i => i.Length > 60 ? i[..60] : i)   // 与列宽 VARCHAR(60) 对齐
-                  .Distinct()
-                  .ToList();
-        if (target.Count == 0) return;
-
-        var existed = (await _db.NotificationReads.AsNoTracking()
-                .Where(r => r.UserId == userId)
-                .Select(r => r.NotificationId)
-                .ToListAsync())
-            .ToHashSet(StringComparer.Ordinal);
-
-        var missing = target.Where(t => !existed.Contains(t)).ToList();
-        if (missing.Count == 0) return;
+        var q = _db.Messages.Where(m => m.ReceiverType == "staff"
+                                       && m.ReceiverId == userId
+                                       && !m.IsRead);
+        if (ids != null && ids.Count > 0)
+            q = q.Where(m => ids.Contains(m.MessageId));
 
         var now = DateTime.Now;
-        foreach (var id in missing)
+        var targets = await q.ToListAsync();
+        foreach (var m in targets)
         {
-            await _db.Database.ExecuteSqlRawAsync(
-                "INSERT IGNORE INTO `notification_read` (`user_id`, `notification_id`, `read_time`) VALUES ({0}, {1}, {2})",
-                userId, id, now);
+            m.IsRead = true;
+            m.ReadAt = now;
         }
+        if (targets.Count > 0) await _db.SaveChangesAsync();
     }
+
+    /// <summary>把预警的稳定字符串 ID（overdue-12 / maintain-due 等）拆成 (ref_type, ref_id)。</summary>
+    private static (string RefType, string RefId) SplitAlertId(string id) => id switch
+    {
+        "maintenance" => ("maintenance", ""),
+        "profile-incomplete" => ("profile_incomplete", ""),
+        "maintain-due" => ("maintain_due", ""),
+        _ => SplitPrefixedId(id)
+    };
+
+    private static (string RefType, string RefId) SplitPrefixedId(string id)
+    {
+        var i = id.IndexOf('-');
+        return i > 0 ? (id[..i], id[(i + 1)..]) : (id, "");
+    }
+
+    /// <summary>ref_type → 前端展示用的分类名（message 表不重复存中文分类）。</summary>
+    private static string CategoryOf(string refType) => refType switch
+    {
+        "overdue" => "逾期预警",
+        "expiring" => "到期提醒",
+        "pending" => "待支付",
+        "maintenance" => "维保提醒",
+        "profile_incomplete" => "资料待完善",
+        "maintain_due" => "保养提醒",
+        "refund" => "退款通知",
+        "supplement" => "补缴通知",
+        "supplement_paid" => "补缴成功",
+        _ => "通知"
+    };
 
     /// <summary>实时计算通知条目（不含已读状态，已读由 GetNotifications 合并）</summary>
     private async Task<List<NotificationDto>> BuildNotifications()
