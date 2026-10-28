@@ -39,10 +39,29 @@ public class PendingOrderCleanupService(
 
                 if (handle is not null)
                 {
-                    var orders = scope.ServiceProvider.GetRequiredService<OrderService>();
-                    var released = await orders.ReleaseExpiredPendingOrders();
-                    if (released > 0)
-                        _logger.LogInformation("已自动取消 {Count} 笔超时未支付订单并释放对应车辆", released);
+                    // 拿到锁不等于「一直持有」：GET_LOCK 绑在物理连接上，连接被服务端
+                    // 按 wait_timeout 掐掉后锁会静默消失，另一实例随即接管。写库前先自检一次，
+                    // 避免在本实例其实已经让位的情况下继续改订单状态。
+                    if (!await handle.IsHeldAsync())
+                    {
+                        _logger.LogWarning("命名锁 erental_pending_cleanup 在清理前自检失败（连接可能已失效），本轮跳过");
+                    }
+                    else
+                    {
+                        var orders = scope.ServiceProvider.GetRequiredService<OrderService>();
+                        var released = await orders.ReleaseExpiredPendingOrders();
+                        if (released > 0)
+                            _logger.LogInformation("已自动取消 {Count} 笔超时未支付订单并释放对应车辆", released);
+
+                        // 写完之后再确认一次：若这一轮跑到一半锁就丢了，说明本次写操作
+                        // 可能与另一实例重叠，属于需要人工核对的异常，必须留下明确告警。
+                        if (!await handle.IsHeldAsync())
+                        {
+                            _logger.LogError(
+                                "命名锁 erental_pending_cleanup 在清理后自检失败：本轮可能与另一实例重叠，" +
+                                "请核对是否存在重复取消的订单（释放逻辑幂等，重复执行本身不会多退少补）");
+                        }
+                    }
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }

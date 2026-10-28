@@ -35,6 +35,14 @@ public class SupplementController(
 
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
+    /// <summary>
+    /// 浏览器此刻的地址栏源（X-Client-Origin，缺失时退回 Referer），用于生成支付回跳地址。
+    /// </summary>
+    private string? ClientOrigin =>
+        PayConfigService.ResolveClientOrigin(
+            Request.Headers["X-Client-Origin"].ToString(),
+            Request.Headers.Referer.ToString());
+
     /// <summary>为某张待支付补缴单发起支付，复用支付宝/微信/银行卡三通道，返回收银台地址或二维码。</summary>
     [HttpPost("{payId:int}/pay")]
     public async Task<IActionResult> Pay(int payId, [FromBody] string? payTypeRaw)
@@ -54,7 +62,7 @@ public class SupplementController(
 
             var payType = string.IsNullOrWhiteSpace(payTypeRaw) ? "支付宝" : payTypeRaw!.Trim();
             // 顾客选定渠道后写入记录（付款完成前门店侧也能看到真实意向）
-            rec.PayType = payType;
+            rec.SetChannel(payType);
             await _db.SaveChangesAsync();
 
             var rt = await _payConfig.ResolveAsync();
@@ -65,7 +73,10 @@ public class SupplementController(
             switch (payType)
             {
                 case "支付宝":
-                    payUrl = await _alipay.CreatePagePayAsync(rec.OutTradeNo!, $"电动车租赁补缴 {order.OrderNo}", rec.PayAmount);
+                    payUrl = await _alipay.CreatePagePayAsync(
+                        rec.OutTradeNo!, $"电动车租赁补缴 {order.OrderNo}", rec.PayAmount,
+                        await BuildReturnUrl(rec.PayId),
+                        await _payConfig.BuildNotifyUrlAsync(ClientOrigin, "api/payment/alipay/notify"));
                     realPay = real;
                     break;
                 case "微信":
@@ -189,12 +200,11 @@ public class SupplementController(
         }
     }
 
-    /// <summary>构建支付完成后回跳的前端地址（微信 H5 的 redirect_url 等），带上补缴单号。</summary>
-    private async Task<string> BuildReturnUrl(int payId)
-    {
-        var raw = await _payConfig.GetRawAsync();
-        var configured = raw.TryGetValue(PayConfigService.KeyReturnUrl, out var v) ? v.Trim() : "";
-        var baseUrl = _payConfig.FallbackChannelUrl(configured, $"supplement-pay/{payId}");
-        return baseUrl;
-    }
+    /// <summary>
+    /// 构建支付完成后回跳的前端地址（支付宝 return_url / 微信 H5 redirect_url），带上补缴单号。
+    /// 优先用「顾客当前访问源」，缺失时退回配置值兜底——理由见
+    /// <see cref="PayConfigService.BuildReturnUrlAsync"/>。
+    /// </summary>
+    private Task<string> BuildReturnUrl(int payId) =>
+        _payConfig.BuildReturnUrlAsync(ClientOrigin, $"supplement-pay/{payId}");
 }

@@ -150,7 +150,7 @@ export default function Users() {
     <div className="card">
       <div className="card-title">
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <Icon name="users" size={18} chip />账号管理
+          <Icon name="users" size={18} chip />员工账号
           <span className="card-title-count">共 {list.length} 个工作人员账号</span>
         </span>
         <button className="btn-sm btn-sm-primary btn-icon-sm" style={{ marginLeft: 'auto' }}

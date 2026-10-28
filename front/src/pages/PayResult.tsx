@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { paymentApi, memberApi } from '@/api'
 import { setAuth } from '@/hooks/useAuth'
@@ -49,61 +49,94 @@ export default function PayResult() {
   // 回跳 URL 带的金额最直观；轮询拿到订单详情后以订单金额兜底
   const [amount, setAmount] = useState(totalAmount)
 
+  // 已确认为已支付后不再发查询（结果页可能停留很久，可见性事件会反复触发）
+  const paidRef = useRef(false)
+  // 轮询次数放 ref：原实现把 check() 写在 setPollCount 的 updater 里，
+  // StrictMode 下 updater 会被双调用，等于每次轮询都查两遍。
+  const pollRef = useRef(0)
+
+  /**
+   * 查一次并落状态。三条触发路径共用：首屏、定时轮询、页面重新可见。
+   * 服务端查单接口在本地仍为待支付时会向支付渠道再问一次并当场幂等入账，
+   * 所以这里拿到的 paid 是「跟渠道对过账」的结果，不是本地库的旧值。
+   */
+  const applyStatus = useCallback(async () => {
+    if (paidRef.current) return
+    try {
+      const res: any = await paymentApi.status(orderNo)
+      const d = res.data || {}
+      const s = d.orderStatus
+      setOrderInfo(d)
+      if (d.amount) setAmount((prev) => prev || String(d.amount))
+      if (s === '已支付' || s === '租赁中' || s === '已完结') {
+        paidRef.current = true
+        setStatus('paid')
+        // 会员购买入账后同步全局登录态里的最新等级，顶栏/个人中心立即刷新
+        if (orderNo.startsWith('HY')) {
+          try {
+            const center: any = await memberApi.center()
+            const raw = localStorage.getItem('user')
+            if (raw && center.data?.memberLevel) {
+              const u = JSON.parse(raw)
+              if (u.memberLevel !== center.data.memberLevel) {
+                setAuth({ ...u, memberLevel: center.data.memberLevel })
+              }
+            }
+          } catch { /* 同步失败不阻塞结果展示 */ }
+        }
+      } else if (s === '已取消') {
+        setStatus('failed')
+      } else {
+        // 待支付：可能回调还在路上，交给轮询继续跟（最多 10 次，约 30 秒）
+        setStatus('pending')
+      }
+    } catch {
+      // 查询失败也按「确认中」处理，不能因为一次网络抖动就判定未付
+      setStatus('pending')
+    }
+  }, [orderNo])
+
   useEffect(() => {
     if (!orderNo) {
       setStatus('failed')
       return
     }
-    let stopped = false
-    const check = async () => {
-      try {
-        const res: any = await paymentApi.status(orderNo)
-        if (stopped) return
-        const d = res.data || {}
-        const s = d.orderStatus
-        setOrderInfo(d)
-        if (d.amount) setAmount((prev) => prev || String(d.amount))
-        if (s === '已支付' || s === '租赁中') {
-          setStatus('paid')
-          // 会员购买入账后同步全局登录态里的最新等级，顶栏/个人中心立即刷新
-          if (orderNo.startsWith('HY')) {
-            try {
-              const center: any = await memberApi.center()
-              const raw = localStorage.getItem('user')
-              if (raw && center.data?.memberLevel) {
-                const u = JSON.parse(raw)
-                if (u.memberLevel !== center.data.memberLevel) {
-                  setAuth({ ...u, memberLevel: center.data.memberLevel })
-                }
-              }
-            } catch { /* 同步失败不阻塞结果展示 */ }
-          }
-        } else if (s === '已取消') {
-          setStatus('failed')
-        } else {
-          // 待支付：可能回调还在路上，继续轮询（最多 10 次，约 30 秒）
-          setStatus('pending')
-          setPollCount(c => c + 1)
-        }
-      } catch {
-        if (stopped) return
-        setStatus('pending')
-        setPollCount(c => c + 1)
-      }
-    }
-    check()
+    paidRef.current = false
+    pollRef.current = 0
+    setStatus('checking')
+    setPollCount(0)
+    applyStatus()
     const timer = setInterval(() => {
-      setPollCount(c => {
-        if (c >= MAX_POLL) {
-          clearInterval(timer)
-          return c
-        }
-        check()
-        return c + 1
-      })
+      if (paidRef.current || pollRef.current >= MAX_POLL) { clearInterval(timer); return }
+      pollRef.current += 1
+      setPollCount(pollRef.current)
+      applyStatus()
     }, 3000)
-    return () => { stopped = true; clearInterval(timer) }
-  }, [orderNo])
+    return () => clearInterval(timer)
+  }, [orderNo, applyStatus])
+
+  /**
+   * 页面重新可见时补查一次。
+   *
+   * 定时轮询 30 秒就停了（不能让回跳页无限占资源），但顾客很可能在支付平台那边
+   * 停留更久——回来时轮询早就结束，页面还挂着「支付结果确认中」，只能自己去订单页看。
+   * 这里在切回标签页 / 浏览器后退（含 bfcache 恢复）/ 窗口重新聚焦时各补一次查询，
+   * 把「已经付完了但页面没跟上」的情况就地解决。
+   */
+  useEffect(() => {
+    const probe = () => {
+      if (document.visibilityState !== 'visible' || paidRef.current) return
+      applyStatus()
+    }
+    document.addEventListener('visibilitychange', probe)
+    window.addEventListener('pageshow', probe)
+    window.addEventListener('focus', probe)
+    return () => {
+      document.removeEventListener('visibilitychange', probe)
+      window.removeEventListener('pageshow', probe)
+      window.removeEventListener('focus', probe)
+    }
+  }, [applyStatus])
 
   // 「未获取到订单号」时标题更准确，其余状态用通用文案
   const meta = { ...STATE_META[status] }

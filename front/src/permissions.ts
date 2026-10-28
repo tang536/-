@@ -31,6 +31,8 @@ export const ROUTE_ROLES: Record<string, string[]> = {
   '/orders': [ROLE.ADMIN, ROLE.RECEPTION],
   // 旧路径：创建订单已并入「租赁订单」页（/orders?view=create），仅保留登记以兼容旧链接跳转
   '/orders/create': [ROLE.RECEPTION],
+  // 归还结算：仅前台。用况3 的发起者就是前台，管理员不参与资金办理——
+  // 管理员要看经营数据走 /reports（统计报表），与后端 SettlementController 的 ReceptionOnly 对齐
   '/settlements': [ROLE.RECEPTION],
   '/customers': [ROLE.ADMIN, ROLE.RECEPTION],
   '/members': [ROLE.ADMIN],
@@ -57,8 +59,12 @@ export const ROUTE_ROLES: Record<string, string[]> = {
 
 /** 角色是否可进入某个路径（按最长前缀匹配） */
 export function canAccess(path: string, roleName: string): boolean {
+  // 按「路径部分」判权：带查询串/锚点的链接（/orders?status=待支付、/vehicles?view=maintenance）
+  // 若原样拿去匹配，既不等也不以 '/xxx/' 开头，会掉进「未登记 → 一律拒绝」，
+  // 导致有权限的页面配上一个参数就变成点不动的死链。
+  const clean = path.split(/[?#]/)[0]
   const base = Object.keys(ROUTE_ROLES)
-    .filter(p => path === p || path.startsWith(p + '/'))
+    .filter(p => clean === p || clean.startsWith(p + '/'))
     .sort((a, b) => b.length - a.length)[0]
   // ⚠️ 未登记的路径一律**拒绝**（白名单口径）。
   // 早期这里是 `return true`（默认放行），意味着「新加了一个页面但忘了登记权限」
@@ -75,5 +81,6 @@ export function canAccess(path: string, roleName: string): boolean {
  * 避免开发者漏登记时管理员只看到一句含糊的"没有权限"而无从下手。
  */
 export function isRegisteredPath(path: string): boolean {
-  return Object.keys(ROUTE_ROLES).some(p => path === p || path.startsWith(p + '/'))
+  const clean = path.split(/[?#]/)[0]
+  return Object.keys(ROUTE_ROLES).some(p => clean === p || clean.startsWith(p + '/'))
 }

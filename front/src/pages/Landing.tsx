@@ -4,6 +4,7 @@ import Icon, { type IconName } from '@/components/Icon'
 import HeroStage, { resolveInitialMode, type StageFace, type StageMode } from '../components/landing/HeroStage'
 import { ROLE } from '@/hooks/useAuth'
 import { useTheme } from '@/hooks/useTheme'
+import { authApi } from '@/api'
 import { ROUTE_ROLES } from '@/permissions'
 import { GITHUB_URL } from '@/utils/links'
 
@@ -26,6 +27,26 @@ export default function Landing() {
   /** 是否允许登录表单自动聚焦（只在用户主动点火 / 深链进来时为 true，避免首屏被抢焦点） */
   const [autoFocus, setAutoFocus] = useState(false)
   const [scrolled, setScrolled] = useState(false)
+  /** 站点名称：取自后端公开配置 site.name（系统操作 #2 openLoginPage），取不到就用本地默认名 */
+  const [siteName, setSiteName] = useState('途电驿站')
+
+  // 打开登录页 = 向后端要一次公开配置（站点名 / 可用登录方式 / 主题选项）。
+  // 这个请求匿名可发，拿不到也不影响页面可用：失败就保持本地默认名，不弹错、不阻塞渲染。
+  useEffect(() => {
+    let alive = true
+    authApi
+      .options()
+      .then((res: any) => {
+        const name = res?.data?.['site.name']
+        if (alive && typeof name === 'string' && name.trim()) setSiteName(name.trim())
+      })
+      .catch(() => {
+        /* 公开配置拿不到不提示：登录页必须永远能显示出来 */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   // 路由守卫把未登录的访问转到 /login 时会带上 state.from（原目标路径）。
   // 来源是员工路由（已登记权限且不含顾客角色）时，自动点亮员工登录卡——
@@ -100,7 +121,7 @@ export default function Landing() {
               <Icon name="vehicles" size={20} color="#fff" />
             </span>
             <span className="landing-logo-text">
-              途电驿站
+              {siteName}
               <em>TuDian Station</em>
             </span>
           </div>
@@ -221,7 +242,7 @@ export default function Landing() {
       </section>
 
       <footer className="landing-footer">
-        <span>途电驿站 · 课程设计演示项目</span>
+        <span>{siteName} · 课程设计演示项目</span>
         <span className="landing-footer-sep" />
         <span>TuDianStation</span>
       </footer>

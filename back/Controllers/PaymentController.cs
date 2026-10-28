@@ -48,15 +48,27 @@ public class PaymentController(
     private string? ClientIp => HttpContext.Connection.RemoteIpAddress?.ToString();
 
     /// <summary>
-    /// 支付完成后引导用户返回的前端地址（微信 H5 的 redirect_url 等）。
-    /// 复用支付配置里的 return_url 兜底逻辑（局域网模式自动换本机 IP 与当前前端端口），
+    /// 浏览器此刻的地址栏源：优先 X-Client-Origin（前端拦截器注入），
+    /// 缺失时退回浏览器自动发送的 Referer，见 <see cref="PayConfigService.ResolveClientOrigin"/>。
+    /// 用于生成支付回跳地址：从哪个地址来就回哪个地址，而不是让服务端猜网卡 IP。
+    /// 取值合法性由 <see cref="PayConfigService.BuildReturnUrlAsync"/> 统一校验。
+    /// </summary>
+    private string? ClientOrigin =>
+        PayConfigService.ResolveClientOrigin(
+            Request.Headers["X-Client-Origin"].ToString(),
+            Request.Headers.Referer.ToString());
+
+    /// <summary>
+    /// 支付完成后引导用户返回的前端地址（微信 H5 的 redirect_url、支付宝 return_url 等）。
+    /// 优先用「用户当前访问源」，缺失时退回配置里的 return_url 兜底逻辑（局域网模式换本机 IP）。
     /// 并带上订单号与渠道，让 /pay-result 能按渠道渲染。
     /// </summary>
     private async Task<string> BuildReturnUrl(string orderNo, string payType)
     {
-        var raw = await _payConfig.GetRawAsync();
-        var configured = raw.TryGetValue(PayConfigService.KeyReturnUrl, out var v) ? v.Trim() : "";
-        var baseUrl = _payConfig.FallbackChannelUrl(configured, "pay-result");
+        var baseUrl = await _payConfig.BuildReturnUrlAsync(ClientOrigin, "pay-result");
+        // 拿不到地址就返回空，让各通道按"未配置回跳"处理：
+        // 拼成 "?orderNo=..." 这种相对查询串比不传更糟（支付平台会当成非法地址拒绝整笔下单）。
+        if (string.IsNullOrWhiteSpace(baseUrl)) return string.Empty;
         return $"{baseUrl}{(baseUrl.Contains('?') ? "&" : "?")}orderNo={Uri.EscapeDataString(orderNo)}&payType={Uri.EscapeDataString(payType)}";
     }
 
@@ -98,6 +110,58 @@ public class PaymentController(
             return Ok(new ApiResponse<AlipaySelfCheckDto>
             {
                 Data = new AlipaySelfCheckDto { Message = "自检执行异常，请查看服务端日志" }
+            });
+        }
+    }
+
+    /// <summary>
+    /// 微信支付接线自检：向网关发一次最小查询，判断签名/证书是否配对（详见 WechatPayService.SelfCheckAsync）。
+    /// </summary>
+    [HttpGet("wechat/selfcheck")]
+    [Authorize(Policy = Policies.AdminOnly)]
+    public async Task<IActionResult> WechatSelfCheck()
+    {
+        try
+        {
+            var dto = await _wechat.SelfCheckAsync();
+            var ok = dto.SignatureAccepted || !dto.Enabled;
+            await AuditAsync("微信支付接线自检", ok,
+                dto.SignatureAccepted ? "签名通过" : (dto.Enabled ? "签名未通过" : "未启用/未配置"));
+            return Ok(new ApiResponse<ChannelSelfCheckDto> { Data = dto });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("微信自检异常（{ExType}）", ex.GetType().Name);
+            await AuditAsync("微信支付接线自检", false, "执行异常");
+            return Ok(new ApiResponse<ChannelSelfCheckDto>
+            {
+                Data = new ChannelSelfCheckDto { Channel = "wechat", ChannelName = "微信支付", Message = "自检执行异常，请查看服务端日志" }
+            });
+        }
+    }
+
+    /// <summary>
+    /// 银行卡支付接线自检：向收单网关发一次同构签名探测，判断签名是否被接受（详见 BankPayService.SelfCheckAsync）。
+    /// </summary>
+    [HttpGet("bank/selfcheck")]
+    [Authorize(Policy = Policies.AdminOnly)]
+    public async Task<IActionResult> BankSelfCheck()
+    {
+        try
+        {
+            var dto = await _bank.SelfCheckAsync();
+            var ok = dto.SignatureAccepted || !dto.Enabled;
+            await AuditAsync("银行卡支付接线自检", ok,
+                dto.SignatureAccepted ? "签名通过" : (dto.Enabled ? "签名未通过" : "未启用/未配置"));
+            return Ok(new ApiResponse<ChannelSelfCheckDto> { Data = dto });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("银行卡自检异常（{ExType}）", ex.GetType().Name);
+            await AuditAsync("银行卡支付接线自检", false, "执行异常");
+            return Ok(new ApiResponse<ChannelSelfCheckDto>
+            {
+                Data = new ChannelSelfCheckDto { Channel = "bank", ChannelName = "银行卡支付", Message = "自检执行异常，请查看服务端日志" }
             });
         }
     }
@@ -155,6 +219,26 @@ public class PaymentController(
     [Authorize(Policy = Policies.AdminOnly)]
     public async Task<IActionResult> GetPayConfig() =>
         Ok(new ApiResponse<PayConfigViewDto> { Data = await _payConfig.GetViewAsync() });
+
+    /// <summary>
+    /// 按需读取**单个**密钥的明文：管理端「支付配置」弹窗里点「显示」时调用。
+    ///
+    /// 正常情况下配置接口只回脱敏值（绝不整包下发私钥）。但管理员确实需要
+    /// 「先看看现在配的是什么、再在此基础上改」，所以留一个显式的单字段入口：
+    /// 一次只取一项，且字段名走白名单；审计只记字段名，不记值。
+    /// </summary>
+    [HttpGet("config/secret")]
+    [Authorize(Policy = Policies.AdminOnly)]
+    [SkipAudit]
+    public async Task<IActionResult> GetPayConfigSecret([FromQuery] string field)
+    {
+        var value = await _payConfig.GetSecretAsync(field);
+        if (value is null)
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = "不支持的配置项", Success = false });
+
+        await AuditAsync("查看支付密钥明文", true, $"字段 {field}");
+        return Ok(new ApiResponse<object> { Data = new { field, value } });
+    }
 
     /// <summary>
     /// 保存支付配置。管理员填写生产/沙箱凭证与回调地址，保存后立即生效（无需重启）。
@@ -248,7 +332,7 @@ public class PaymentController(
                 .Where(p => p.OrderId == order.OrderId && p.PayStatus == "待支付")
                 .ToListAsync();
             foreach (var pr in pendingRecords)
-                pr.PayType = payType;
+                pr.SetChannel(payType);
             if (pendingRecords.Count > 0)
                 await _db.SaveChangesAsync();
 
@@ -268,7 +352,12 @@ public class PaymentController(
             switch (payType)
             {
                 case "支付宝":
-                    payUrl = await _alipay.CreatePagePayAsync(order.OrderNo, $"电动车租赁订单 {order.OrderNo}", amount);
+                    // return_url / notify_url 都必须按用户当前访问源生成：
+                    // 写死配置值时，换网络/多网卡就会跳到另一个 IP、通知也推不到本服务
+                    payUrl = await _alipay.CreatePagePayAsync(
+                        order.OrderNo, $"电动车租赁订单 {order.OrderNo}", amount,
+                        await BuildReturnUrl(order.OrderNo, "支付宝"),
+                        await _payConfig.BuildNotifyUrlAsync(ClientOrigin, "api/payment/alipay/notify"));
                     realPay = realAlipay;
                     break;
 
@@ -469,23 +558,46 @@ public class PaymentController(
                 .Where(p => p.OrderId == order.OrderId)
                 .OrderByDescending(p => p.PayId).FirstOrDefaultAsync())?.PayType ?? "";
 
-            if (latestType == "微信")
-                await _wechat.QueryTradeStatusAsync(orderNo);
-            else
-                await _alipay.QueryTradeStatusAsync(orderNo);
-            await _db.Entry(order).ReloadAsync();
+            // 三个通道各查各的：原实现「非微信即支付宝」，银行卡订单一律被拿支付宝查，
+            // 结果必然是「订单不存在」→ 永远等不到入账，只能靠回调。银行卡若未配查单地址，
+            // QueryTradeStatusAsync 内部直接返回空串（保持本地状态），不会误判。
+            //
+            // 占位渠道（「待定」/空）要跳过：那表示顾客还没点过「去支付」，
+            // 渠道侧压根没有这笔交易。前端现在每次进支付页 / 页面重新可见都会来查一次，
+            // 若不过滤，光是打开支付页就会白打一次外网查单并等超时。
+            if (latestType.Length > 0 && latestType != PayStatuses.ChannelPlaceholder)
+            {
+                if (latestType == "微信")
+                    await _wechat.QueryTradeStatusAsync(orderNo);
+                else if (latestType == "银行卡")
+                    await _bank.QueryTradeStatusAsync(orderNo);
+                else
+                    await _alipay.QueryTradeStatusAsync(orderNo);
+                await _db.Entry(order).ReloadAsync();
+            }
         }
 
+        // 取本单最近一笔「钱到过账」的支付记录回传交易号：结算后退押金会把记录改成
+        // 「部分退款」，只数「已支付」会让已完结订单的交易号变成空串。
         var record = await _db.PaymentRecords.AsNoTracking()
-            .Where(p => p.OrderId == order.OrderId && p.PayStatus == "已支付")
+            .Where(p => p.OrderId == order.OrderId && PayStatuses.MoneyArrived.Contains(p.PayStatus))
             .OrderByDescending(p => p.PayId).FirstOrDefaultAsync();
 
-        var paid = order.OrderStatus is "已支付" or "租赁中";
+        // 「支付成功」的判定不能只盯「已支付 / 租赁中」两个状态。
+        // 前端支付结果页与支付页现在都会在「页面重新可见」时再查一次（从支付宝切回来、
+        // 浏览器后退、切回标签页），用户过一阵子才切回来时订单往往已经走过
+        // 租赁中 → 已完结，旧的判定会当场把「支付成功」翻成「支付未完成」——
+        // 钱明明付过，界面却告诉用户没付。改为「状态前进到已完结也算」，
+        // 并以「本单存在钱到过账的记录」兜底，两者取或。
+        var paid = order.OrderStatus is "已支付" or "租赁中" or "已完结"
+                   || PayStatuses.IsMoneyArrived(record?.PayStatus);
+
         return Ok(new ApiResponse<PayStatusDto>
         {
             Data = new PayStatusDto
             {
                 OrderNo = order.OrderNo,
+                OrderId = order.OrderId,
                 OrderStatus = order.OrderStatus,
                 Paid = paid,
                 Amount = order.TotalRent + order.Deposit,

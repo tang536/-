@@ -9,11 +9,15 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace ERental.Services;
 
-public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry sessions)
+public class AuthService(
+    AppDbContext db, IConfiguration config, SessionRegistry sessions, LoginIpGuard ipGuard,
+    IHttpContextAccessor http)
 {
     private readonly AppDbContext _db = db;
     private readonly IConfiguration _config = config;
     private readonly SessionRegistry _sessions = sessions;
+    private readonly LoginIpGuard _ipGuard = ipGuard;
+    private readonly IHttpContextAccessor _http = http;
 
     // 角色名常量：与 DTOs/AuthDtos 的 RoleType（admin/reception/finance）、
     // 数据库 Roles.RoleName 种子值、[Authorize(Roles = "...")] 三处保持同源。
@@ -21,6 +25,17 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
     private const string RoleReception = "前台";
     private const string RoleFinance = "财务";
     public const string RoleCustomer = "顾客";
+
+    /// <summary>
+    /// 专供「账号不存在」时消耗等量算力的假哈希。
+    ///
+    /// 进程内第一次登录时生成一次（约 100 毫秒），值是随机口令的 BCrypt 结果：
+    /// 不指向任何真实账号，也不需要保密——它唯一的作用是让「账号不存在」这条路径
+    /// 也跑满一次 BCrypt 的时间。work factor 必须与注册时的默认值（11）一致，
+    /// 否则两边耗时对不上，侧信道照样能测出来。
+    /// </summary>
+    private static readonly string DummyPasswordHash =
+        BCrypt.Net.BCrypt.HashPassword(Guid.NewGuid().ToString("N"), workFactor: 11);
 
     /// <summary>访问令牌类型：有效期短，用于每次业务请求（仅本服务内部使用，外部只判断"是不是续期令牌"）</summary>
     private const string TokenTypeAccess = "access";
@@ -31,8 +46,33 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
     /// <summary>JWT 中区分令牌用途的声明名（与 Program.cs 的 JwtBearer 校验事件同源）</summary>
     public const string TokenTypeClaim = "token_type";
 
-    public async Task<LoginResponseDto> StaffLogin(StaffLoginDto dto)
+    /// <summary>
+    /// 员工登录。
+    ///
+    /// 失败锁定口径：**封 IP，不封账号**。
+    /// 原实现是「累计 5 次密码错误锁账号 10 分钟」——这等于把一次拒绝服务武器递出去：
+    /// 任何人知道账号名就能连续输错 5 次，把正常员工（含默认管理员）挡在门外。
+    /// 现改为按来源 IP 累计失败次数（账号不存在、密码错误都计数；角色选错页签、
+    /// 账号被禁用属操作提示而非撞库，不计），达标后封锁该 IP，与认证接口的
+    /// 每 IP 每分钟 10 次限流构成两层防线。阈值取自系统配置 max_login_fail / lock_minutes
+    /// （此前写死 5/10，管理员在配置页改了完全不生效，本次一并修正）。
+    /// 账号侧 login_fail_count 仍累加并展示在员工管理页（留痕用），但不再触发锁定。
+    /// </summary>
+    public async Task<LoginResponseDto> StaffLogin(StaffLoginDto dto, string? clientIp = null)
     {
+        var ip = string.IsNullOrWhiteSpace(clientIp) ? "unknown" : clientIp;
+
+        // 阈值读系统配置：登录是低频操作，一次 ToList 的代价可忽略；
+        // 配置被写成非数字时 ConfigValue 会抛中文提示，与下单/结算同一口径
+        var configs = await _db.SystemConfigs.ToListAsync();
+        var maxFail = ConfigValue.Int(configs, "max_login_fail", 5);
+        var lockMinutes = ConfigValue.Int(configs, "lock_minutes", 10);
+
+        // ① IP 封锁闸：先于账号存在性判断——被封锁时连「账号是否存在」都不回答，
+        //    既快速失败，也不给攻击者留枚举账号的窗口
+        if (_ipGuard.IsLocked(ip, out var lockTo))
+            throw new Exception($"当前网络登录失败次数过多，已被暂时封锁，请于 {lockTo:HH:mm} 后重试");
+
         // MySQL 列排序规则为 _ci（不区分大小写），SQL 比较会让 TRQ 命中 trq；
         // 登录账号必须精确匹配——先按列取候选（可走索引），再在内存按 ordinal 大小写敏感过滤
         var candidates = await _db.SystemUsers.Include(u => u.Role)
@@ -42,16 +82,68 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
             string.Equals(u.LoginAccount, dto.LoginAccount, StringComparison.Ordinal));
         if (user == null)
         {
+            // 时序侧信道：账号存在时这里会跑一次 BCrypt（数十至上百毫秒），
+            // 账号不存在则几乎立刻返回。攻击者不必看报错文案，只要量响应时间，
+            // 就能把账号是否存在筛出来——文案统一了、时间没统一，等于白做。
+            // 这里对不存在的账号也跑一次同代价的校验，把两条路径的耗时拉平，结果直接丢弃。
+            _ = BCrypt.Net.BCrypt.Verify(dto.Password, DummyPasswordHash);
+
+            // 账号不存在也要记 IP 一笔：否则攻击者换着账号名撞库永远撞不到阈值，
+            // IP 封锁就成了只防「盯住一个账号死猜」的半个防线
+            var notFoundLocked = _ipGuard.RegisterFailure(ip, maxFail, lockMinutes, out _);
             // 需求 4.2.1：登录、异常行为全流程留痕（日志不可删除、可追溯）
-            await WriteLog(null, $"登录失败：账号不存在（{dto.LoginAccount}）", "用户登录", "失败");
-            throw new Exception("账号不存在");
+            await WriteLog(null, $"登录失败：账号不存在（{dto.LoginAccount}，IP {ip}）", "用户登录", "失败");
+            // ⚠ 对外文案必须与「密码错误」逐字一致。
+            // 原文案这里是「账号不存在」、下面密码错误是「密码错误，还剩 X 次」——
+            // 两条不同的报错就是一台账号枚举器：攻击者拿一份名单逐个试，
+            // 凡是回「账号不存在」的直接划掉，回「密码错误」的留下，一轮就能筛出全部有效账号。
+            // 内部日志（上一行）仍如实区分原因，排查时照样分得清是撞库还是手误，日志不对外。
+            if (notFoundLocked)
+                throw new Exception($"账号或密码错误，当前网络已被封锁{lockMinutes}分钟，请稍后再试");
+            throw new Exception($"账号或密码错误，当前网络还剩 {_ipGuard.Remaining(ip, maxFail)} 次机会");
         }
 
+        if (!BCrypt.Net.BCrypt.Verify(dto.Password, user.LoginPwd))
+        {
+            // 账号维度只累加失败次数（员工管理页「失败次数」列留痕用），不再触发任何锁定
+            user.RecordLoginFailure();
+            await _db.SaveChangesAsync();
+
+            // 网络维度：密码错误记 IP 一笔，达到阈值封锁该 IP
+            var locked = _ipGuard.RegisterFailure(ip, maxFail, lockMinutes, out var blockedTo);
+            if (locked)
+            {
+                await WriteLog(user.UserId,
+                    $"登录失败次数过多，IP {ip} 已被封锁{lockMinutes}分钟（账号 {user.LoginAccount}）", "用户登录", "失败");
+                throw new Exception($"账号或密码错误，当前网络已被封锁{lockMinutes}分钟，请稍后再试");
+            }
+            var left = _ipGuard.Remaining(ip, maxFail);
+            await WriteLog(user.UserId,
+                $"登录失败：密码错误，当前网络还剩 {left} 次机会（{user.LoginAccount}，IP {ip}）", "用户登录", "失败");
+            // 与「账号不存在」分支同一句话（见该分支注释：避免账号枚举）
+            throw new Exception($"账号或密码错误，当前网络还剩 {left} 次机会");
+        }
+
+        // ── 以下三项检查全部放在**密码校验之后** ──
+        // 原因：这三条都不是「密码对不对」的问题，而是「密码对了才配知道的档案状态」。
+        // 若放在密码校验之前，攻击者不需要知道密码，光凭报错就能枚举：
+        //   报「账号已被禁用」= 这个账号存在；报「入口是否正确」= 账号存在且角色是另一类。
+        // 挪到后面，只有拿到正确密码的人才会看到这些提示——
+        // 合法用户（本人）该得到的指引一句不少，攻击者却只会拿到统一的「账号或密码错误」。
+
+        if (user.UserStatus == 0)
+        {
+            await WriteLog(user.UserId, $"登录失败：账号已被禁用（{user.LoginAccount}）", "用户登录", "失败");
+            throw new Exception("账号已被禁用，请联系管理员");
+        }
+        // 账号侧 lock_until 不再由登录逻辑写入（自动锁账号=可被利用的拒绝服务，见方法注释）。
+        // 保留读取是为了兼容历史上被旧逻辑锁住的账号：到期后照常放行，登录成功即清零。
+        if (user.LockUntil.HasValue && user.LockUntil > DateTime.Now)
+            throw new Exception($"账号已锁定，请于 {user.LockUntil:HH:mm} 后重试");
+
         // 角色分端隔离：登录页选的是「管理员/前台/财务」哪个页签，就必须是该角色的账号。
-        //
-        // 为什么统一报「账号不存在」而不是「角色不符」：
-        // 后者等于告诉对方「这个账号确实存在，只是角色不对」，属于账号枚举漏洞，
-        // 会被用来逐个试探系统里有哪些账号。统一文案可避免泄露账号是否存在。
+        // 到这里密码已经验证通过，可以放心把「入口选错了」明确告诉本人——
+        // 否则员工换个页签登录会反复看到「账号或密码错误」，自己根本无从判断哪里错了。
         var actualRole = user.Role?.RoleName ?? RoleReception;
         var expectedRole = MapRoleType(dto.RoleType);
         if (expectedRole != null && actualRole != expectedRole)
@@ -59,37 +151,14 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
             await WriteLog(user.UserId,
                 $"登录失败：角色不匹配（账号 {user.LoginAccount} 实际为「{actualRole}」，却在「{expectedRole}」入口登录）",
                 "用户登录", "失败");
-            throw new Exception("账号不存在");
+            throw new Exception($"该账号是「{actualRole}」账号，请在对应的登录入口登录");
         }
 
-        if (user.UserStatus == 0)
-        {
-            await WriteLog(user.UserId, $"登录失败：账号已被禁用（{user.LoginAccount}）", "用户登录", "失败");
-            throw new Exception("账号已被禁用");
-        }
-        if (user.LockUntil.HasValue && user.LockUntil > DateTime.Now)
-            throw new Exception($"账号已锁定，请于 {user.LockUntil:HH:mm} 后重试");
-
-        if (!BCrypt.Net.BCrypt.Verify(dto.Password, user.LoginPwd))
-        {
-            user.LoginFailCount++;
-            if (user.LoginFailCount >= 5)
-            {
-                user.LockUntil = DateTime.Now.AddMinutes(10);
-                user.LoginFailCount = 0;
-                await _db.SaveChangesAsync();
-                await WriteLog(user.UserId, $"登录失败次数过多，账号锁定10分钟（{user.LoginAccount}）", "用户登录", "失败");
-                throw new Exception("密码错误次数过多，账号已锁定10分钟");
-            }
-            await _db.SaveChangesAsync();
-            await WriteLog(user.UserId, $"登录失败：密码错误，剩余 {5 - user.LoginFailCount} 次机会（{user.LoginAccount}）", "用户登录", "失败");
-            throw new Exception($"密码错误，还剩 {5 - user.LoginFailCount} 次机会");
-        }
-
-        user.LoginFailCount = 0;
-        user.LockUntil = null;
+        // 登录成功：清零账号失败计数，并放掉该 IP 的失败记录——员工本人登录成功即自证清白
+        user.RecordLoginSuccess();
         await _db.SaveChangesAsync();
-        await WriteLog(user.UserId, $"登录成功（{user.LoginAccount}）", "用户登录", "成功");
+        _ipGuard.Reset(ip);
+        await WriteLog(user.UserId, $"登录成功（{user.LoginAccount}，IP {ip}）", "用户登录", "成功");
 
         // 关键：角色一律以数据库中的真实角色为准，前端不再根据"登录时点的哪个页签"决定跳转
         var roleName = user.Role?.RoleName ?? RoleReception;
@@ -140,17 +209,20 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
             string.Equals(c.LoginAccount, account, StringComparison.Ordinal));
         if (customer == null)
         {
-            // 员工账号不在 customers 表，天然落到这里 → 员工在顾客端登录会提示「用户名未注册」，
-            // 与「顾客账号在员工端提示账号不存在」形成双向隔离。
+            // 同员工登录：两条路径都要跑一次 BCrypt，否则「账号不存在」快、
+            // 「密码错误」慢，攻击者靠计时就能区分两者，文案统一了也白搭。
+            _ = BCrypt.Net.BCrypt.Verify(dto.Password, DummyPasswordHash);
+            // 员工账号不在 customers 表，天然落到这里；对外文案与「密码错误」保持同一句，
+            // 理由同员工登录（见 StaffLogin 注释）：两句不同的报错就是一台账号枚举器。
             await WriteLog(null, $"顾客登录失败：用户名未注册（{account}）", "用户登录", "失败");
-            throw new Exception("用户名未注册，请先注册或核对用户名");
+            throw new Exception("用户名或密码错误");
         }
         if (customer.AccountStatus == "已注销")
             throw new Exception("该账号已注销，如需继续租车请重新注册或联系门店");
         if (string.IsNullOrEmpty(customer.LoginPassword) || !BCrypt.Net.BCrypt.Verify(dto.Password, customer.LoginPassword))
         {
             await WriteLog(null, $"顾客登录失败：密码错误（{account}）", "用户登录", "失败");
-            throw new Exception("密码错误");
+            throw new Exception("用户名或密码错误");
         }
         await WriteLog(null, $"顾客登录成功（{account}）", "用户登录", "成功");
 
@@ -185,15 +257,9 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
         if (await _db.Customers.AnyAsync(c => c.LoginAccount == account))
             throw new Exception("该用户名已被注册");
 
-        var customer = new Customer
-        {
-            LoginAccount = account,
-            // 姓名暂用用户名占位，租车时可由前台/顾客本人更新为真实姓名
-            FullName = account.Length > 20 ? account[..20] : account,
-            LoginPassword = BCrypt.Net.BCrypt.HashPassword(dto.Password),
-            MemberLevel = "普通会员"
-            // 3NF：折扣不落档案，注册即普通会员（权益表无该等级时按不打折处理）
-        };
+        // 姓名暂用用户名占位，租车时可由前台/顾客本人更新为真实姓名；
+        // 3NF：折扣不落档案，注册即普通会员（权益表无该等级时按不打折处理）
+        var customer = Customer.Register(account, null, BCrypt.Net.BCrypt.HashPassword(dto.Password));
         // 身份证号与手机号在租车环节采集，注册阶段不强制
         _db.Customers.Add(customer);
         await _db.SaveChangesAsync();
@@ -210,16 +276,14 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
             if (!Validators.IsIdCard(idCard)) throw new Exception("身份证号格式不正确");
             if (await _db.Customers.AnyAsync(c => c.IdCard == idCard && c.CustomerId != customerId))
                 throw new Exception("该身份证号已被其他账号使用");
-            customer.IdCard = idCard;
         }
-        if (!string.IsNullOrWhiteSpace(dto.ContactPhone))
-        {
-            var phone = dto.ContactPhone.Trim();
-            if (!Validators.IsPhone(phone)) throw new Exception("手机号格式不正确");
-            customer.ContactPhone = phone;
-        }
-        if (!string.IsNullOrWhiteSpace(dto.FullName)) customer.FullName = dto.FullName.Trim();
-        customer.Version++;  // 顾客补资料同样参与乐观并发（与员工编辑互相感知）
+        if (!string.IsNullOrWhiteSpace(dto.ContactPhone)
+            && !Validators.IsPhone(dto.ContactPhone.Trim()))
+            throw new Exception("手机号格式不正确");
+
+        // 校验归服务层，写入归实体的领域方法（setter 已收 private）
+        customer.UpdateProfile(dto.FullName, dto.IdCard, dto.ContactPhone);
+        customer.BumpVersion();  // 顾客补资料同样参与乐观并发（与员工编辑互相感知）
         try
         {
             await _db.SaveChangesAsync();
@@ -257,8 +321,8 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
         if (BCrypt.Net.BCrypt.Verify(newPwd, customer.LoginPassword))
             throw new Exception("新密码不能与原密码相同");
 
-        customer.LoginPassword = BCrypt.Net.BCrypt.HashPassword(newPwd);
-        customer.Version++;  // 密码属于账号档案写操作，与资料编辑/注销互斥（乐观并发）
+        customer.SetPasswordHash(BCrypt.Net.BCrypt.HashPassword(newPwd));
+        customer.BumpVersion();  // 密码属于账号档案写操作，与资料编辑/注销互斥（乐观并发）
         try
         {
             await _db.SaveChangesAsync();
@@ -304,17 +368,11 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
                 throw new Exception($"您还有 {unfinished.Count} 笔未完结订单（{string.Join("、", unfinished.Take(3))}），请先完成归还结算再注销");
 
             var oldAccount = c.LoginAccount ?? c.FullName;
-            c.AccountStatus = "已注销";
-            c.LoginAccount = null;   // 释放用户名，便于他人（或本人）重新注册
-            c.LoginPassword = null;  // 清除登录凭据
-            // 同步释放身份信息：身份证 / 手机号是全局唯一性校验的字段
-            //（UpdateCustomerProfile 校验"已被其他账号使用"），不清空会导致注销后
-            // 这些信息仍被占用、无法重新实名。姓名改为匿名占位（列非空），
-            // 档案与历史订单仍可通过"已注销用户#ID"追溯到同一条记录，满足需求 7.1。
-            c.IdCard = null;
-            c.ContactPhone = null;
-            c.FullName = $"已注销用户#{c.CustomerId}";
-            c.Version++;  // 注销也是一次档案写操作，与编辑/等级调整互斥（乐观并发）
+            // 注销 = 置状态 + 释放用户名与凭据 + 身份信息匿名化，全部收口在实体方法里：
+            // 身份证 / 手机号参与全局唯一性校验，不清空会导致注销后无法重新实名；
+            // 姓名改为匿名占位（列非空），档案与历史订单仍可追溯（需求 7.1）。
+            c.DeactivateAccount();
+            c.BumpVersion();  // 注销也是一次档案写操作，与编辑/等级调整互斥（乐观并发）
             try
             {
                 await _db.SaveChangesAsync();
@@ -342,7 +400,7 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
         if (adminCount <= 1)
             throw new Exception("当前账号是系统中最后一名管理员，注销后将无人可管理系统，请先新增其他管理员");
 
-        user.UserStatus = 0;
+        user.Deactivate();
         await _db.SaveChangesAsync();
         await WriteLog(user.UserId, $"管理员自助注销账号：{user.LoginAccount}", "系统管理", "成功");
         // 账号已停用：清掉在线会话（否则停用了却还能凭旧 token 用到过期）
@@ -386,9 +444,28 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
             OperateContent = content,
             OperateModule = module,
             OperateResult = result,
+            // 需求 7.1：审计日志要能追溯「谁、在什么时间、从哪台机器」做了什么。
+            // system_log 一直有 ip_address 列，其他控制器（支付/日志/配置）也都在写，
+            // 唯独登录这条主线漏了——而登录恰恰是唯一需要追攻击来源的场景：
+            // 没有 IP，LoginIpGuard 按来源封锁的判定就无从复核，异地登录也看不出来。
+            IpAddress = ClientIp(),
             OperateTime = DateTime.Now
         });
         await _db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// 当前请求的客户端 IP；没有 HTTP 上下文（后台任务、单元测试）时返回 null。
+    /// ForwardedHeaders 中间件已按「只信任本机反代」还原 X-Forwarded-For，
+    /// 所以这里读 RemoteIpAddress 拿到的就是真实来源，与其他控制器同一口径。
+    /// IPv4-mapped IPv6（<c>::ffff:127.0.0.1</c>）统一还原成 IPv4，
+    /// 避免同一台机器在日志里出现两种写法、按 IP 聚合时对不上。
+    /// </summary>
+    private string? ClientIp()
+    {
+        var addr = _http.HttpContext?.Connection.RemoteIpAddress;
+        if (addr is null) return null;
+        return addr.IsIPv4MappedToIPv6 ? addr.MapToIPv4().ToString() : addr.ToString();
     }
 
     private string GenerateJwt(int userId, string account, string userType, string role, string sessionToken,

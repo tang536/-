@@ -66,6 +66,13 @@ function refreshAccessToken(): Promise<string | null> {
 }
 
 api.interceptors.request.use(async config => {
+  // 统一带上浏览器地址栏的源，供后端生成支付回跳地址（支付宝 return_url / 微信 redirect_url）。
+  // 不这么做，后端只能按自己网卡猜 IP：换 Wi-Fi、多网卡或走公网反代时，
+  // 猜出来的地址和用户实际访问的不一致，表现就是「付完款跳到另一个 IP」（端口却还是对的）。
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    config.headers['X-Client-Origin'] = window.location.origin
+  }
+
   const raw = localStorage.getItem(STORAGE_KEY)
   if (!raw) return config
 
@@ -147,6 +154,12 @@ api.interceptors.response.use(
 
 // ===== 认证 / 顾客档案 =====
 export const authApi = {
+  /**
+   * 登录页公开配置（系统操作 #2 openLoginPage → AuthController.Options）。
+   * 匿名可读，只有 site.name / login.modes / theme.options 三个白名单键，
+   * 不含任何密钥——此时来访者还没有令牌，本接口必须允许匿名访问。
+   */
+  options: () => api.get('/auth/options'),
   staffLogin: (data: { loginAccount: string; password: string; roleType: string }) =>
     api.post('/auth/staff-login', data),
   /** 登录只认「用户名 + 密码」，已移除身份证号登录 */
@@ -204,9 +217,13 @@ export const customerApi = {
 // 车辆
 export const vehicleApi = {
   list: (status?: string, keyword?: string) => api.get('/vehicle', { params: { status, keyword } }),
-  /** 服务端分页：返回 { items, total, page, pageSize, pageCount }；品牌筛选下推到后端 */
-  page: (params: { status?: string; keyword?: string; brand?: string; page: number; pageSize: number }) =>
-    api.get('/vehicle', { params }),
+  /** 服务端分页：返回 { items, total, page, pageSize, pageCount }；品牌筛选与排序都下推到后端 */
+  page: (params: {
+    status?: string; keyword?: string; brand?: string
+    /** 排序字段白名单：buyTime/buyPrice/dailyRent/deposit；不传 = 车牌升序 */
+    sortBy?: string; sortDesc?: boolean
+    page: number; pageSize: number
+  }) => api.get('/vehicle', { params }),
   /** 各状态车辆数（页签角标）：分页后前端没有全集，角标由后端分组统计 */
   stats: (params?: { keyword?: string; brand?: string }) => api.get('/vehicle/stats', { params }),
   get: (id: number) => api.get(`/vehicle/${id}`),
@@ -322,8 +339,14 @@ export const aiApi = {
 export const orderApi = {
   list: (status?: string, keyword?: string) => api.get('/order', { params: { status, keyword } }),
   /** 服务端分页：返回 { items, total, page, pageSize, pageCount }；顾客角色仍只返回本人订单 */
-  page: (params: { status?: string; keyword?: string; page: number; pageSize: number }) =>
-    api.get('/order', { params }),
+  page: (params: {
+    status?: string; keyword?: string
+    /** 起租日期区间（yyyy-MM-dd），后端按 lease_start 过滤 */
+    dateFrom?: string; dateTo?: string
+    /** 排序字段白名单：createTime/leaseStart/leaseEnd/totalRent/deposit/orderNo */
+    sortBy?: string; sortDesc?: boolean
+    page: number; pageSize: number
+  }) => api.get('/order', { params }),
   get: (id: number) => api.get(`/order/${id}`),
   /** 客户不存在时后端自动建档 */
   create: (data: any) => api.post('/order', data),
@@ -371,7 +394,19 @@ export const settleApi = {
    * 逾期费不再由前台手填，因此弹窗里必须先把金额显示出来。
    */
   preview: (orderId: number) => api.get(`/settlement/preview/${orderId}`),
-  settle: (data: any) => api.post('/settlement/settle', data)
+  settle: (data: any) => api.post('/settlement/settle', data),
+  /** 催缴：重新提醒顾客支付该结算单产生的待支付线上补缴单 */
+  remindSupplement: (settleId: number) => api.post(`/settlement/${settleId}/remind-supplement`),
+  /**
+   * 待收款补缴账单：只返回**未收清**的结算单。
+   * 前端入口的显示条件直接吃这个列表——列表空 = 没有入口，不需要另算一遍业务条件。
+   */
+  supplementBills: (outstanding = true) => api.get('/settlement/supplement/bills', { params: { outstanding } }),
+  /** 补缴收款：现金当场落账；支付宝/微信/银行卡返回收银台地址或二维码 */
+  collectSupplement: (settleId: number, channel: string) =>
+    api.post(`/settlement/${settleId}/supplement/collect`, { channel }),
+  /** 补缴收款状态（轮询用；待支付时后端会按通道查单兜底） */
+  supplementStatus: (settleId: number) => api.get(`/settlement/${settleId}/supplement/status`)
 }
 
 // 维保（列表/工单均为 DTO，字段：workOrderNo、vehicleNo、faultDescription、maintainFee、status、faultImage）
@@ -387,6 +422,11 @@ export const maintenanceApi = {
   },
   complete: (id: number, fee: number) =>
     api.put(`/maintenance/${id}/complete`, { fee }, { headers: { 'Content-Type': 'application/json' } }),
+  /** 编辑工单内容（故障类型 / 描述 / 现场照片），前台与管理员均可 */
+  update: (id: number, data: { faultType?: string; faultDescription: string; faultImage?: string }) =>
+    api.put(`/maintenance/${id}`, data, { headers: { 'Content-Type': 'application/json' } }),
+  /** 撤回工单：撤销并释放车辆 */
+  withdraw: (id: number) => api.post(`/maintenance/${id}/withdraw`),
   scraps: () => api.get('/maintenance/scraps'),
   scrap: (data: { vehicleId: number; reason: string }) => api.post('/maintenance/scrap', data)
 }
@@ -397,6 +437,8 @@ export const reportApi = {
   notifications: () => api.get('/report/notifications'),
   markRead: (ids: number[]) => api.post('/report/notifications/read', { ids }),
   markAllRead: () => api.post('/report/notifications/read-all'),
+  /** 删除（忽略）通知：ids 为空表示清空全部。员工预警会随业务状态重建，删除是软删忽略 */
+  deleteNotifications: (ids: number[] = []) => api.post('/report/notifications/delete', { ids }),
   /** from/to 为可选统计时间段（YYYY-MM-DD，闭区间），不传沿用累计口径 */
   summary: (from?: string, to?: string) => api.get('/report/summary', { params: { from, to } }),
   /** 财务对账：按日期范围核对应收与实收，from/to 必填（YYYY-MM-DD） */
@@ -423,7 +465,14 @@ export const reportApi = {
 // 配置
 export const configApi = {
   list: () => api.get('/config'),
-  update: (key: string, value: string) => api.put(`/config/${key}`, value, { headers: { 'Content-Type': 'application/json' } }),
+  /**
+   * 更新单个参数值。后端签名是 `Update(string key, [FromBody] string value)`，
+   * 也就是请求体必须是一个 **JSON 字符串字面量**（`"66"` 而不是 `66`）。
+   * 直接传裸值会被 ASP.NET 判成「无法转换为 System.String」直接 400——
+   * 之前这里就是裸值，导致改参数一直保存失败。用 JSON.stringify 显式带上引号。
+   */
+  update: (key: string, value: string) =>
+    api.put(`/config/${key}`, JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } }),
   /** 删除管理员自建的配置项（核心业务参数后端受保护不可删） */
   remove: (key: string) => api.delete(`/config/${encodeURIComponent(key)}`),
   // 数据字典（需求 4.2.1）
@@ -459,8 +508,17 @@ export const paymentApi = {
   getConfig: () => api.get('/payment/config'),
   /** 保存支付配置：密钥字段留空 = 保持不变，填 CLEAR = 清空 */
   saveConfig: (data: Record<string, unknown>) => api.put('/payment/config', data),
+  /**
+   * 按需读取**单个**密钥的明文（管理员在弹窗里点「显示」时才调用）。
+   * 一次只取一项、字段名走后端白名单，不会整包下发私钥。
+   */
+  secret: (field: string) => api.get('/payment/config/secret', { params: { field } }),
   /** 接线自检：一键判断当前凭证能否联通 */
   selfCheck: () => api.get('/payment/alipay/selfcheck'),
+  /** 微信支付接线自检：探测 APIv3 签名/证书是否配对 */
+  selfCheckWechat: () => api.get('/payment/wechat/selfcheck'),
+  /** 银行卡支付接线自检：探测收单网关 HMAC 签名是否被接受 */
+  selfCheckBank: () => api.get('/payment/bank/selfcheck'),
   /** 三条通道（支付宝/微信/银行卡）的接线状态汇总 */
   channels: () => api.get('/payment/channels'),
   /** 账户余额（企业支付宝 + 微信支付商户）与本地账目对照；force=true 跳过缓存 */
@@ -540,7 +598,7 @@ export const printApi = {
   settleReceipt: (settleId: number) => api.get(`/print/settle/${settleId}`),
   exportRevenue: (from?: string, to?: string) =>
     api.get('/print/export/revenue', { params: { from, to }, responseType: 'blob' }),
-  exportOrders: (params?: { status?: string; keyword?: string }) =>
+  exportOrders: (params?: { status?: string; keyword?: string; dateFrom?: string; dateTo?: string }) =>
     api.get('/print/export/orders', { params, responseType: 'blob' }),
   exportMaintenance: (params?: { status?: string }) =>
     api.get('/print/export/maintenance', { params, responseType: 'blob' })

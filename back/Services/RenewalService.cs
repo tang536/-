@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using ERental.Data;
 using ERental.Models;
 using Microsoft.EntityFrameworkCore;
@@ -58,7 +58,7 @@ public class RenewalService(AppDbContext db, ILogger<RenewalService> logger)
 
             var fee = Math.Round(hourlyRent * hours, 2);
             var oldEnd = order.LeaseEnd;
-            order.LeaseEnd = order.LeaseEnd.AddHours(hours);
+            order.ExtendLease(order.LeaseEnd.AddHours(hours));
 
             var record = new RenewalRecord
             {

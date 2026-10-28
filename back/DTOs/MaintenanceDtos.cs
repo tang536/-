@@ -61,6 +61,21 @@ public class CompleteMaintenanceRequest
     public decimal Fee { get; init; }
 }
 
+/// <summary>编辑维保工单入参（前台 / 管理员均可修改内容）。已完成工单不可再编辑。</summary>
+public class UpdateMaintenanceRequest
+{
+    [MaxLength(50, ErrorMessage = "故障类型过长")]
+    public string? FaultType { get; init; }
+
+    [Required(ErrorMessage = "请填写故障描述")]
+    [MaxLength(200, ErrorMessage = "故障描述不得超过 200 字")]
+    public string FaultDescription { get; init; } = string.Empty;
+
+    /// <summary>故障现场照片路径（逗号分隔）。留空表示清空已锁定的照片。</summary>
+    [MaxLength(500, ErrorMessage = "照片路径过长")]
+    public string? FaultImage { get; init; }
+}
+
 /// <summary>车辆报废入参</summary>
 public class ScrapRequest
 {

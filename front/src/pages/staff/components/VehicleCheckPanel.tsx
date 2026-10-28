@@ -8,12 +8,20 @@ import { fmtD, fmtDT } from '@/utils/datetime'
 
 const ACTUAL_STATUSES = ['空闲', '在租', '维保', '报废']
 
+interface Props {
+  /**
+   * 「生成报表」按钮在**页面标题行**（由 Vehicles.tsx 渲染），与「车辆盘点」标题同行靠右。
+   * 父级生成成功后把这个计数 +1，本面板据此重新拉一次数据，报表页签立刻能看到新记录。
+   */
+  refreshToken?: number
+}
+
 /**
  * 车辆盘点面板：作为「车辆管理」页的第二个页签渲染（不再有独立的 /check 路由）。
  * 自身不再包 .card 外壳 —— 外层的「车辆管理」卡片已提供标题与上下文。
  */
-export default function VehicleCheckPanel() {
-  const { toast, confirm } = useUI()
+export default function VehicleCheckPanel({ refreshToken = 0 }: Props) {
+  const { toast } = useUI()
   const [checks, setChecks] = useState<CarCheckList[]>([])
   const [reports, setReports] = useState<CheckReport[]>([])
   const [vehicles, setVehicles] = useState<Vehicle[]>([])
@@ -38,14 +46,8 @@ export default function VehicleCheckPanel() {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, [])
-
-  // 监听标题行「导出记录」按钮事件
-  useEffect(() => {
-    const handler = () => handleGenReport()
-    window.addEventListener('vehicle-check-gen-report', handler)
-    return () => window.removeEventListener('vehicle-check-gen-report', handler)
-  }, [])
+  // refreshToken 变化 = 父级刚生成过报表，重新拉一次列表
+  useEffect(() => { load() }, [refreshToken])
 
   const handleAdd = async () => {
     if (!selectedVehicle) { setError('请先选择要盘点的车辆'); return }
@@ -57,21 +59,6 @@ export default function VehicleCheckPanel() {
       setSelectedVehicle(0)
       load()
     } catch (e: any) { toast(e?.message || '添加失败', 'error') }
-  }
-
-  const handleGenReport = async () => {
-    const ok = await confirm({
-      title: '生成盘点报表',
-      message: '将基于今日全部盘点记录生成盘点报表，是否继续？',
-      type: 'question',
-      confirmText: '生成报表',
-    })
-    if (!ok) return
-    try {
-      const res: any = await checkApi.generateReport(new Date().toISOString())
-      toast(`盘点报表已生成：${res.data?.reportNo || ''}`, 'success')
-      load()
-    } catch (e: any) { toast(e?.message || '生成失败', 'error') }
   }
 
   const diffCount = checks.filter(c => !c.isMatch).length
@@ -97,25 +84,37 @@ export default function VehicleCheckPanel() {
             盘点报表<span className="tab-count">{reports.length}</span>
           </button>
         </div>
-        {diffCount > 0 && <span className="status-tag status-danger">{diffCount} 条账实差异</span>}
+        {/* 「生成报表」已上移到页面标题行（与「车辆盘点」标题同行靠右），
+            这里只留账实差异的实时提示，页签行不再有按钮。 */}
+        <div className="toolbar-actions" style={{ marginLeft: 'auto' }}>
+          {diffCount > 0 && <span className="status-tag status-danger">{diffCount} 条账实差异</span>}
+        </div>
       </div>
 
       {tab === 'check' && (
         <>
           <div className="inline-panel">
             <div className="inline-panel-title"><Icon name="create-order" size={16} chip />新增盘点</div>
-            <div className="inline-panel-row" style={{ flexDirection: 'column', gap: '10px' }}>
-              <select value={selectedVehicle} onChange={e => { setSelectedVehicle(Number(e.target.value)); setError('') }} style={{ width: '100%' }}>
-                <option value={0}>选择车辆</option>
-                {vehicles.map(v => (
-                  <option key={v.vehicleId} value={v.vehicleId}>{v.vehicleNo}（{v.brand} - {v.vehicleStatus}）</option>
-                ))}
-              </select>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            {/* 两行表单：第一行「车辆 + 扫码」，第二行「实际状态 + 差异说明 + 提交」。
+                父行必须 stretch（而不是 center），否则子组按内容宽度居中，
+                整块表单会缩在浅色面板中央、左右各留一大片空白。 */}
+            <div className="inline-panel-row check-form-stack">
+              <div className="field-with-scan">
+                <select value={selectedVehicle} onChange={e => { setSelectedVehicle(Number(e.target.value)); setError('') }}>
+                  <option value={0}>选择车辆</option>
+                  {vehicles.map(v => (
+                    <option key={v.vehicleId} value={v.vehicleId}>{v.vehicleNo}（{v.brand} - {v.vehicleStatus}）</option>
+                  ))}
+                </select>
+                <button type="button" className="btn-sm btn-sm-default scan-btn" onClick={() => setShowLookup(true)}>
+                  <Icon name="qrcode" size={15} /><span>扫码盘点</span>
+                </button>
+              </div>
+              <div className="check-form-row">
                 <select value={actualStatus} onChange={e => setActualStatus(e.target.value)}>
                   {ACTUAL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
-                <input placeholder="差异说明（可选）" value={diffDesc} onChange={e => setDiffDesc(e.target.value)} style={{ flex: 1, minWidth: '120px' }} />
+                <input placeholder="差异说明（可选）" value={diffDesc} onChange={e => setDiffDesc(e.target.value)} />
                 <button className="btn-sm btn-sm-primary" onClick={handleAdd}>添加盘点</button>
               </div>
             </div>
@@ -141,7 +140,7 @@ export default function VehicleCheckPanel() {
                 {checks.map(c => (
                   <tr key={c.checkId}>
                     <td className="mono">{c.checkNo}</td>
-                    <td>{c.vehicle?.vehicleNo || `车辆#${c.vehicleId}`}</td>
+                    <td>{c.vehicleNo || c.vehicle?.vehicleNo || `车辆#${c.vehicleId}`}</td>
                     <td>{c.systemStatus}</td>
                     <td>{c.actualStatus}</td>
                     <td>

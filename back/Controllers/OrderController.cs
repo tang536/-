@@ -25,16 +25,24 @@ public class OrderController(OrderService svc) : ControllerBase
     /// 传 <c>pageSize&gt;0</c> 返回分页结构，不传返回全量数组（顾客端"我的订单"等调用不受影响）。
     /// </summary>
     [HttpGet]
-    public async Task<IActionResult> GetAll(string? status, string? keyword, int page = 0, int pageSize = 0)
+    public async Task<IActionResult> GetAll(
+        string? status, string? keyword,
+        DateTime? dateFrom = null, DateTime? dateTo = null,
+        string? sortBy = null, bool sortDesc = true,
+        int page = 0, int pageSize = 0)
     {
         var customerId = IsCustomer ? CurrentUserId : (int?)null;
         if (pageSize > 0)
         {
-            var (rows, total) = await _svc.GetPaged(status, keyword, customerId, page, pageSize);
+            var (rows, total) = await _svc.GetPaged(
+                status, keyword, customerId, dateFrom, dateTo, sortBy, sortDesc, page, pageSize);
             var (p, size, _, _) = Paging.Normalize(page, pageSize);
             return Ok(new ApiResponse<PagedResult<OrderDto>> { Data = new PagedResult<OrderDto>(rows, total, p, size) });
         }
-        return Ok(new ApiResponse<List<OrderDto>> { Data = await _svc.GetAll(status, keyword, customerId) });
+        return Ok(new ApiResponse<List<OrderDto>>
+        {
+            Data = await _svc.GetAll(status, keyword, customerId, dateFrom, dateTo, sortBy, sortDesc),
+        });
     }
 
     [HttpGet("{id:int}")]

@@ -26,4 +26,14 @@ public class LanOptions
     /// 留成 5174 会让局域网模式下支付宝的 return_url 指向一个不存在的端口，付款后回跳打不开。
     /// </summary>
     public int CustomerPort { get; set; } = 5173;
+
+    /// <summary>
+    /// 前端入口协议。局域网模式启动脚本会同时给 vite 注入 LAN_HOST=1，vite 据此启用
+    /// 自签 HTTPS（登录密码与 JWT 不在公共 Wi-Fi 里裸奔），所以这里默认必须是 https。
+    ///
+    /// 一旦与前端实际协议不符，支付回跳就会变成「明文 HTTP 打到 TLS 端口」——
+    /// 服务端在握手阶段直接断开，手机浏览器只显示「xx 未发送任何数据」
+    /// （Chrome 的 ERR_EMPTY_RESPONSE），而不是常见的「无法访问此网站」。
+    /// </summary>
+    public string FrontScheme { get; set; } = "https";
 }

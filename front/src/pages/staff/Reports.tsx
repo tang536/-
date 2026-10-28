@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useUI } from '@/components/UIProvider'
-import ReactECharts from 'echarts-for-react'
+import ReactEChartsCore from 'echarts-for-react/lib/core'
+import echarts, { chartTheme } from '@/utils/chart'
+import { useTheme } from '@/hooks/useTheme'
 import { reportApi, paymentApi, printApi } from '@/api'
 import { useAuth, ROLE } from '@/hooks/useAuth'
 import { useAsyncAction, errMessage } from '@/hooks/useAsyncAction'
 import Icon from '@/components/Icon'
 import OverflowMenu, { type OverflowItem } from '@/components/OverflowMenu'
-import { fmtDT, shiftDateInput, todayInput } from '@/utils/datetime'
+import { fmtDT, recentDateRange, shiftDateInput, todayInput } from '@/utils/datetime'
 import { downloadBlob, todayStamp } from '@/utils/download'
 
 const PAY_BADGE: Record<string, string> = {
@@ -41,7 +43,7 @@ const DIMS: { key: Dim; label: string; hint: string }[] = [
  * 既慢又看不出趋势；近 30 天是运营与财务都最常用的观察粒度。
  * 日期偏移统一用 `shiftDateInput`（操作日志页共用同一实现，避免两页各写一份）。
  */
-const makeDefaultRange = (): Range => ({ from: shiftDateInput(todayInput(), -29), to: todayInput() })
+const makeDefaultRange = (): Range => recentDateRange(30)
 
 const PRESETS: { key: string; label: string; make: () => Range }[] = [
   { key: 'today', label: '今日', make: () => ({ from: todayInput(), to: todayInput() }) },
@@ -75,7 +77,7 @@ function BlockState({
   if (error) return (
     <div className="empty" style={{ minHeight: height }}>
       <Icon name="error" size={30} chip />
-      <div style={{ color: '#dc2626', fontWeight: 600 }}>{error}</div>
+      <div style={{ color: 'var(--danger-text)', fontWeight: 600 }}>{error}</div>
       {onRetry && (
         <button className="btn-sm btn-sm-default" style={{ marginTop: 10 }} onClick={onRetry} disabled={retrying}>
           <Icon name="refresh" size={14} />{retrying ? '重试中…' : '重新加载'}
@@ -94,6 +96,9 @@ function BlockState({
 export default function Reports() {
   const { toast } = useUI()
   const { hasRole } = useAuth()
+  /** 图表画在 canvas 上，CSS 变量管不到，只能把主题色显式塞进 option（与看板同一套 chartTheme） */
+  const { isDark } = useTheme()
+  const tc = chartTheme(isDark)
   /**
    * 角色口径（这是本页最重要的约定，查看范围：财务 > 管理员）：
    *   财务 → 全量视角：资金指标 + 运营指标都看，可下钻到逐笔明细与金额构成，
@@ -288,20 +293,24 @@ export default function Reports() {
     ? `${range.from || '最早'} ~ ${range.to || '至今'}`
     : '全部（累计口径）'
   const trendTitle = hasRange ? '营收趋势（所选区间）' : '近 7 日营收趋势'
+  /** 卡片标题必须跟着图表走：管理员口径画的是订单趋势，标题不能还写「营收趋势」 */
+  const trendCardTitle = isFinance ? trendTitle : (hasRange ? '订单趋势（所选区间）' : '近 7 日订单趋势')
 
   const revenueOption = {
-    grid: { left: 48, right: 24, top: 48, bottom: 36 },
-    title: { text: trendTitle, left: 'center', textStyle: { fontSize: 15, fontWeight: 600, color: '#1e293b' } },
-    tooltip: { trigger: 'axis', valueFormatter: (v: number) => `¥${Number(v).toFixed(2)}` },
+    grid: { left: 48, right: 24, top: 24, bottom: 36 },
+    tooltip: {
+      trigger: 'axis', valueFormatter: (v: number) => `¥${Number(v).toFixed(2)}`,
+      backgroundColor: tc.tooltipBg, borderColor: tc.tooltipBorder, textStyle: { color: tc.tooltipText },
+    },
     xAxis: {
       type: 'category',
       data: Object.keys(dashboard.monthlyRevenue || {}),
-      axisLine: { lineStyle: { color: '#e2e8f0' } },
-      axisLabel: { color: '#64748b' },
+      axisLine: { lineStyle: { color: tc.axisLine } },
+      axisLabel: { color: tc.axisLabel },
     },
     yAxis: {
-      type: 'value', name: '元', nameTextStyle: { color: '#94a3b8' },
-      splitLine: { lineStyle: { color: '#f1f5f9' } }, axisLabel: { color: '#64748b' },
+      type: 'value', name: '元', nameTextStyle: { color: tc.nameText },
+      splitLine: { lineStyle: { color: tc.splitLine } }, axisLabel: { color: tc.axisLabel },
     },
     series: [{
       type: 'bar',
@@ -318,33 +327,38 @@ export default function Reports() {
   const PIE_COLORS = ['#dc2626', '#ea580c', '#f59e0b', '#16a34a', '#0891b2', '#94a3b8']
 
   const orderTrendOption = {
-    grid: { left: 48, right: 24, top: 48, bottom: 36 },
-    title: { text: hasRange ? '订单趋势（所选区间）' : '近 7 日订单趋势', left: 'center', textStyle: { fontSize: 15, fontWeight: 600, color: '#1e293b' } },
-    tooltip: { trigger: 'axis', valueFormatter: (v: number) => `${Number(v)} 单` },
+    grid: { left: 48, right: 24, top: 24, bottom: 36 },
+    tooltip: {
+      trigger: 'axis', valueFormatter: (v: number) => `${Number(v)} 单`,
+      backgroundColor: tc.tooltipBg, borderColor: tc.tooltipBorder, textStyle: { color: tc.tooltipText },
+    },
     xAxis: {
       type: 'category', data: Object.keys(dashboard.orderTrend || {}),
-      axisLine: { lineStyle: { color: '#e2e8f0' } }, axisLabel: { color: '#64748b' },
+      axisLine: { lineStyle: { color: tc.axisLine } }, axisLabel: { color: tc.axisLabel },
     },
     yAxis: {
-      type: 'value', name: '单', minInterval: 1, nameTextStyle: { color: '#94a3b8' },
-      splitLine: { lineStyle: { color: '#f1f5f9' } }, axisLabel: { color: '#64748b' },
+      type: 'value', name: '单', minInterval: 1, nameTextStyle: { color: tc.nameText },
+      splitLine: { lineStyle: { color: tc.splitLine } }, axisLabel: { color: tc.axisLabel },
     },
     series: [{
       type: 'line', smooth: true, symbolSize: 7,
       data: Object.values(dashboard.orderTrend || {}),
       lineStyle: { width: 3, color: '#0891b2' },
-      itemStyle: { color: '#0891b2', borderColor: '#fff', borderWidth: 2 },
+      itemStyle: { color: '#0891b2', borderColor: tc.gap, borderWidth: 2 },
       areaStyle: {
         color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(8,145,178,0.26)' }, { offset: 1, color: 'rgba(8,145,178,0.02)' }] },
       },
     }],
   }
   const serviceOption = {
-    tooltip: { trigger: 'item' },
-    legend: { bottom: 0, icon: 'circle', textStyle: { color: '#64748b' } },
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: tc.tooltipBg, borderColor: tc.tooltipBorder, textStyle: { color: tc.tooltipText },
+    },
+    legend: { bottom: 0, icon: 'circle', textStyle: { color: tc.pieText } },
     series: [{
       type: 'pie', radius: ['52%', '76%'], center: ['50%', '44%'],
-      itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 3 },
+      itemStyle: { borderRadius: 8, borderColor: tc.gap, borderWidth: 3 },
       label: { show: false },
       data: statusData.map(([name, value]) => ({ name, value })),
       color: PIE_COLORS,
@@ -361,7 +375,7 @@ export default function Reports() {
 
   /** 财务口径：钱进来多少、账对不对 */
   const financeCards = [
-    { label: hasRange ? '区间营收' : '累计营收', value: money(dashboard.totalRevenue), icon: 'settlements' as const, tone: 'indigo', hint: '已支付流水合计' },
+    { label: hasRange ? '区间营收' : '累计营收', value: money(dashboard.totalRevenue), icon: 'settlements' as const, tone: 'indigo', hint: '到账流水合计（含结算后退款）' },
     { label: hasRange ? '区间订单' : '累计订单', value: dashboard.totalOrders ?? 0, icon: 'orders' as const, tone: 'sky', hint: '区间内新建订单' },
     { label: '维保总费用', value: money(dashboard.totalMaintenanceFee), icon: 'maintenance' as const, tone: 'amber', hint: '已完工工单支出' },
     { label: '客户总数', value: dashboard.totalCustomers ?? 0, icon: 'customers' as const, tone: 'violet', hint: '建档客户数' },
@@ -371,24 +385,26 @@ export default function Reports() {
 
   /** 维保费用按月趋势（需求 4.2.7「月度或年度维保总费用」）。区间内没有工单的月份后端补 0，折线不会跳月 */
   const maintTrendOption = {
-    grid: { left: 48, right: 24, top: 44, bottom: 32 },
-    title: { text: '月度维保总费用', left: 'center', textStyle: { fontSize: 15, fontWeight: 600, color: '#1e293b' } },
-    tooltip: { trigger: 'axis', valueFormatter: (v: number) => `¥${Number(v).toFixed(2)}` },
+    grid: { left: 48, right: 24, top: 24, bottom: 32 },
+    tooltip: {
+      trigger: 'axis', valueFormatter: (v: number) => `¥${Number(v).toFixed(2)}`,
+      backgroundColor: tc.tooltipBg, borderColor: tc.tooltipBorder, textStyle: { color: tc.tooltipText },
+    },
     xAxis: {
       type: 'category',
       data: Object.keys(maintStats?.monthlyFee || {}),
-      axisLine: { lineStyle: { color: '#e2e8f0' } },
-      axisLabel: { color: '#64748b' },
+      axisLine: { lineStyle: { color: tc.axisLine } },
+      axisLabel: { color: tc.axisLabel },
     },
     yAxis: {
-      type: 'value', name: '元', nameTextStyle: { color: '#94a3b8' },
-      splitLine: { lineStyle: { color: '#f1f5f9' } }, axisLabel: { color: '#64748b' },
+      type: 'value', name: '元', nameTextStyle: { color: tc.nameText },
+      splitLine: { lineStyle: { color: tc.splitLine } }, axisLabel: { color: tc.axisLabel },
     },
     series: [{
       type: 'line', smooth: true, symbolSize: 7,
       data: Object.values(maintStats?.monthlyFee || {}),
       lineStyle: { width: 3, color: '#d97706' },
-      itemStyle: { color: '#d97706', borderColor: '#fff', borderWidth: 2 },
+      itemStyle: { color: '#d97706', borderColor: tc.gap, borderWidth: 2 },
       areaStyle: {
         color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(217,119,6,0.26)' }, { offset: 1, color: 'rgba(217,119,6,0.02)' }] },
       },
@@ -426,7 +442,7 @@ export default function Reports() {
         <div className="print-header-meta">统计区间：{rangeText} ｜ 打印时间：{new Date().toLocaleString('zh-CN', { hour12: false })}</div>
       </div>
       <div className="card-title">
-        <Icon name="reports" size={18} chip />统计报表
+        <Icon name="reports" size={18} chip />经营概览
         <div className="toolbar-actions" style={{ marginLeft: 'auto' }}>
           <button className="btn-sm btn-sm-default btn-icon-sm" onClick={handleRetryAll} disabled={reloadAct.pending}>
             <Icon name="refresh" size={14} /><span className="btn-label">{reloadAct.pending ? '刷新中…' : '刷新'}</span>
@@ -479,11 +495,12 @@ export default function Reports() {
             <input type="date" value={draft.to} min={draft.from || undefined}
               onChange={e => setDraft({ ...draft, to: e.target.value })} />
           </label>
-          <button className="btn-sm btn-sm-primary" onClick={() => applyRange(draft)}>
-            <Icon name="search" size={14} />查询
+          <button className="btn-sm btn-sm-primary" onClick={() => applyRange(draft)} title="查询">
+            <Icon name="search" size={14} /><span className="btn-label">查询</span>
           </button>
-          <button className="btn-sm" onClick={() => { const d = makeDefaultRange(); setDraft(d); setRange(d) }}>
-            重置为近 30 天
+          <button className="btn-sm btn-sm-default" title="重置为近 30 天"
+            onClick={() => { const d = makeDefaultRange(); setDraft(d); setRange(d) }}>
+            <Icon name="refresh" size={14} /><span className="btn-label">重置为近 30 天</span>
           </button>
         </div>
         <div className="filter-presets">
@@ -546,7 +563,7 @@ export default function Reports() {
                   <td className="num">{money(reconcile.expectedDeposit)}</td>
                   <td className="num">{money(reconcile.totalSupplement)}</td>
                   <td className="num">
-                    <span style={{ color: Math.abs(Number(reconcile.difference)) < 0.01 ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                    <span style={{ color: Math.abs(Number(reconcile.difference)) < 0.01 ? 'var(--success-text)' : 'var(--danger-text)', fontWeight: 600 }}>
                       {money(reconcile.difference)}
                     </span>
                   </td>
@@ -584,16 +601,16 @@ export default function Reports() {
       <div className="dash-layout">
         <div className="dash-primary">
           <div className="card">
-            <div className="card-title"><Icon name="reports" size={16} chip />{trendTitle}</div>
+            <div className="card-title"><Icon name="reports" size={16} chip />{trendCardTitle}</div>
             <div className="chart-container">
-              <ReactECharts option={isFinance ? revenueOption : orderTrendOption} style={{ height: '100%' }} />
+              <ReactEChartsCore echarts={echarts} option={isFinance ? revenueOption : orderTrendOption} style={{ height: '100%' }} />
             </div>
           </div>
           {/* 财务在营收趋势之外补一张订单趋势（运营指标财务也可见），放主区主图之下 */}
           {isFinance && (
             <div className="card">
               <div className="card-title"><Icon name="orders" size={16} chip />订单趋势</div>
-              <div className="chart-container"><ReactECharts option={orderTrendOption} style={{ height: '100%' }} /></div>
+              <div className="chart-container"><ReactEChartsCore echarts={echarts} option={orderTrendOption} style={{ height: '100%' }} /></div>
             </div>
           )}
         </div>
@@ -604,7 +621,7 @@ export default function Reports() {
             </div>
             {statusData.length === 0
               ? <div className="empty"><Icon name="empty" size={36} chip /><div>暂无车辆数据</div></div>
-              : <div className="chart-container"><ReactECharts option={serviceOption} style={{ height: '100%' }} /></div>}
+              : <div className="chart-container"><ReactEChartsCore echarts={echarts} option={serviceOption} style={{ height: '100%' }} /></div>}
           </div>
         </div>
       </div>
@@ -703,7 +720,7 @@ export default function Reports() {
             {vehStats && (
               <div className="stats-grid stats-rail">
                 <div className="stat-card tone-sky"><div className="label">车辆数</div><div className="value">{vehStats.totalVehicles}</div><div className="hint">其中闲置 {vehStats.idleVehicles} 台</div></div>
-                <div className="stat-card tone-indigo"><div className="label">累计营收</div><div className="value">{money(vehStats.totalRevenue)}</div><div className="hint">已支付流水合计</div></div>
+                <div className="stat-card tone-indigo"><div className="label">累计营收</div><div className="value">{money(vehStats.totalRevenue)}</div><div className="hint">到账流水合计（含结算后退款）</div></div>
                 <div className="stat-card tone-emerald"><div className="label">累计租赁时长</div><div className="value">{vehStats.totalRentHours} h</div></div>
                 <div className="stat-card tone-amber"><div className="label">维保费用</div><div className="value">{money(vehStats.totalMaintenanceFee)}</div><div className="hint">{vehStats.totalMaintenanceCount} 次工单</div></div>
               </div>
@@ -736,7 +753,7 @@ export default function Reports() {
             <div className="dash-layout">
               <div className="dash-primary">
                 <div className="chart-container">
-                  <ReactECharts option={maintTrendOption} style={{ height: '100%' }} />
+                  <ReactEChartsCore echarts={echarts} option={maintTrendOption} style={{ height: '100%' }} />
                 </div>
               </div>
               <div className="dash-secondary">

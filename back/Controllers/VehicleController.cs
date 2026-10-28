@@ -26,18 +26,22 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     [HttpGet]
     [Authorize(Policy = Policies.AdminOrReception)]
     public async Task<IActionResult> GetAll(string? status, string? keyword, string? brand,
+        string? sortBy = null, bool sortDesc = true,
         int page = 0, int pageSize = 0)
     {
         if (pageSize > 0)
         {
-            var (items, total) = await _svc.GetPaged(status, keyword, brand, page, pageSize);
+            var (items, total) = await _svc.GetPaged(status, keyword, brand, sortBy, sortDesc, page, pageSize);
             var (p, size, _, _) = Paging.Normalize(page, pageSize);
-            return Ok(new ApiResponse<PagedResult<Vehicle>>
+            return Ok(new ApiResponse<PagedResult<VehicleDto>>
             {
-                Data = new PagedResult<Vehicle>(items, total, p, size)
+                Data = new PagedResult<VehicleDto>(items.Select(VehicleDto.From).ToList(), total, p, size)
             });
         }
-        return Ok(new ApiResponse<List<Vehicle>> { Data = await _svc.GetAll(status, keyword) });
+        return Ok(new ApiResponse<List<VehicleDto>>
+        {
+            Data = (await _svc.GetAll(status, keyword)).Select(VehicleDto.From).ToList()
+        });
     }
 
     /// <summary>各状态车辆数（车辆页签角标）。分页后前端没有全集，角标改由后端分组统计。</summary>
@@ -50,7 +54,11 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     [Authorize(Policy = Policies.AdminOrReception)]
     public async Task<IActionResult> GetById(int id)
     {
-        try { return Ok(new ApiResponse<Vehicle> { Data = await _svc.GetById(id) }); }
+        try
+        {
+            var vehicle = await _svc.GetById(id);
+            return Ok(new ApiResponse<VehicleDto> { Data = VehicleDto.From(vehicle) });
+        }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
@@ -139,9 +147,13 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
 
     [HttpPost]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> Create([FromBody] Vehicle v)
+    public async Task<IActionResult> Create([FromBody] VehicleSaveDto dto)
     {
-        try { return Ok(new ApiResponse<Vehicle> { Data = await _svc.Create(v) }); }
+        try
+        {
+            var created = await _svc.Create(dto);
+            return Ok(new ApiResponse<VehicleDto> { Data = VehicleDto.From(created) });
+        }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
@@ -151,7 +163,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     /// </summary>
     [HttpPost("batch")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> CreateBatch([FromBody] List<Vehicle> vehicles)
+    public async Task<IActionResult> CreateBatch([FromBody] List<VehicleSaveDto> vehicles)
     {
         try
         {
@@ -201,15 +213,15 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     /// </summary>
     [HttpPut("{id:int}")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> Update(int id, [FromBody] Vehicle v)
+    public async Task<IActionResult> Update(int id, [FromBody] VehicleSaveDto dto)
     {
         try
         {
             var uid = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
             var current = await _svc.GetById(id);
-            if (!string.Equals(current.VehicleStatus, v.VehicleStatus, StringComparison.Ordinal))
+            if (!string.Equals(current.VehicleStatus, dto.VehicleStatus, StringComparison.Ordinal))
                 await _auth.VerifyStaffPassword(uid, Request.Headers["X-Op-Password"].FirstOrDefault());
-            await _svc.Update(id, v, uid);
+            await _svc.Update(id, dto, uid);
             return Ok(new ApiResponse<object> { Message = "更新成功" });
         }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }

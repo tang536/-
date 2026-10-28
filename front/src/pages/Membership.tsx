@@ -28,6 +28,16 @@ const POLL_INTERVAL = 3000
 const POLL_MAX = 40
 
 /**
+ * 已发起、尚未确认结果的会员购买交易号（HY 开头）。
+ *
+ * 支付宝真实收银台是 window.location.href 整页跳转，本页 state 全部丢失。
+ * 顾客付款后若用浏览器「后退」回到会员页（而不是走支付宝的同步回跳 /pay-result），
+ * 页面就完全不知道自己刚才在买什么——只能靠这个会话级标记把交易号捡回来。
+ * 同标签页同源，跳转与后退都保留。
+ */
+const PENDING_KEY = 'memberpay_pending'
+
+/**
  * 会员中心（仅顾客）：自助购买会员，走与租车订单一致的支付链路
  * （支付宝/微信/银行卡 → 收银台 → 回调/查单入账 → 升级生效）。
  * 价格由服务端从会员权益表读出，前端不写死任何价目。
@@ -66,6 +76,56 @@ export default function Membership() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => () => window.clearInterval(timerRef.current), [])
+
+  const pendingCheckedRef = useRef(false)
+
+  /**
+   * 有未确认的会员购买交易时主动查一次。
+   *
+   * 覆盖两条不带参数的返回路径：支付宝付完款用浏览器「后退」回到本页、
+   * 或切到别的标签页付完再切回来。查到已付就顺手刷新等级；
+   * 查到过期（HY 交易号有效期已过）就清掉标记，避免每次进页都白查一次。
+   */
+  const checkPendingPurchase = useCallback(async () => {
+    let tradeNo = ''
+    try { tradeNo = sessionStorage.getItem(PENDING_KEY) || '' } catch { return }
+    if (!tradeNo) return
+    try {
+      const res: any = await paymentApi.status(tradeNo)
+      const d = res.data || {}
+      if (d.paid) {
+        try { sessionStorage.removeItem(PENDING_KEY) } catch { /* 存储不可用则忽略 */ }
+        toast('支付成功，会员已升级生效', 'success')
+        load()
+      } else if (d.orderStatus === '已过期') {
+        try { sessionStorage.removeItem(PENDING_KEY) } catch { /* 存储不可用则忽略 */ }
+        toast('购买已超时未支付，请重新发起', 'warning')
+      }
+    } catch { /* 单次查询失败不打断页面 */ }
+  }, [toast, load])
+
+  // 进页查一次（ref 挡住重复执行：load/toast 变化会让回调重建，但没必要重复查）
+  useEffect(() => {
+    if (pendingCheckedRef.current) return
+    pendingCheckedRef.current = true
+    checkPendingPurchase()
+  }, [checkPendingPurchase])
+
+  /** 页面重新可见（切标签页 / 浏览器后退 / 窗口聚焦）时再确认一次 */
+  useEffect(() => {
+    const probe = () => {
+      if (document.visibilityState !== 'visible') return
+      checkPendingPurchase()
+    }
+    document.addEventListener('visibilitychange', probe)
+    window.addEventListener('pageshow', probe)
+    window.addEventListener('focus', probe)
+    return () => {
+      document.removeEventListener('visibilitychange', probe)
+      window.removeEventListener('pageshow', probe)
+      window.removeEventListener('focus', probe)
+    }
+  }, [checkPendingPurchase])
 
   /** 轮询会员购买交易状态：真实回调或模拟通知入账后 paid=true，立即刷新等级 */
   const startPolling = useCallback((tradeNo: string) => {
@@ -111,7 +171,9 @@ export default function Membership() {
       const { orderNo, payUrl, realPay } = res.data
 
       if (realPay) {
-        // 真实支付宝收银台：当前页跳转，付款后回跳 /pay-result 确认结果
+        // 真实支付宝收银台：当前页跳转，付款后回跳 /pay-result 确认结果。
+        // 先落一个会话级标记，覆盖「顾客用浏览器后退回来」这条不带参数的回退路径。
+        try { sessionStorage.setItem(PENDING_KEY, orderNo) } catch { /* 隐私模式禁用存储则忽略 */ }
         window.location.href = payUrl
         return
       }

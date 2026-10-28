@@ -48,9 +48,9 @@ public class PrintController(
         catch (Exception ex) { return BadRequest(new { message = ErrorText.Safe(ex) }); }
     }
 
-    /// <summary>结算单小票：随归还结算使用 → 管理员 / 前台（用况3）</summary>
+    /// <summary>结算单小票：随归还结算使用 → 前台 / 财务（图2-10 #13；管理员不参与资金办理）</summary>
     [HttpGet("settle/{settleId:int}")]
-    [Authorize(Policy = Policies.AdminOrReception)]
+    [Authorize(Policy = Policies.ReceptionOrFinance)]
     public async Task<IActionResult> SettleReceipt(int settleId)
     {
         try
@@ -85,11 +85,18 @@ public class PrintController(
         return CsvFile(sb.ToString(), "营收报表");
     }
 
+    /// <summary>报表打印视图（系统操作 #25 printReport）：管理员 / 财务，返回带打印样式的 HTML。</summary>
+    [HttpGet("report-view")]
+    [Authorize(Policy = Policies.AdminOrFinance)]
+    public async Task<IActionResult> ReportView(DateTime? from = null, DateTime? to = null) =>
+        Content(await _svc.ReportHtml(from, to), "text/html; charset=utf-8");
+
     /// <summary>订单明细导出：订单查询与打印 → 管理员 / 前台（用况2、用况3）</summary>
     [HttpGet("export/orders")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> ExportOrdersCsv(string? status, string? keyword) =>
-        CsvFile(await _svc.OrderListCsv(status, keyword), "订单明细");
+    public async Task<IActionResult> ExportOrdersCsv(
+        string? status, string? keyword, DateTime? dateFrom = null, DateTime? dateTo = null) =>
+        CsvFile(await _svc.OrderListCsv(status, keyword, dateFrom, dateTo), "订单明细");
 
     /// <summary>维保记录导出：维保记录查询与打印 → 仅管理员（用况4）</summary>
     [HttpGet("export/maintenance")]

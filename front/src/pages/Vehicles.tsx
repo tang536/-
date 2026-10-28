@@ -135,7 +135,7 @@ export default function Vehicles() {
           /* 异常态单独一档：给「重试」按钮，而不是混在空数据里显示「暂无车辆」 */
           <div className="empty">
             <Icon name="error" size={38} chip />
-            <span style={{ color: '#dc2626', fontWeight: 600 }}>{loadError}</span>
+            <span style={{ color: 'var(--danger-text)', fontWeight: 600 }}>{loadError}</span>
             <button className="btn-sm btn-sm-default" style={{ marginTop: 10 }}
               onClick={handleRefresh} disabled={refreshAct.pending}>
               <Icon name="refresh" size={14} />{refreshAct.pending ? '重试中…' : '重新加载'}

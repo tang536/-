@@ -97,9 +97,13 @@ export interface Order {
   orderNo: string
   customerName: string
   vehicleNo: string
+  /** 车辆品牌：订单车辆列以「车牌号(品牌名)」展示 */
+  vehicleBrand?: string | null
   leaseStart: string
   leaseEnd: string
   totalRent: number
+  /** 结算后的实际租金；未结算为 null（下单时的 totalRent 只是预收预估） */
+  actualRent?: number | null
   deposit: number
   orderStatus: string
   createTime: string
@@ -130,6 +134,9 @@ export interface CarCheckList {
   checkNo: string
   checkDate: string
   vehicleId: number
+  /** 车牌（后端投影 DTO 直接给，不再嵌套整个车辆对象） */
+  vehicleNo?: string
+  /** 兼容旧返回：早期接口内嵌整个车辆对象 */
   vehicle?: Vehicle
   systemStatus: string
   actualStatus: string
@@ -163,6 +170,42 @@ export interface NotificationItem {
   isRead?: boolean
   /** 已读时间（未读为空） */
   readTime?: string
+}
+
+/** 顾客消息中心条目（通用 message 表，receiver_type='customer'）
+ *
+ * 字段名与后端 JSON 严格一致（ASP.NET Core 默认 camelCase 序列化）。
+ * 之前这里写成了 MessageId / Title 这类 PascalCase，运行时全部取到 undefined，
+ * 表现为「点消息不变已读、单条删除无效」，所以必须用类型把字段名钉死。
+ */
+export interface CustomerMessage {
+  messageId: number
+  /** 业务来源：refund / supplement / supplement_paid 等，决定左侧图标 */
+  refType?: string | null
+  refId?: string | null
+  title: string
+  content: string
+  level?: string | null
+  /** 点击后跳转的前端路由（可为空） */
+  link?: string | null
+  isRead: boolean
+  createdAt: string
+  /** 已读时间（未读为空） */
+  readAt?: string | null
+}
+
+/** 顾客名下的线上补缴单（门店结算选「线上补缴」时生成的 payment_record，biz_type='supplement'） */
+export interface SupplementPayItem {
+  payId: number
+  orderId: number
+  orderNo: string
+  /** 应补缴金额 */
+  payAmount: number
+  payType?: string | null
+  /** 待支付 / 已支付 / 已退款 … */
+  payStatus: string
+  payTime?: string | null
+  transactionNo?: string | null
 }
 
 /** 顾客端可租车辆（窄字段，不含经营数据） */
@@ -202,6 +245,8 @@ export interface DashboardStats {
   totalCustomers: number
   totalMaintenanceFee: number
   monthlyRevenue: Record<string, number>
+  /** 与 monthlyRevenue 同一组日期键的订单量序列（工作台「订单量趋势」用） */
+  orderTrend: Record<string, number>
   vehicleStatusStats: Record<string, number>
   orderStatusStats: Record<string, number>
   todayRevenue: number
@@ -214,6 +259,8 @@ export interface DashboardStats {
   pendingPayCount: number
   maintenanceCount: number
   incompleteProfileCount: number
+  /** 保养到期车辆数（超过 maintain_cycle_days 未保养；周期为 0 时为 0） */
+  maintenanceDueCount: number
 }
 
 export interface ApiResponse<T> {

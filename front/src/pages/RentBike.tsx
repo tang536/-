@@ -236,6 +236,27 @@ export default function RentBike() {
 
   return (
     <div>
+      {/* ===== 实名认证门槛：置顶 =====
+          未认证就没有下单入口，这条提示原来排在车辆列表**之后**：
+          手机端页面高 2256px，提示落在 1978px 处，用户得滑完整个热销榜
+          才知道自己根本下不了单。前置后第一屏就能看到原因与动作按钮。 */}
+      {!verified && (
+        <div className="card">
+          <div className="card-title"><Icon name="shield" size={18} chip />实名认证</div>
+          <div className="callout callout-warning">
+            <Icon name="warning" size={18} chip />
+            <div>
+              <strong>线上租车需先完成实名认证</strong>
+              <p>
+                实名租车是门店合规要求：请先在「个人中心」登记<strong>真实姓名、身份证号与手机号</strong>。
+                认证通过后即可在线上直接选车下单，到店出示小票取车。
+              </p>
+            </div>
+            <button className="btn-sm btn-sm-primary" onClick={() => navigate('/profile')}>去实名认证</button>
+          </div>
+        </div>
+      )}
+
       {/* ===== 最近热销：按近 30 天成单量排名，先浏览后下单 ===== */}
       {popular.length > 0 && (
         <div className="card">
@@ -265,23 +286,8 @@ export default function RentBike() {
         </div>
       )}
 
-      {/* ===== 实名认证引导：未认证不给下单入口 ===== */}
-      {!verified ? (
-        <div className="card">
-          <div className="card-title"><Icon name="shield" size={18} chip />实名认证</div>
-          <div className="callout callout-warning">
-            <Icon name="warning" size={18} chip />
-            <div>
-              <strong>线上租车需先完成实名认证</strong>
-              <p>
-                实名租车是门店合规要求：请先在「个人中心」登记<strong>真实姓名、身份证号与手机号</strong>。
-                认证通过后即可在线上直接选车下单，到店出示小票取车。
-              </p>
-            </div>
-            <button className="btn-sm btn-sm-primary" onClick={() => navigate('/profile')}>去实名认证</button>
-          </div>
-        </div>
-      ) : (
+      {/* ===== 已认证：认证信息 + 下单表单（未认证的引导已置顶，这里不再重复） ===== */}
+      {verified && (
         <>
           <div className="callout callout-info">
             <Icon name="success" size={18} chip />
@@ -366,11 +372,12 @@ export default function RentBike() {
                   <div><span>租赁时长</span><strong>{estimate.hours} 小时</strong></div>
                   <div><span>小时租金</span><strong>¥{(estimate.hourlyRent ?? estimate.dailyRent / 24).toFixed(2)}</strong></div>
                   <div><span>会员折扣</span><strong>{(estimate.discount * 10).toFixed(1)} 折</strong></div>
-                  <div><span>租金</span><strong>¥{estimate.totalRent.toFixed(2)}</strong></div>
+                  <div><span>预收租金（预估）</span><strong>¥{estimate.totalRent.toFixed(2)}</strong></div>
                 </div>
-                <div className="estimate-total">合计应收（含押金 ¥{estimate.deposit.toFixed(2)}） <strong>¥{estimate.payable.toFixed(2)}</strong></div>
+                <div className="estimate-total">合计预收（含押金 ¥{estimate.deposit.toFixed(2)}） <strong>¥{estimate.payable.toFixed(2)}</strong></div>
                 <p className="estimate-tip">
-                  金额由服务端按<strong>所选车辆的日租金与押金</strong>、以及您的会员折扣核算；还车结算时按实际用车情况多退少补。
+                  这里按<strong>预计用车 {estimate.hours} 小时</strong>先预收，<strong>不是最终金额</strong>；
+                  还车结算时按实际用车时长重算实际租金，多退少补。
                 </p>
               </div>
             )}

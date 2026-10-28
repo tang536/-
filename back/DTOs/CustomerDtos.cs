@@ -1,6 +1,32 @@
 ﻿namespace ERental.DTOs;
 
 /// <summary>
+/// 前台代客建档的入参。
+/// 输入一律走 DTO，不把实体当 API 契约——实体属性的 setter 已收回 private，
+/// 只有 DTO 能被 JSON 反序列化，服务层再把合法值交给实体的领域方法。
+/// </summary>
+public class CustomerCreateDto
+{
+    /// <summary>登录用户名（可空：线下客户没有线上账号）</summary>
+    public string? LoginAccount { get; init; }
+    public string? IdCard { get; init; }
+    public string? FullName { get; init; }
+    public string? ContactPhone { get; init; }
+    /// <summary>会员等级名（可空，默认「普通会员」；须已在会员权益中维护）</summary>
+    public string? MemberLevel { get; init; }
+}
+
+/// <summary>编辑客户档案的入参。Version 是打开表单时看到的版本号，用于乐观并发校验。</summary>
+public class CustomerUpdateDto
+{
+    public string? FullName { get; init; }
+    public string? IdCard { get; init; }
+    public string? ContactPhone { get; init; }
+    public string? MemberLevel { get; init; }
+    public int Version { get; init; }
+}
+
+/// <summary>
 /// 客户消费记录的一行（需求 4.2.3「客户消费记录管理」）。
 ///
 /// 一行 = 一张订单，把「租了什么车、租了多久、花了多少、有没有退过」摆在一起，

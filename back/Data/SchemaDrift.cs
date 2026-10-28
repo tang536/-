@@ -54,7 +54,10 @@ public static class SchemaDrift
                 // DDL 交给 EF 迁移生成器按当前数据库提供程序拼（标识符转义、类型写法都由它负责）。
                 // 不自己拼串的原因：补列语句里「列类型」位置是必填的，一旦该位置被插值洞占住，
                 // IDE 的 SQL 语言注入会把洞替换成占位标识符，于是误报「应为类型」的语法错误。
-                var ddl = BuildAddColumnDdl(db, table, column, prop.ClrType, storeType, !prop.IsNullable);
+                // ⚠️ IsNullable 必须原样传 prop.IsNullable：曾经写成 !prop.IsNullable，
+                // 可空列被生成成 NOT NULL——往有数据的表加列直接失败
+                // （Incorrect datetime value: '0000-00-00'），空表则静默建成非空列，两种都错。
+                var ddl = BuildAddColumnDdl(db, table, column, prop.ClrType, storeType, prop.IsNullable);
                 if (ddl == null)
                 {
                     manual.Add($"{table}.{column}（{storeType}，{(prop.IsNullable ? "可空" : "NOT NULL")}）：未能生成补列语句，请手工补列");

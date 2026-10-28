@@ -1,7 +1,8 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth, homePathOf, ROLE } from '../hooks/useAuth'
-import { useTheme } from '../hooks/useTheme'
+import { setTheme, useTheme, type Theme } from '../hooks/useTheme'
 import { ROUTE_ROLES, canAccess } from '../permissions'
 import { useUI } from './UIProvider'
 import Icon, { type IconName } from './Icon'
@@ -10,7 +11,7 @@ import { authApi, customerApi, orderApi, reportApi, vehicleApi, messageApi } fro
 import { logoutEverywhere } from '../utils/session'
 import { GITHUB_URL } from '../utils/links'
 import useTableLabels from '../hooks/useTableLabels'
-import type { NotificationItem } from '../types'
+import type { CustomerMessage, NotificationItem } from '../types'
 
 /** 菜单定义：按业务模块分组，每个菜单声明允许访问的角色 */
 interface MenuItem {
@@ -51,6 +52,29 @@ const ALL_MENUS: MenuItem[] = ([
 
 const GROUP_ORDER = ['工作台', '租赁业务', '资源管理', '数据分析', '系统管理', '我的服务']
 
+/**
+ * 没有独立菜单项的页面 → 归属到哪个菜单。
+ *
+ * 这些是「子页面」：入口收在父页面里（不占菜单格），但顶栏标题、面包屑与
+ * 浏览器标签页标题都靠 activeMenu 推导。不映射的话标题会回落成「工作台」——
+ * 顾客明明在「全部车辆」页，顶栏却写着「工作台」，像是走错了页面。
+ */
+const MENU_ALIAS: Record<string, string> = {
+  '/vehicle-catalog': '/rent',   // 全部车辆：入口在「线上租车」页右上角
+}
+
+/**
+ * 带参数子页面的前缀归属。
+ *
+ * <c>/pay/:orderNo</c> 与 <c>/supplement-pay/:payId</c> 都是「我的订单」派生的动作页：
+ * 用户从订单列表点「去支付」，顶栏若回落成「工作台」，看起来像被踢出了订单流程。
+ * 路径里订单号是动态段，无法写进 MENU_ALIAS 的字面量映射，故单列前缀表。
+ */
+const MENU_PREFIX_ALIAS: Array<[string, string]> = [
+  ['/pay/', '/my-orders'],
+  ['/supplement-pay/', '/my-orders'],
+]
+
 interface SearchHit {
   type: 'order' | 'customer' | 'vehicle'
   id: number
@@ -65,6 +89,46 @@ export default function Layout() {
   const location = useLocation()
   const { user, hasRole } = useAuth()
   const { toast, confirm } = useUI()
+
+  // ===== 打印主题无关化：纸面永远白底黑字 =====
+  // 分两层，各管一样 CSS 管不到 / 管得着的东西：
+  //   ① DOM（卡片/表格/文字/徽章）由 index.css 的 body.print-report 变量覆盖负责，
+  //      CSS 变量随继承解析，同步生效，不需要 JS 参与；
+  //   ② ECharts 画在 canvas 上，CSS 变量管不到——轴标签、网格线、饼图描边都是
+  //      渲染时按主题定死的。深色主题下直接打印，图表是一堆浅灰字浮在白纸上。
+  //      因此在 beforeprint 时把主题切回浅色，让图表用浅色结构色重绘；
+  //      afterprint 后切回用户原来的主题。
+  // 为什么必须 flushSync：beforeprint 与打印快照之间只隔一个任务，普通 setState 是
+  // 异步批处理的，等微任务队列排到 React 重渲染、echarts-for-react 的
+  // componentDidUpdate 调 setOption 时，快照可能已经生成，canvas 还是深色配色。
+  // flushSync 让 useSyncExternalStore 的订阅组件同步重渲染，类组件的
+  // componentDidUpdate 在提交阶段同步执行，canvas 在 beforeprint 返回前就换好了。
+  // afterprint 在 Chrome/Edge/Firefox 都可靠；个别浏览器不发时用定时器兜底（幂等，
+  // 只会在「还挂着打印态」时恢复一次），避免用户被永久留在浅色主题里。
+  useEffect(() => {
+    let saved: Theme | null = null
+    let fallback = 0
+    const restore = () => {
+      if (!saved) return
+      const back = saved
+      saved = null
+      window.clearTimeout(fallback)
+      flushSync(() => setTheme(back))
+    }
+    const onBefore = () => {
+      if (document.documentElement.dataset.theme !== 'dark') return
+      saved = 'dark'
+      flushSync(() => setTheme('light'))
+      fallback = window.setTimeout(restore, 4000)
+    }
+    window.addEventListener('beforeprint', onBefore)
+    window.addEventListener('afterprint', restore)
+    return () => {
+      window.removeEventListener('beforeprint', onBefore)
+      window.removeEventListener('afterprint', restore)
+      window.clearTimeout(fallback)
+    }
+  }, [])
 
   // 手机端表格卡片化：给每个单元格补 data-label（列名），CSS 靠它渲染「列名 + 值」
   useTableLabels()
@@ -93,6 +157,14 @@ export default function Layout() {
   const [hits, setHits] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  /**
+   * 手机端搜索浮层。
+   * ≤860px 时桌面 `.search-bar` 被 CSS 隐藏（顶栏放不下 300px 输入框），
+   * 但触屏上按不出 Ctrl+K —— 等于手机上完全没有搜索入口。
+   * 这里给一个等价入口：顶栏放大镜 → 覆盖式浮层，与桌面共用同一份
+   * keyword / hits / 防抖查询逻辑，只是换了个呈现容器。
+   */
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false)
 
   // ===== 通知中心 =====
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
@@ -100,14 +172,17 @@ export default function Layout() {
   const [notifyLoading, setNotifyLoading] = useState(false)
 
   // ===== 顾客消息中心（退款去向 / 逾期线上补缴单 / 补缴成功回执）=====
-  const [custMessages, setCustMessages] = useState<any[]>([])
+  const [custMessages, setCustMessages] = useState<CustomerMessage[]>([])
   const [custNotifyOpen, setCustNotifyOpen] = useState(false)
   const [custUnread, setCustUnread] = useState(0)
+  const [custLoading, setCustLoading] = useState(false)
 
   // ===== 账号菜单（退出登录 / 注销账号）=====
   const [userMenuOpen, setUserMenuOpen] = useState(false)
 
   const searchBoxRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const mobileSearchInputRef = useRef<HTMLInputElement>(null)
   const notifyBoxRef = useRef<HTMLDivElement>(null)
   const custNotifyBoxRef = useRef<HTMLDivElement>(null)
   const userBoxRef = useRef<HTMLDivElement>(null)
@@ -139,10 +214,17 @@ export default function Layout() {
     return GROUP_ORDER.filter(g => map.has(g)).map(g => ({ group: g, items: map.get(g)! }))
   }, [menus])
 
+  /**
+   * 没有独立菜单项的页面 → 归属到哪个菜单（模块级常量，见文件上方 MENU_ALIAS）。
+   */
   /** 最长前缀匹配，保证子路径（如 /orders/create）能高亮到对应菜单 */
   const activeMenu = useMemo<MenuItem | null>(() => {
+    const raw = location.pathname
+    const path = MENU_ALIAS[raw]
+      || MENU_PREFIX_ALIAS.find(([prefix]) => raw.startsWith(prefix))?.[1]
+      || raw
     const matches = menus.filter(
-      m => location.pathname === m.path || location.pathname.startsWith(m.path + '/')
+      m => path === m.path || path.startsWith(m.path + '/')
     )
     if (matches.length === 0) return null
     return matches.reduce((a, b) => (b.path.length > a.path.length ? b : a))
@@ -153,6 +235,60 @@ export default function Layout() {
     window.addEventListener('scroll', onScroll)
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
+
+  // 浏览器标签标题跟随当前页面：同时开几个标签时能一眼分辨，
+  // 打印小票时 ReceiptModal 会临时改标题并在关闭时还原，两者不冲突。
+  useEffect(() => {
+    document.title = activeMenu?.label ? `${activeMenu.label} · 途电驿站` : '途电驿站'
+  }, [activeMenu])
+
+  // Ctrl/⌘ + K 聚焦全局搜索：员工端高频操作是「搜单号」，不用先找输入框
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!showSearch) return
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        // 手机端桌面搜索框是 display:none，聚焦它等于没反应，改开浮层
+        if (isMobile) {
+          setMobileSearchOpen(true)
+          return
+        }
+        searchInputRef.current?.focus()
+        searchInputRef.current?.select()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [showSearch, isMobile])
+
+  /** 关闭手机搜索浮层：同时清空关键词，避免下次打开残留上一次结果 */
+  const closeMobileSearch = useCallback(() => {
+    setMobileSearchOpen(false)
+    setKeyword('')
+    setHits([])
+    setSearchOpen(false)
+  }, [])
+
+  // 浮层打开：自动聚焦（手机键盘随之弹出，省一次点击）+ 锁背景滚动 +
+  // Esc 关闭 + 从手机宽度切回桌面时自动收起（否则浮层会挂在桌面布局上）
+  useEffect(() => {
+    if (!mobileSearchOpen) return
+    const focusTimer = window.setTimeout(() => mobileSearchInputRef.current?.focus(), 80)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeMobileSearch() }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.clearTimeout(focusTimer)
+      document.body.style.overflow = prevOverflow
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [mobileSearchOpen, closeMobileSearch])
+
+  // 切回桌面宽度时收起浮层（CSS 断点与 isMobile 同源，保持一致）
+  useEffect(() => {
+    if (!isMobile) setMobileSearchOpen(false)
+  }, [isMobile])
 
   // 点击页面其它区域关闭浮层
   useEffect(() => {
@@ -247,15 +383,21 @@ export default function Layout() {
   }, [loadNotifications])
 
   // ===== 顾客消息：仅顾客加载，轮询拉取未读角标 =====
-  const loadCustMessages = useCallback(async () => {
+  // showSpinner：轮询与打开面板时的静默刷新不转圈；只有用户手动点「刷新」才显示加载态
+  const loadCustMessages = useCallback(async (showSpinner = false) => {
     if (!isCustomer) return
+    if (showSpinner) setCustLoading(true)
     try {
       const res: any = await messageApi.list()
       const data = res.data || {}
       setCustMessages(data.items || [])
       setCustUnread(data.unread || 0)
-    } catch { /* 顾客侧通知失败不打扰用户 */ }
-  }, [isCustomer])
+    } catch {
+      if (showSpinner) toast('消息加载失败', 'error')
+    } finally {
+      if (showSpinner) setCustLoading(false)
+    }
+  }, [isCustomer, toast])
 
   useEffect(() => {
     if (!isCustomer) return
@@ -269,29 +411,22 @@ export default function Layout() {
     loadCustMessages()
   }
 
-  /**
-   * 顾客铃铛关闭 = 已浏览列表 → 把剩余未读一键标记已读（与服务端一致）。
+  /*
+   * 注意：这里刻意不做「关闭面板就把剩下的一键全标已读」。
+   * 已读语义是「这条消息我真的点开看了」，逐条精确标记；关掉面板只是收了列表，
+   * 不代表剩下的都读过。批量置读只能由用户显式点「全部已读」触发。
    */
-  const prevCustOpen = useRef(false)
-  useEffect(() => {
-    if (prevCustOpen.current && !custNotifyOpen) {
-      if (custUnread > 0) {
-        messageApi.markRead([])
-          .then(() => loadCustMessages())
-          .catch(() => { /* 失败不打扰，下次打开仍显示未读 */ })
-      }
-    }
-    prevCustOpen.current = custNotifyOpen
-  }, [custNotifyOpen, custUnread, loadCustMessages])
 
-  /** 点开某条顾客消息：标记该条已读 */
-  const openCustMessage = (m: any) => {
+  /** 点开某条顾客消息：标记该条已读，并按消息携带的路由跳转 */
+  const openCustMessage = (m: CustomerMessage) => {
     setCustNotifyOpen(false)
     if (!m.isRead) {
-      setCustMessages(prev => prev.map(x => (x.MessageId === m.MessageId ? { ...x, isRead: true, readAt: new Date().toISOString() } : x)))
+      setCustMessages(prev => prev.map(x => (x.messageId === m.messageId ? { ...x, isRead: true, readAt: new Date().toISOString() } : x)))
       setCustUnread(c => Math.max(0, c - 1))
-      messageApi.markRead([m.MessageId]).catch(() => loadCustMessages())
+      // 失败时重新拉一次，让界面回到服务端的真实状态，不留「假已读」
+      messageApi.markRead([m.messageId]).catch(() => loadCustMessages())
     }
+    if (m.link && canAccess(m.link, roleName)) navigate(m.link)
   }
 
   const markCustAllRead = async () => {
@@ -299,16 +434,22 @@ export default function Layout() {
       await messageApi.markRead([])
       setCustMessages(prev => prev.map(m => ({ ...m, isRead: true, readAt: new Date().toISOString() })))
       setCustUnread(0)
-    } catch { /* 忽略 */ }
+      toast('已将全部消息标记为已读', 'success')
+    } catch (e: any) {
+      toast(e?.message || '操作失败，请稍后重试', 'error')
+    }
   }
 
   /** 删除单条顾客消息（后端按消息主键精确删除，归属由 Token 决定） */
-  const delCustMessage = async (m: any) => {
+  const delCustMessage = async (m: CustomerMessage) => {
     try {
-      await messageApi.delete([m.MessageId])
-      setCustMessages(prev => prev.filter(x => x.MessageId !== m.MessageId))
+      await messageApi.delete([m.messageId])
+      setCustMessages(prev => prev.filter(x => x.messageId !== m.messageId))
       if (!m.isRead) setCustUnread(c => Math.max(0, c - 1))
-    } catch { /* 忽略 */ }
+      toast('已删除 1 条消息', 'success')
+    } catch (e: any) {
+      toast(e?.message || '删除失败，请稍后重试', 'error')
+    }
   }
 
   /** 清空全部顾客消息 */
@@ -317,7 +458,10 @@ export default function Layout() {
       await messageApi.delete([])
       setCustMessages([])
       setCustUnread(0)
-    } catch { /* 忽略 */ }
+      toast('已清空全部消息', 'success')
+    } catch (e: any) {
+      toast(e?.message || '清空失败，请稍后重试', 'error')
+    }
   }
 
   // 已读状态全部以服务端 message 表为准（localStorage 换账号/换设备就失效，也无法逐条区分）
@@ -329,20 +473,12 @@ export default function Layout() {
     loadNotifications(false)
   }
 
-  /**
-   * 「关闭通知面板」= 用户已浏览过整个列表 → 把剩余未读统一标记为已读。
-   * 用 prevOpen 判断「发生了 true → false 的变化」，这样点击遮罩、点铃铛、
-   * 点击列表项（列表项点击会先自行标记单条）等所有关闭路径都能覆盖到。
+  /*
+   * 这里刻意不做「关掉面板就把剩下的一律标已读」。
+   * 点开某条通知会顺手把面板收起来，如果关闭即全部已读，
+   * 就变成「点了第一条，剩下的全都没了」——已读语义只能是「这条我看过了」，
+   * 批量置读只由用户显式点「全部已读」触发。
    */
-  const prevNotifyOpen = useRef(false)
-  useEffect(() => {
-    if (prevNotifyOpen.current && !notifyOpen) {
-      reportApi.markAllRead()
-        .then(() => loadNotifications(true))
-        .catch(() => { /* 标记失败不打扰用户，下次打开仍显示未读 */ })
-    }
-    prevNotifyOpen.current = notifyOpen
-  }, [notifyOpen, loadNotifications])
 
   /** 手动「全部已读」 */
   const markAllRead = async () => {
@@ -352,6 +488,34 @@ export default function Layout() {
       toast('已将全部通知标记为已读', 'success')
     } catch (e: any) {
       toast(e?.message || '操作失败', 'error')
+    }
+  }
+
+  /*
+   * 员工「删除」通知 = 软删忽略（后端 notifications/delete）：
+   * 预警由实时业务状态推导、每次拉取都会幂等重建，硬删会被下一次拉取复活，
+   * 用户会以为删除没用。预警消失后后端随行清除标记，再次触发按新预警处理。
+   */
+  /** 删除（忽略）单条通知 */
+  const delNotification = async (n: NotificationItem) => {
+    if (n.messageId == null) return
+    try {
+      await reportApi.deleteNotifications([n.messageId])
+      setNotifications(prev => prev.filter(x => x.messageId !== n.messageId))
+      toast('已删除 1 条通知', 'success')
+    } catch (e: any) {
+      toast(e?.message || '删除失败，请稍后重试', 'error')
+    }
+  }
+
+  /** 清空全部通知（软删忽略） */
+  const clearNotifications = async () => {
+    try {
+      await reportApi.deleteNotifications([])
+      setNotifications([])
+      toast('已清空全部通知', 'success')
+    } catch (e: any) {
+      toast(e?.message || '清空失败，请稍后重试', 'error')
     }
   }
 
@@ -476,10 +640,10 @@ export default function Layout() {
               </button>
             )}
             <h1 className="header-title">{activeMenu?.label || '工作台'}</h1>
-            <span className="header-breadcrumb">
-              {activeMenu?.group}
-              {activeMenu && <><Icon name="chevron-right" size={12} />{activeMenu.label}</>}
-            </span>
+            {/* 面包屑只标「属于哪个功能区」，不再重复当前页名——
+                原来 h1 和面包屑末级都写着「数据看板」，紧挨着读两遍是纯冗余。
+                当前页由 h1 回答，面包屑回答「它挂在哪一组下」。 */}
+            <span className="header-breadcrumb">{activeMenu?.group}</span>
           </div>
 
           <div className="header-right">
@@ -488,6 +652,7 @@ export default function Layout() {
             <div className="search-bar" ref={searchBoxRef}>
               <Icon name="search" size={16} className="search-icon" />
               <input
+                ref={searchInputRef}
                 value={keyword}
                 onChange={e => setKeyword(e.target.value)}
                 onFocus={() => keyword.trim() && setSearchOpen(true)}
@@ -497,10 +662,13 @@ export default function Layout() {
                 }}
                 placeholder={isCustomer ? '搜索我的订单号 / 车辆' : '搜索订单号、客户、车辆…'}
               />
-              {keyword && (
+              {keyword ? (
                 <button className="search-clear" onClick={() => { setKeyword(''); setHits([]) }}>
                   <Icon name="close" size={12} />
                 </button>
+              ) : (
+                /* 快捷键提示：让 Ctrl+K 可被发现，而不是只写在文档里 */
+                <kbd className="search-kbd" aria-hidden="true">Ctrl K</kbd>
               )}
 
               {searchOpen && keyword.trim() && (
@@ -536,6 +704,18 @@ export default function Layout() {
             </div>
             )}
 
+            {/* 手机端搜索入口：桌面搜索框在 ≤860px 被隐藏，这里补一个等价入口 */}
+            {isMobile && showSearch && (
+              <button
+                className={`header-icon-btn header-search-btn ${mobileSearchOpen ? 'active' : ''}`}
+                title="搜索"
+                aria-label="搜索"
+                onClick={() => setMobileSearchOpen(true)}
+              >
+                <Icon name="search" size={19} />
+              </button>
+            )}
+
             {/* 深浅主题切换：sun/moon 与 IDE 端一致，偏好持久化到 localStorage */}
             <button
               className="header-icon-btn"
@@ -547,7 +727,7 @@ export default function Layout() {
 
             {/* GitHub 直达：作者/源码入口，新标签打开，员工端与顾客端都显示 */}
             <a
-              className="header-icon-btn"
+              className="header-icon-btn header-github"
               href={GITHUB_URL}
               target="_blank"
               rel="noopener noreferrer"
@@ -579,6 +759,7 @@ export default function Layout() {
                       <div className="dropdown-head-actions">
                         <button title="刷新" onClick={() => loadNotifications(false)}><Icon name="refresh" size={14} /></button>
                         <button title="全部已读" onClick={markAllRead}><Icon name="check" size={14} /></button>
+                        <button title="清空通知" onClick={clearNotifications}><Icon name="trash" size={14} /></button>
                       </div>
                     </div>
                     {notifyLoading ? (
@@ -588,10 +769,13 @@ export default function Layout() {
                     ) : (
                       <div className="dropdown-list notify-list">
                         {notifications.map(n => (
-                          <button
+                          <div
                             key={n.id}
                             className={`notify-item notify-${n.level} ${n.isRead ? 'is-read' : 'is-unread'}`}
+                            role="button"
+                            tabIndex={0}
                             onClick={() => openNotification(n)}
+                            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openNotification(n) } }}
                           >
                             <Icon
                               name={n.level === 'danger' ? 'error' : n.level === 'warning' ? 'warning' : 'info'}
@@ -611,7 +795,12 @@ export default function Layout() {
                                 {n.isRead && n.readTime && <em>（已读于 {new Date(n.readTime).toLocaleString('zh-CN')}）</em>}
                               </span>
                             </span>
-                          </button>
+                            <span
+                              className="notify-del"
+                              title="删除这条通知"
+                              onClick={e => { e.stopPropagation(); delNotification(n) }}
+                            ><Icon name="trash" size={14} /></span>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -643,17 +832,20 @@ export default function Layout() {
                     <div className="dropdown-head">
                       <span>我的消息</span>
                       <div className="dropdown-head-actions">
+                        <button title="刷新" onClick={() => loadCustMessages(true)}><Icon name="refresh" size={14} /></button>
                         <button title="全部已读" onClick={markCustAllRead}><Icon name="check" size={14} /></button>
-                        <button title="清空消息" onClick={clearCustMessages}>清空</button>
+                        <button title="清空消息" onClick={clearCustMessages}><Icon name="trash" size={14} /></button>
                       </div>
                     </div>
-                    {custMessages.length === 0 ? (
+                    {custLoading ? (
+                      <div className="dropdown-empty"><Icon name="refresh" size={22} chip /><span>加载中…</span></div>
+                    ) : custMessages.length === 0 ? (
                       <div className="dropdown-empty"><Icon name="success" size={26} chip /><span>暂无消息</span></div>
                     ) : (
                       <div className="dropdown-list notify-list">
                         {custMessages.map(m => (
                           <div
-                            key={m.MessageId}
+                            key={m.messageId}
                             className={`notify-item ${m.isRead ? 'is-read' : 'is-unread'}`}
                             role="button"
                             tabIndex={0}
@@ -661,26 +853,25 @@ export default function Layout() {
                             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCustMessage(m) } }}
                           >
                             <Icon
-                              name={m.RefType === 'refund' ? 'success' : m.RefType === 'supplement_paid' ? 'success' : 'info'}
+                              name={m.refType === 'refund' || m.refType === 'supplement_paid' ? 'success' : m.refType === 'supplement' ? 'warning' : 'info'}
                               size={18}
                               chip
                             />
                             <span className="notify-main">
                               <span className="notify-title">
-                                {m.Title}
+                                {m.title}
                                 <span className={`notify-read-tag ${m.isRead ? 'read' : 'unread'}`}>
                                   {m.isRead ? '已读' : '未读'}
                                 </span>
                               </span>
-                              <span className="notify-desc">{m.Content}</span>
-                              <span className="notify-time">{new Date(m.CreatedAt).toLocaleString('zh-CN')}</span>
+                              <span className="notify-desc">{m.content}</span>
+                              <span className="notify-time">{new Date(m.createdAt).toLocaleString('zh-CN')}</span>
                             </span>
                             <span
                               className="notify-del"
                               title="删除这条消息"
-                              style={{ marginLeft: 'auto', padding: '2px 8px', cursor: 'pointer', opacity: 0.55, fontSize: 15, lineHeight: 1 }}
                               onClick={e => { e.stopPropagation(); delCustMessage(m) }}
-                            >×</span>
+                            ><Icon name="trash" size={14} /></span>
                           </div>
                         ))}
                       </div>
@@ -711,7 +902,7 @@ export default function Layout() {
                   <span className="user-name">{displayName}</span>
                   <span className="user-role">{roleLabel}</span>
                 </div>
-                <Icon name={userMenuOpen ? 'chevron-left' : 'chevron-right'} size={15} />
+                <Icon name={userMenuOpen ? 'chevron-left' : 'chevron-right'} size={15} className="header-user-caret" />
               </button>
 
               {userMenuOpen && (
@@ -779,6 +970,82 @@ export default function Layout() {
         <main className="content">
           <Outlet />
         </main>
+
+        {/* 手机端搜索浮层：与桌面搜索共用 keyword / hits / 防抖逻辑，
+            只是把结果从绝对定位的下拉换成整屏面板（触屏上更好点） */}
+        {isMobile && mobileSearchOpen && (
+          <div className="msearch" role="dialog" aria-modal="true" aria-label="全局搜索">
+            <div className="msearch-head">
+              <div className="msearch-field">
+                <Icon name="search" size={17} className="msearch-icon" />
+                <input
+                  ref={mobileSearchInputRef}
+                  value={keyword}
+                  onChange={e => setKeyword(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') { submitSearch(); closeMobileSearch() }
+                  }}
+                  placeholder={isCustomer ? '搜索我的订单号 / 车辆' : '搜索订单号、客户、车辆…'}
+                  enterKeyHint="search"
+                  autoComplete="off"
+                />
+                {keyword && (
+                  <button
+                    className="search-clear"
+                    aria-label="清空关键词"
+                    onClick={() => { setKeyword(''); setHits([]); mobileSearchInputRef.current?.focus() }}
+                  >
+                    <Icon name="close" size={13} />
+                  </button>
+                )}
+              </div>
+              <button className="msearch-cancel" onClick={closeMobileSearch}>取消</button>
+            </div>
+
+            <div className="msearch-body">
+              {!keyword.trim() ? (
+                <div className="msearch-hint">
+                  <Icon name="search" size={26} chip />
+                  <span>{isCustomer ? '输入订单号或车辆编号' : '输入订单号、客户姓名或车牌'}</span>
+                  <span className="msearch-hint-sub">订单 · 客户 · 车辆</span>
+                </div>
+              ) : searching ? (
+                <div className="dropdown-empty">
+                  <Icon name="refresh" size={22} chip />
+                  <span>查询中…</span>
+                </div>
+              ) : hits.length === 0 ? (
+                <div className="dropdown-empty">
+                  <Icon name="empty" size={26} chip />
+                  <span>没有匹配的结果</span>
+                </div>
+              ) : (
+                <>
+                  <div className="msearch-count">找到 {hits.length} 条</div>
+                  <div className="dropdown-list msearch-list">
+                    {hits.map(h => (
+                      <button
+                        key={`${h.type}-${h.id}`}
+                        className="dropdown-item"
+                        onClick={() => { openHit(h); setMobileSearchOpen(false) }}
+                      >
+                        <Icon name={h.icon} size={18} chip />
+                        <span className="dropdown-item-main">
+                          <span className="dropdown-item-title">{h.title}</span>
+                          <span className="dropdown-item-desc">{h.desc}</span>
+                        </span>
+                        <Icon name="chevron-right" size={14} />
+                      </button>
+                    ))}
+                  </div>
+                  <button className="msearch-all" onClick={() => { submitSearch(); closeMobileSearch() }}>
+                    查看全部结果<Icon name="chevron-right" size={13} />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

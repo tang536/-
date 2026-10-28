@@ -73,9 +73,32 @@ public class SystemConfigService(AppDbContext db)
     public async Task<List<SystemConfig>> GetAll() =>
         await _db.SystemConfigs
             .Where(c => !c.ConfigKey.StartsWith(DictPrefix) && !c.ConfigKey.StartsWith(PayPrefix)
-                && !c.ConfigKey.StartsWith(MemberPayPrefix) && !c.ConfigKey.StartsWith(AiPrefix))
+                && !c.ConfigKey.StartsWith(MemberPayPrefix) && !c.ConfigKey.StartsWith(AiPrefix)
+                // 在线会话登记表（sess.staff.12 / sess.customer.7）是单点登录的内部状态，
+                // 值里是一段含 sid 的 JSON——列在参数表里既看不懂又是把会话标识直接摊在页面上
+                && !c.ConfigKey.StartsWith(SessionRegistry.Prefix))
             .OrderBy(c => c.ConfigId)
             .ToListAsync();
+
+    /// <summary>
+    /// 登录页需要的公开配置（系统操作 #2 openLoginPage）：站点名称、可用登录方式、主题选项。
+    /// 只返回这三个白名单键——这个接口在未认证状态下就能取，不能把整张配置表（含支付密钥）摊出去。
+    /// 缺键时给默认值：种子数据被清过也不至于让登录页白屏。
+    /// </summary>
+    public async Task<Dictionary<string, string>> GetPublic()
+    {
+        var keys = new[] { "site.name", "login.modes", "theme.options" };
+        var rows = await _db.SystemConfigs.AsNoTracking()
+            .Where(c => keys.Contains(c.ConfigKey))
+            .ToListAsync();
+        var map = rows.ToDictionary(c => c.ConfigKey, c => c.ConfigValue ?? string.Empty);
+        return new Dictionary<string, string>
+        {
+            ["site.name"] = map.GetValueOrDefault("site.name", "途电驿站租赁系统"),
+            ["login.modes"] = map.GetValueOrDefault("login.modes", "staff,customer"),
+            ["theme.options"] = map.GetValueOrDefault("theme.options", "light,dark"),
+        };
+    }
 
     public async Task Update(string key, string value)
     {
@@ -90,9 +113,9 @@ public class SystemConfigService(AppDbContext db)
         if (c == null)
         {
             if (key.StartsWith(DictPrefix) || key.StartsWith(PayPrefix)
-                || key.StartsWith(MemberPayPrefix))
-                throw new Exception("数据字典、支付配置及会员购买状态请在各自流程中维护");
-            c = new SystemConfig { ConfigKey = key, ConfigDesc = "管理员新增", UpdateTime = DateTime.Now };
+                || key.StartsWith(MemberPayPrefix) || key.StartsWith(SessionRegistry.Prefix))
+                throw new Exception("数据字典、支付配置、会员购买状态及在线会话请在各自流程中维护");
+            c = SystemConfig.Create(key, null, "管理员新增");
             _db.SystemConfigs.Add(c);
         }
 
@@ -121,8 +144,7 @@ public class SystemConfigService(AppDbContext db)
             }
         }
 
-        c.ConfigValue = text;
-        c.UpdateTime = DateTime.Now;
+        c.SetValue(text);
         await _db.SaveChangesAsync();
     }
 
@@ -134,8 +156,9 @@ public class SystemConfigService(AppDbContext db)
     public async Task Delete(string key)
     {
         if (key.StartsWith(DictPrefix) || key.StartsWith(PayPrefix)
-            || key.StartsWith(MemberPayPrefix) || key.StartsWith(AiPrefix))
-            throw new Exception("数据字典、支付配置、AI 生图配置及会员购买状态请在各自流程中维护");
+            || key.StartsWith(MemberPayPrefix) || key.StartsWith(AiPrefix)
+            || key.StartsWith(SessionRegistry.Prefix))
+            throw new Exception("数据字典、支付配置、AI 生图配置、会员购买状态及在线会话请在各自流程中维护");
         if (NumericKeys.ContainsKey(key))
             throw new Exception("核心业务参数不能删除，只能修改数值");
         var c = await _db.SystemConfigs.FirstOrDefaultAsync(x => x.ConfigKey == key)
@@ -188,13 +211,7 @@ public class SystemConfigService(AppDbContext db)
         var seq = 1;
         while (existing.Any(c => c.ConfigKey == prefix + seq.ToString("D3"))) seq++;
 
-        var entity = new SystemConfig
-        {
-            ConfigKey = prefix + seq.ToString("D3"),
-            ConfigValue = value,
-            ConfigDesc = (req.Desc ?? "").Trim(),
-            UpdateTime = DateTime.Now
-        };
+        var entity = SystemConfig.Create(prefix + seq.ToString("D3"), value, req.Desc);
         _db.SystemConfigs.Add(entity);
         await _db.SaveChangesAsync();
 
@@ -217,9 +234,8 @@ public class SystemConfigService(AppDbContext db)
         if (siblings.Any(c => (c.ConfigValue ?? "").Trim() == value))
             throw new Exception($"该分组下已存在「{value}」，请勿重复");
 
-        entity.ConfigValue = value;
-        entity.ConfigDesc = (req.Desc ?? "").Trim();
-        entity.UpdateTime = DateTime.Now;
+        entity.SetValue(value);
+        entity.SetDescription(req.Desc);
         await _db.SaveChangesAsync();
     }
 
@@ -285,13 +301,7 @@ public class SystemConfigService(AppDbContext db)
             {
                 if (v.Length == 0 || v.Length > MaxValueLength || have.Contains(v)) continue;
                 seq++;
-                _db.SystemConfigs.Add(new SystemConfig
-                {
-                    ConfigKey = prefix + seq.ToString("D3"),
-                    ConfigValue = v,
-                    ConfigDesc = "由数据库同步生成",
-                    UpdateTime = DateTime.Now
-                });
+                _db.SystemConfigs.Add(SystemConfig.Create(prefix + seq.ToString("D3"), v, "由数据库同步生成"));
                 have.Add(v);
                 added++;
             }

@@ -17,20 +17,33 @@ public class CheckController(CheckService svc) : ControllerBase
 
     [HttpGet("list")]
     public async Task<IActionResult> GetChecks(DateTime? date) =>
-        Ok(new ApiResponse<List<CarCheckList>> { Data = await _svc.GetAll(date) });
+        Ok(new ApiResponse<List<CarCheckListDto>>
+        {
+            Data = (await _svc.GetAll(date)).Select(CarCheckListDto.From).ToList()
+        });
 
     [HttpPost("add")]
     public async Task<IActionResult> AddCheck([FromBody] CheckRequest req)
     {
-        try { return Ok(new ApiResponse<CarCheckList> { Data = await _svc.AddCheck(req.VehicleId, req.ActualStatus, req.DiffDesc) }); }
+        try
+        {
+            var row = await _svc.AddCheck(req.VehicleId, req.ActualStatus, req.DiffDesc);
+            return Ok(new ApiResponse<CarCheckListDto> { Data = CarCheckListDto.From(row) });
+        }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpGet("reports")]
     public async Task<IActionResult> GetReports() =>
-        Ok(new ApiResponse<List<CheckReport>> { Data = await _svc.GetReports() });
+        Ok(new ApiResponse<List<CheckReportDto>>
+        {
+            Data = (await _svc.GetReports()).Select(CheckReportDto.From).ToList()
+        });
 
     [HttpPost("generate-report")]
     public async Task<IActionResult> GenerateReport([FromBody] GenReportRequest req) =>
-        Ok(new ApiResponse<CheckReport> { Data = await _svc.GenerateReport(req.Date) });
+        Ok(new ApiResponse<CheckReportDto>
+        {
+            Data = CheckReportDto.From(await _svc.GenerateReport(req.Date))
+        });
 }

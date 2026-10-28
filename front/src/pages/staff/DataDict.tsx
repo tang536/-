@@ -123,7 +123,7 @@ export default function DataDict() {
   return (
     <div className="card">
       <div className="card-title">
-        <Icon name="dict" size={18} chip />数据字典
+        <Icon name="dict" size={18} chip />字典项
         <div className="toolbar-actions" style={{ marginLeft: 'auto' }}>
           <button className="btn-sm btn-sm-default btn-icon-sm" onClick={handleSync} disabled={syncing}>
             <Icon name={syncing ? 'refresh' : 'check'} size={14} /><span className="btn-label">{syncing ? '同步中…' : '从数据库同步'}</span>

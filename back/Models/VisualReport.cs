@@ -39,6 +39,8 @@ public record VisualReport
     public int MaintenanceCount { get; init; }
     /// <summary>资料待完善的客户数（缺身份证号或手机号）</summary>
     public int IncompleteProfileCount { get; init; }
+    /// <summary>保养到期车辆数（以最近一次已完成维保为基准，超过 maintain_cycle_days 即计入；周期为 0 时为 0）</summary>
+    public int MaintenanceDueCount { get; init; }
 
     // ===== 运营指标（管理员端统计报表专用，与财务口径区分）=====
     // 设计口径：管理员看「车辆转得动不动、订单来不来得及」，

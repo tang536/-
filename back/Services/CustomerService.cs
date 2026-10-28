@@ -63,84 +63,79 @@ public class CustomerService(AppDbContext db, LogService log)
         return c;
     }
 
-    public async Task<Customer> Create(Customer c)
+    public async Task<Customer> Create(CustomerCreateDto dto)
     {
-        if (string.IsNullOrWhiteSpace(c.FullName)) throw new Exception("请填写客户姓名");
-        if (string.IsNullOrWhiteSpace(c.IdCard)) throw new Exception("请填写身份证号（租车必备）");
-        var idCard = c.IdCard.Trim();
+        if (string.IsNullOrWhiteSpace(dto.FullName)) throw new Exception("请填写客户姓名");
+        if (string.IsNullOrWhiteSpace(dto.IdCard)) throw new Exception("请填写身份证号（租车必备）");
+        var idCard = dto.IdCard.Trim();
         if (!Validators.IsIdCard(idCard)) throw new Exception("身份证号需为 18 位");
-        if (!Validators.IsPhoneOrEmpty(c.ContactPhone))
+        if (!Validators.IsPhoneOrEmpty(dto.ContactPhone))
             throw new Exception("手机号格式不正确");
         if (await _db.Customers.AnyAsync(x => x.IdCard == idCard))
             throw new Exception("身份证号已存在");
 
         // customer.login_account 带唯一索引。前台代客建档时若填了登录用户名，必须先查重，
         // 否则会撞唯一键、把 MySQL 的英文报错直接抛给用户（异常中间件只作兜底）。
-        if (!string.IsNullOrWhiteSpace(c.LoginAccount))
+        string? account = null;
+        if (!string.IsNullOrWhiteSpace(dto.LoginAccount))
         {
-            var account = c.LoginAccount.Trim();
+            account = dto.LoginAccount.Trim();
             if (!Validators.IsLoginAccount(account))
                 throw new Exception("用户名需为 3-20 位字母、数字、下划线或中文");
             if (await _db.Customers.AnyAsync(x => x.LoginAccount == account))
                 throw new Exception("该用户名已被注册，请更换");
-            c.LoginAccount = account;
-        }
-        else
-        {
-            c.LoginAccount = null;   // 空串会被唯一索引视作同一值，统一存 NULL
         }
 
-        c.IdCard = idCard;
-        c.ContactPhone = c.ContactPhone?.Trim();
+        // 实体只能用工厂构造，setter 不再对外暴露
+        var c = Customer.WalkIn(dto.FullName, idCard, dto.ContactPhone);
+        c.AssignLoginAccount(account);
+
         // 3NF：客户档案只存等级名，折扣唯一真源在权益表（读取时关联），不再冗余写入；
         // 等级名以权益表为准做归一化（存在才归一，出厂未配置时保留原值）
+        var level = string.IsNullOrWhiteSpace(dto.MemberLevel) ? "普通会员" : dto.MemberLevel.Trim();
         var right = await _db.MemberRights.AsNoTracking()
-                        .FirstOrDefaultAsync(m => m.MemberLevel == c.MemberLevel);
-        if (right != null)
-        {
-            c.MemberLevel = right.MemberLevel;
-        }
-        c.Version = 1;
+                        .FirstOrDefaultAsync(m => m.MemberLevel == level);
+        if (right != null) c.ChangeMemberLevel(right.MemberLevel);
+
         _db.Customers.Add(c);
         await _db.SaveChangesAsync();
         c.MemberDiscount = await MemberDiscountLookup.OfLevelAsync(_db, c.MemberLevel);
         return c;
     }
 
-    public async Task Update(int id, Customer c)
+    public async Task Update(int id, CustomerUpdateDto dto)
     {
         var exist = await _db.Customers.FindAsync(id) ?? throw new Exception("客户不存在");
 
-        // 乐观并发：以提交方打开编辑时的版本号为基准（客户端回传 c.Version）。
+        // 乐观并发：以提交方打开编辑时的版本号为基准（客户端回传 dto.Version）。
         // 前台与管理员同时编辑同一客户时，后提交者基准对不上会被拒绝，
         // 避免悄悄覆盖先提交方的修改（EF 生成 UPDATE ... WHERE version = 提交版本）。
-        _db.Entry(exist).Property(x => x.Version).OriginalValue = c.Version;
+        _db.Entry(exist).Property(x => x.Version).OriginalValue = dto.Version;
 
-        if (!string.IsNullOrWhiteSpace(c.IdCard))
+        if (!string.IsNullOrWhiteSpace(dto.IdCard))
         {
-            var idCard = c.IdCard.Trim();
+            var idCard = dto.IdCard.Trim();
             if (!Validators.IsIdCard(idCard)) throw new Exception("身份证号需为 18 位");
             if (await _db.Customers.AnyAsync(x => x.IdCard == idCard && x.CustomerId != id))
                 throw new Exception("该身份证号已被其他客户使用");
-            exist.IdCard = idCard;
         }
-        if (!string.IsNullOrWhiteSpace(c.ContactPhone))
-        {
-            var phone = c.ContactPhone.Trim();
-            if (!Validators.IsPhone(phone)) throw new Exception("手机号格式不正确");
-            exist.ContactPhone = phone;
-        }
-        if (!string.IsNullOrWhiteSpace(c.FullName)) exist.FullName = c.FullName.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.ContactPhone)
+            && !Validators.IsPhone(dto.ContactPhone.Trim()))
+            throw new Exception("手机号格式不正确");
+
+        // 只有非空字段会被写入，与前端「只提交改过的项」一致
+        exist.UpdateProfile(dto.FullName, dto.IdCard, dto.ContactPhone);
 
         // 会员等级调整（客户管理页承担）：等级必须已在权益表维护；
         // 3NF 后折扣不落档案，读取时按等级关联权益表，改类型折扣全体即时生效、无需同步
         var oldLevel = exist.MemberLevel;
+        var level = string.IsNullOrWhiteSpace(dto.MemberLevel) ? oldLevel : dto.MemberLevel.Trim();
         var right = await _db.MemberRights.AsNoTracking()
-                        .FirstOrDefaultAsync(m => m.MemberLevel == c.MemberLevel)
-                    ?? throw new Exception($"会员等级「{c.MemberLevel}」不存在，请先在会员管理中维护该类型");
-        exist.MemberLevel = right.MemberLevel;
+                        .FirstOrDefaultAsync(m => m.MemberLevel == level)
+                    ?? throw new Exception($"会员等级「{level}」不存在，请先在会员管理中维护该类型");
+        exist.ChangeMemberLevel(right.MemberLevel);
 
-        exist.Version = c.Version + 1;
+        exist.BumpVersion(dto.Version);
         try
         {
             await _db.SaveChangesAsync();
@@ -258,10 +253,12 @@ public class CustomerService(AppDbContext db, LogService log)
                 TotalRent = o.TotalRent,
                 Deposit = o.Deposit,
                 OrderStatus = o.OrderStatus,
-                PaidAmount = Math.Round(ps.Where(p => p.PayStatus == "已支付").Sum(p => p.PayAmount), 2),
+                // 已付金额 = 钱到过账的支付（含结算后退押金变成「部分退款」的记录）：
+                // 只数「已支付」会让已完结订单显示「已付 ¥0」，顾客档案与实收对不上。
+                PaidAmount = Math.Round(ps.Where(p => PayStatuses.IsMoneyArrived(p.PayStatus)).Sum(p => p.PayAmount), 2),
                 RefundAmount = Math.Round(ps.Sum(p => p.RefundAmount), 2),
                 PayTypes = string.Join(" / ", ps
-                    .Where(p => p.PayStatus == "已支付" && !string.IsNullOrWhiteSpace(p.PayType))
+                    .Where(p => PayStatuses.IsMoneyArrived(p.PayStatus) && !string.IsNullOrWhiteSpace(p.PayType))
                     .Select(p => p.PayType)
                     .Distinct()),
                 CreateTime = o.CreateTime

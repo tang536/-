@@ -229,8 +229,7 @@ public class PaymentService(
     private async Task<RefundResult> LedgerRefundAsync(
         Models.PaymentRecord p, decimal newTotal, decimal amount, string channel, string cause)
     {
-        p.RefundAmount = newTotal;
-        p.PayStatus = newTotal >= p.PayAmount ? "已退款" : "部分退款";
+        p.ApplyRefund(newTotal);
         await _db.SaveChangesAsync();
         var name = string.IsNullOrWhiteSpace(channel) ? "支付宝" : channel;
         return new RefundResult(
@@ -242,8 +241,7 @@ public class PaymentService(
     private async Task<RefundResult> ApplyRefundedAsync(
         Models.PaymentRecord p, decimal newTotal, decimal amount, string channel, string requestNo)
     {
-        p.RefundAmount = newTotal;
-        p.PayStatus = newTotal >= p.PayAmount ? "已退款" : "部分退款";
+        p.ApplyRefund(newTotal);
         await _db.SaveChangesAsync();
         return new RefundResult(
             $"{channel}原路退款 ¥{amount:0.00} 已受理（累计 ¥{newTotal:0.00}，请求号 {requestNo}）",

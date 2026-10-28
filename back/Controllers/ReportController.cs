@@ -55,6 +55,20 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
     }
 
     /// <summary>
+    /// 删除（忽略）通知：body 传 ids 删除指定通知；不传或空数组表示「清空全部」。
+    /// 员工预警是实时状态推导的（下次拉取会幂等重建），故删除 = 软删忽略：
+    /// 预警消失后标记随行清除，再次触发按新预警处理（与顾客侧硬删的分工见 MessageService）。
+    /// </summary>
+    [HttpPost("notifications/delete")]
+    [Authorize(Policy = Policies.AnyStaff)]
+    [SkipAudit]   // 通知忽略属个人阅读偏好，非业务数据变更；高频写日志会淹没真正的业务操作
+    public async Task<IActionResult> DeleteNotifications([FromBody] NotificationReadRequest? req)
+    {
+        var n = await _svc.Dismiss(CurrentUserId, req?.Ids);
+        return Ok(new ApiResponse<object> { Message = n > 0 ? $"已删除 {n} 条通知" : "没有可删除的通知" });
+    }
+
+    /// <summary>
     /// 统计报表主接口（管理员 / 财务）。支持 from / to 时间段筛选：
     /// 财务按任意区间看营收与订单，不传则沿用累计口径。
     /// 角色口径：**财务看全部**（资金 + 运营指标），管理员只取运营指标

@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using ApiResponse = ERental.Models.ApiResponse<object>;
 using CreateReq = ERental.DTOs.CreateMaintenanceRequest;
 using CompleteReq = ERental.DTOs.CompleteMaintenanceRequest;
+using UpdateReq = ERental.DTOs.UpdateMaintenanceRequest;
 
 namespace ERental.Controllers;
 
@@ -61,6 +62,24 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
     public async Task<IActionResult> Complete(int id, [FromBody] CompleteReq req)
     {
         try { await _svc.Complete(id, req.Fee); return Ok(new ApiResponse { Message = "工单已完成" }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
+    }
+
+    /// <summary>编辑维保工单内容（故障类型 / 描述 / 现场照片），前台与管理员均可操作，已完 workpiece 工单不可编辑</summary>
+    [HttpPut("{id:int}")]
+    [Authorize(Policy = Policies.AdminOrReception)]
+    public async Task<IActionResult> Update(int id, [FromBody] UpdateReq req)
+    {
+        try { await _svc.Update(id, req); return Ok(new ApiResponse { Message = "工单已更新" }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
+    }
+
+    /// <summary>撤回维保工单：撤销该工单并释放车辆（仅当无其它未完成工单时置空闲）。前台与管理员均可操作。</summary>
+    [HttpPost("{id:int}/withdraw")]
+    [Authorize(Policy = Policies.AdminOrReception)]
+    public async Task<IActionResult> Withdraw(int id)
+    {
+        try { await _svc.Withdraw(id); return Ok(new ApiResponse { Message = "工单已撤回，车辆已释放" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 

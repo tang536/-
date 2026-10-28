@@ -22,10 +22,13 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
     /// <summary>
     /// 分页查询（管理端车辆台账）：pageSize≤0 时等价于 <see cref="GetAll"/>。
     /// <paramref name="brand"/> 是列表页的品牌筛选，放到库里过滤——前端只对当前页做筛选会导致
-    /// 总数与页码都失真，所以下推到 SQL。排序固定按车辆编号，保证翻页不重不漏。
+    /// 总数与页码都失真，所以下推到 SQL。
+    /// <paramref name="sortBy"/> 来自表头点击（白名单映射），未识别时按车辆编号升序，
+    /// 保证「不排序」时翻页不重不漏。
     /// </summary>
     public async Task<(List<Vehicle> Items, int Total)> GetPaged(
-        string? status, string? keyword, string? brand, int page, int pageSize)
+        string? status, string? keyword, string? brand,
+        string? sortBy = null, bool sortDesc = true, int page = 0, int pageSize = 0)
     {
         var q = _db.Vehicles.AsQueryable();
         if (!string.IsNullOrEmpty(status)) q = q.Where(v => v.VehicleStatus == status);
@@ -38,9 +41,19 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
 
         var total = await q.CountAsync();
         var (_, _, skip, take) = DTOs.Paging.Normalize(page, pageSize);
+        var desc = sortDesc;
+        var ordered = sortBy?.ToLowerInvariant() switch
+        {
+            "buytime" => desc ? q.OrderByDescending(v => v.BuyTime) : q.OrderBy(v => v.BuyTime),
+            "buyprice" => desc ? q.OrderByDescending(v => v.BuyPrice) : q.OrderBy(v => v.BuyPrice),
+            "dailyrent" => desc ? q.OrderByDescending(v => v.DailyRent) : q.OrderBy(v => v.DailyRent),
+            "deposit" => desc ? q.OrderByDescending(v => v.Deposit) : q.OrderBy(v => v.Deposit),
+            // 未指定排序时固定车牌升序：这是台账的天然顺序，翻页不会跳来跳去
+            _ => q.OrderBy(v => v.VehicleNo),
+        };
         var items = take > 0
-            ? await q.OrderBy(v => v.VehicleNo).Skip(skip).Take(take).ToListAsync()
-            : await q.OrderBy(v => v.VehicleNo).ToListAsync();
+            ? await ordered.Skip(skip).Take(take).ToListAsync()
+            : await ordered.ToListAsync();
         return (items, total);
     }
 
@@ -65,9 +78,10 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
     public async Task<Vehicle> GetById(int id) =>
         await _db.Vehicles.FindAsync(id) ?? throw new Exception("车辆不存在");
 
-    public async Task<Vehicle> Create(Vehicle v)
+    public async Task<Vehicle> Create(VehicleSaveDto d)
     {
-        ValidateProfile(v);
+        ValidateProfile(d);
+        var v = d.ToEntity();
         if (await _db.Vehicles.AnyAsync(x => x.VehicleNo == v.VehicleNo))
             throw new Exception("车辆编号已存在，请重新输入");
         if (!string.IsNullOrWhiteSpace(v.FrameNumber)
@@ -78,7 +92,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         _db.Vehicles.Add(v);
         await _db.SaveChangesAsync();
 
-        v.QrCode = BuildQrCode(v.VehicleId);
+        v.AssignQrCode(BuildQrCode(v.VehicleId));
         await _db.SaveChangesAsync();
         return v;
     }
@@ -89,22 +103,23 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
     /// 同批次内的车辆编号 / 车架号也做去重（避免一批里手滑写了两行同一车牌），
     /// 再加库内存在性校验，与单条 Create 的口径完全一致。
     /// </summary>
-    public async Task<BatchVehicleResultDto> CreateBatch(List<Vehicle> vehicles)
+    public async Task<BatchVehicleResultDto> CreateBatch(List<VehicleSaveDto> items)
     {
-        var result = new BatchVehicleResultDto { Total = vehicles.Count };
+        var result = new BatchVehicleResultDto { Total = items.Count };
         var seenNos = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var seenFrames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        for (var i = 0; i < vehicles.Count; i++)
+        for (var i = 0; i < items.Count; i++)
         {
-            var v = vehicles[i];
-            var item = new BatchVehicleItemResult { Index = i, VehicleNo = v.VehicleNo };
+            var dto = items[i];
+            var item = new BatchVehicleItemResult { Index = i, VehicleNo = dto?.VehicleNo };
             try
             {
-                if (v == null) throw new Exception("车辆数据为空");
-                ValidateProfile(v);
+                if (dto == null) throw new Exception("车辆数据为空");
+                ValidateProfile(dto);
+                var v = dto.ToEntity();
                 // 与单条一致：批量里手工写「在租」一律归正为「空闲」（在租只能由开单产生）
-                if (v.VehicleStatus == VehicleStatuses.Rented) v.VehicleStatus = VehicleStatuses.Idle;
+                if (v.VehicleStatus == VehicleStatuses.Rented) v.ChangeStatus(VehicleStatuses.Idle);
 
                 // 批次内去重（先于库内校验，给即时反馈，不必等查库）
                 if (!string.IsNullOrWhiteSpace(v.VehicleNo) && !seenNos.Add(v.VehicleNo))
@@ -121,7 +136,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
                 // 二维码码值含自增主键，必须先存一次拿到 VehicleId 才能拼，故分两次保存
                 _db.Vehicles.Add(v);
                 await _db.SaveChangesAsync();
-                v.QrCode = BuildQrCode(v.VehicleId);
+                v.AssignQrCode(BuildQrCode(v.VehicleId));
                 await _db.SaveChangesAsync();
 
                 item.VehicleId = v.VehicleId;
@@ -138,33 +153,28 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         return result;
     }
 
-    public async Task Update(int id, Vehicle v, int? operatorId = null)
+    public async Task Update(int id, VehicleSaveDto d, int? operatorId = null)
     {
         var exist = await _db.Vehicles.FindAsync(id) ?? throw new Exception("车辆不存在");
-        ValidateProfile(v);
+        ValidateProfile(d);
 
-        if (await _db.Vehicles.AnyAsync(x => x.VehicleNo == v.VehicleNo && x.VehicleId != id))
+        if (await _db.Vehicles.AnyAsync(x => x.VehicleNo == d.VehicleNo && x.VehicleId != id))
             throw new Exception("车辆编号已存在，请重新输入");
-        if (!string.IsNullOrWhiteSpace(v.FrameNumber)
-            && await _db.Vehicles.AnyAsync(x => x.FrameNumber == v.FrameNumber && x.VehicleId != id))
+        if (!string.IsNullOrWhiteSpace(d.FrameNumber)
+            && await _db.Vehicles.AnyAsync(x => x.FrameNumber == d.FrameNumber && x.VehicleId != id))
             throw new Exception("车架号已存在，请重新输入");
         // 「在租」只能由开单流程产生：手工改成在租却没有对应订单，车就再也租不出去也没人能结算
-        if (exist.VehicleStatus == "在租" && v.VehicleStatus != "在租")
+        if (exist.VehicleStatus == "在租" && d.VehicleStatus != "在租")
             throw new Exception($"车辆 {exist.VehicleNo} 正在租赁中，请先完成归还结算再修改状态");
-        if (v.VehicleStatus == VehicleStatuses.Rented && exist.VehicleStatus != VehicleStatuses.Rented)
+        if (d.VehicleStatus == VehicleStatuses.Rented && exist.VehicleStatus != VehicleStatuses.Rented)
             throw new Exception("「在租」状态由开单流程自动生成，不能手工设置；如需出租请在「创建租赁订单」中开单");
 
         var before = exist.VehicleStatus;
-        exist.VehicleNo = v.VehicleNo;
-        exist.Brand = v.Brand;
-        exist.FrameNumber = v.FrameNumber;
-        exist.BuyTime = v.BuyTime ?? exist.BuyTime;
-        exist.BuyPrice = v.BuyPrice;
-        exist.VehicleStatus = v.VehicleStatus;
-        exist.DailyRent = v.DailyRent;   // 置空即回退系统配置的日租金
-        exist.Deposit = v.Deposit;
-        if (!string.IsNullOrWhiteSpace(v.ImageUrl)) exist.ImageUrl = v.ImageUrl.Trim();
-        if (string.IsNullOrWhiteSpace(exist.QrCode)) exist.QrCode = BuildQrCode(exist.VehicleId);
+        // 档案字段整表单覆盖（置空的日租金/押金即回退系统配置值）
+        exist.ApplyProfile(d.VehicleNo, d.FrameNumber, d.Brand, d.BuyTime, d.BuyPrice, d.DailyRent, d.Deposit);
+        exist.ChangeStatus(d.VehicleStatus);
+        if (!string.IsNullOrWhiteSpace(d.ImageUrl)) exist.SetImage(d.ImageUrl);
+        if (string.IsNullOrWhiteSpace(exist.QrCode)) exist.AssignQrCode(BuildQrCode(exist.VehicleId));
         await _db.SaveChangesAsync();
 
         // 档案编辑里顺带改了状态时同样留痕（需求 4.2.2「状态变更全程留痕」）
@@ -217,12 +227,12 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
 
                 // —— 校验全过，才落值 ——
                 var before = v.VehicleStatus;
-                if (dto.ApplyStatus) v.VehicleStatus = dto.VehicleStatus!;
-                if (dto.ApplyBrand) v.Brand = dto.Brand;
-                if (dto.ApplyDailyRent) v.DailyRent = dto.DailyRent;
-                if (dto.ApplyDeposit) v.Deposit = dto.Deposit;
-                if (!string.IsNullOrWhiteSpace(v.ImageUrl)) v.ImageUrl = v.ImageUrl.Trim();
-                if (string.IsNullOrWhiteSpace(v.QrCode)) v.QrCode = BuildQrCode(v.VehicleId);
+                if (dto.ApplyStatus) v.ChangeStatus(dto.VehicleStatus!);
+                if (dto.ApplyBrand) v.SetBrand(dto.Brand);
+                if (dto.ApplyDailyRent) v.SetDailyRent(dto.DailyRent);
+                if (dto.ApplyDeposit) v.SetDeposit(dto.Deposit);
+                if (!string.IsNullOrWhiteSpace(v.ImageUrl)) v.SetImage(v.ImageUrl);
+                if (string.IsNullOrWhiteSpace(v.QrCode)) v.AssignQrCode(BuildQrCode(v.VehicleId));
 
                 // 状态变更留痕（需求 4.2.2），与单条编辑保持一致
                 if (dto.ApplyStatus && before != v.VehicleStatus)
@@ -247,7 +257,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
     {
         var v = await _db.Vehicles.FindAsync(id) ?? throw new Exception("车辆不存在");
         var url = file is { Length: > 0 } ? await _images.SaveAsync(file, "vehicle") : null;
-        v.ImageUrl = string.IsNullOrWhiteSpace(url) ? null : url.Trim();
+        v.SetImage(url);
 
         await _db.SaveChangesAsync();
         return v.ImageUrl;
@@ -265,7 +275,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         var trimmed = url?.Trim() ?? string.Empty;
         if (!string.IsNullOrEmpty(trimmed) && !trimmed.StartsWith("/uploads/", StringComparison.OrdinalIgnoreCase))
             throw new Exception("车辆图片只支持本站已上传的图片（/uploads/ 路径）");
-        v.ImageUrl = string.IsNullOrEmpty(trimmed) ? null : trimmed;
+        v.SetImage(trimmed);
 
         // 替换图片后删除旧文件，避免 uploads 目录无限增长
         if (!string.Equals(oldUrl, trimmed, StringComparison.OrdinalIgnoreCase))
@@ -432,7 +442,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
     }
 
     /// <summary>车辆档案字段校验（需求 5.1 格式校验精度）。只拦截明显不合法的取值</summary>
-    private static void ValidateProfile(Vehicle v)
+    private static void ValidateProfile(VehicleSaveDto v)
     {
         if (string.IsNullOrWhiteSpace(v.VehicleNo))
             throw new Exception("请填写车辆编号");

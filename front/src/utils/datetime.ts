@@ -36,6 +36,15 @@ export function shiftDateInput(value: string, days: number): string {
   return toDateInput(d)
 }
 
+/**
+ * 近 N 天闭区间（`YYYY-MM-DD` 进、`YYYY-MM-DD` 出）：from = 今天-N+1，to = 今天。
+ * 屏幕日期筛选器的默认口径——报表页、操作日志、订单/结算/客户记录筛选都用它，
+ * 打开页面就带着默认时间段，用户微调即可，不必从空白选起。
+ */
+export function recentDateRange(days: number): { from: string; to: string } {
+  return { from: shiftDateInput(todayInput(), -(days - 1)), to: todayInput() }
+}
+
 /** 当前时刻往后推 n 天的 datetime-local 值，用于租期结束时间的默认值 */
 export function afterDaysDatetimeInput(days: number, from: Date = new Date()): string {
   const d = new Date(from.getTime())

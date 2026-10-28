@@ -109,9 +109,19 @@ public class OrderDto
     public string OrderNo { get; init; } = string.Empty;
     public string CustomerName { get; init; } = string.Empty;
     public string VehicleNo { get; init; } = string.Empty;
+    /// <summary>车辆品牌：前台订单列表与结算单需「车牌号(品牌名)」并列展示，避免只看车牌分不清同号车辆</summary>
+    public string? VehicleBrand { get; init; }
     public DateTime LeaseStart { get; init; }
     public DateTime LeaseEnd { get; init; }
     public decimal TotalRent { get; init; }
+
+    /// <summary>
+    /// 结算后的**实际租金**（按实际归还时长重算）；未结算为 null。
+    /// 下单页的 TotalRent 是「预收租金（预估）」，两者必须在界面上区分开，
+    /// 否则顾客看到的是下单时的预估值、却被当成最终消费金额。
+    /// </summary>
+    public decimal? ActualRent { get; init; }
+
     public decimal Deposit { get; init; }
     public string OrderStatus { get; init; } = string.Empty;
     public DateTime CreateTime { get; init; }

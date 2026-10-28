@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using System.Text;
 using ERental.Data;
 using ERental.DTOs;
@@ -46,7 +46,17 @@ public class AlipayService(
     /// <param name="orderNo">我方订单号（作为支付宝 out_trade_no）</param>
     /// <param name="subject">商品标题，出现在支付宝收银台</param>
     /// <param name="amount">应付金额（元）</param>
-    public async Task<string> CreatePagePayAsync(string orderNo, string subject, decimal amount)
+    /// <param name="returnUrl">
+    /// 付款完成后的同步回跳地址。调用方应传 <see cref="PayConfigService.BuildReturnUrlAsync"/>
+    /// 算出的「用户当前访问源 + 前端路径」——服务端自己猜的 IP 一旦与用户地址栏不符，
+    /// 就会出现"付完款跳到另一个 IP"。传空则退回运行时配置（<c>pay.return_url</c>）。
+    /// </param>
+    /// <param name="notifyUrl">
+    /// 异步通知地址，同样按访问源生成（见 <see cref="PayConfigService.BuildNotifyUrlAsync"/>）。
+    /// 传空则退回运行时配置（<c>pay.notify_url</c>）。
+    /// </param>
+    public async Task<string> CreatePagePayAsync(
+        string orderNo, string subject, decimal amount, string? returnUrl = null, string? notifyUrl = null)
     {
         var rt = await _payConfig.ResolveAsync();
 
@@ -76,8 +86,8 @@ public class AlipayService(
             ["sign_type"] = Options.SignType,
             ["timestamp"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
             ["version"] = "1.0",
-            ["notify_url"] = rt.NotifyUrl,
-            ["return_url"] = rt.ReturnUrl,
+            ["notify_url"] = string.IsNullOrWhiteSpace(notifyUrl) ? rt.NotifyUrl : notifyUrl.Trim(),
+            ["return_url"] = string.IsNullOrWhiteSpace(returnUrl) ? rt.ReturnUrl : returnUrl.Trim(),
             ["biz_content"] = ToJson(bizContent)
         };
 
@@ -290,7 +300,7 @@ public class AlipayService(
             }
 
             // ④ 入账：把订单置为已支付，写支付记录
-            order.OrderStatus = "已支付";
+            order.ChangeStatus("已支付");
 
             var record = await _db.PaymentRecords
                 .Where(p => p.OrderId == order.OrderId && p.PayStatus != "已支付")
@@ -298,23 +308,14 @@ public class AlipayService(
 
             if (record == null)
             {
-                _db.PaymentRecords.Add(new PaymentRecord
-                {
-                    OrderId = order.OrderId,
-                    PayAmount = order.TotalRent + order.Deposit,
-                    PayType = payType,
-                    PayStatus = "已支付",
-                    PayTime = DateTime.Now,
-                    TransactionNo = tradeNo
-                });
+                var fresh = PaymentRecord.Create(order.OrderId, order.TotalRent + order.Deposit,
+                    payType, "order", null, "已支付");
+                fresh.MarkPaid(payType, DateTime.Now, tradeNo);
+                _db.PaymentRecords.Add(fresh);
             }
             else
             {
-                record.PayStatus = "已支付";
-                record.PayType = payType;
-                record.PayTime = DateTime.Now;
-                record.TransactionNo = tradeNo;
-                record.PayAmount = expect;
+                record.MarkPaid(payType, DateTime.Now, tradeNo, expect);
             }
 
             await _db.SaveChangesAsync();
@@ -374,10 +375,7 @@ public class AlipayService(
                 return (false, $"支付金额不符：通知 ¥{paid:0.00}，补缴应付 ¥{p.PayAmount:0.00}。");
             }
 
-            p.PayStatus = "已支付";
-            p.PayType = payType;
-            p.PayTime = DateTime.Now;
-            p.TransactionNo = tradeNo;
+            p.MarkPaid(payType, DateTime.Now, tradeNo);
             await _db.SaveChangesAsync();
             await tx.CommitAsync();
 
@@ -449,6 +447,10 @@ public class AlipayService(
         {
             // 只回异常类型名，不回 Message —— 私钥解析失败的原始消息可能包含密钥片段
             dto.AppPublicKeyError = $"私钥解析失败（{ex.GetType().Name}），请检查是否为完整的 PKCS#8 / PKCS#1 私钥";
+            // 模式判定只看"三个字段非空"，所以这种情况下 Mode 仍会显示生产/沙箱，
+            // 但凭证其实签不出签名——必须把 Configured 打回 false，
+            // 否则就会出现「卡片说凭证不全、自检却报生产模式」这种自相矛盾。
+            dto.Configured = false;
             _logger.LogWarning("自检：由私钥推导应用公钥失败（{ExType}）", ex.GetType().Name);
         }
 

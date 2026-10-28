@@ -114,6 +114,13 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     // 所选机构的路径规范不同时再显式填写。
     public const string KeyBankRefundUrl = Prefix + "bank_refund_url";
 
+    // 查单 / 余额地址同样非必填：通用收银网关没有统一协议，这两条路径的命名各家不同
+    // （/query、/order/query、/trade/query …；/balance、/account/balance …）。
+    // 留空时按最常见的约定由支付网关推导（/pay → /query、/balance），
+    // 与实际机构的路径规范不符时再显式填写，不必改代码。
+    public const string KeyBankQueryUrl = Prefix + "bank_query_url";
+    public const string KeyBankBalanceUrl = Prefix + "bank_balance_url";
+
     /// <summary>支付模式：生产 / 沙箱 / 模拟</summary>
     public const string ModeProd = "生产";
     private const string ModeSandbox = "沙箱";
@@ -137,8 +144,13 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     /// 关键约束——**绝不覆盖管理员填过的非 localhost 值**。
     /// 生产环境回调必须走公网域名或内网穿透，那只能由人显式指定；自动猜测会把它改坏。
     /// 这里只处理两种情况：
-    ///   ① 空值             → 局域网模式下补 <c>http://&lt;本机IP&gt;:5105/...</c>，否则保持 localhost
+    ///   ① 空值             → 局域网模式下补「本机 IP + 当前端口」，否则保持 localhost
     ///   ② 含 localhost     → 局域网模式下整段换成本机 IP，避免"换台设备回调打到自己家"
+    ///
+    /// 协议不能一概而论：前端入口（return_url / 补缴回跳）在局域网模式下是 **HTTPS**
+    /// （vite 带自签证书），后端回调端口 5105 才是明文 HTTP。若把 return_url 拼成
+    /// <c>http://ip:5173</c>，手机浏览器会把明文请求发到 TLS 端口，对端在握手阶段断开，
+    /// 页面报「未发送任何数据」（ERR_EMPTY_RESPONSE）——这就是"付完款回不到商家页面"。
     /// </summary>
     private string FallbackLocalUrl(string configured, string path)
     {
@@ -150,23 +162,28 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         // 非局域网模式：原样返回，行为与改造前完全一致
         if (string.IsNullOrWhiteSpace(ip)) return value;
 
+        // 后端自身监听的明文端口（Kestrel 不做 TLS，HTTPS 由 vite / nginx 在外层终止）
+        var notifyBase = $"http://{ip}:5105";
+        var isNotify = path.Contains("notify");
+        // 前端入口：协议由 Lan:FrontScheme 决定，默认 https
+        var frontBase = $"{NormalizeFrontScheme(_lan.FrontScheme)}://{ip}:{_lan.CustomerPort}";
+
         if (string.IsNullOrWhiteSpace(value))
-            return path.Contains("notify")
-                ? $"http://{ip}:5105/{path}"
-                : $"http://{ip}:{_lan.CustomerPort}/{path}";
+            return isNotify ? $"{notifyBase}/{path}" : $"{frontBase}/{path}";
 
         // 局域网模式下，历史遗留的 localhost 地址必须整段重写：
         // 只替换主机名的话，端口还停在旧值（如已废弃的 5174），回跳/回调照样打不开。
-        // 这里把「localhost / 127.0.0.1 + 任意端口」统一改写为「本机 IP + 当前前端端口」；
+        // 这里把「localhost / 127.0.0.1 + 任意端口」统一改写为「本机 IP + 当前端口」；
         // 管理员填的真实域名 / 内网 IP（非回环）不受影响——生产回调仍只认人工显式配置。
         if (LocalHostUrlRegex().IsMatch(value))
-        {
-            var port = path.Contains("notify") ? "5105" : _lan.CustomerPort.ToString();
-            return LocalHostPrefixRegex().Replace(value, $"http://{ip}:{port}");
-        }
+            return LocalHostPrefixRegex().Replace(value, isNotify ? notifyBase : frontBase);
 
         return value.Replace("localhost", ip).Replace("127.0.0.1", ip);
     }
+
+    /// <summary>只接受 http / https，其余（含空值、历史脏值）按 https 处理——局域网入口恒为 HTTPS。</summary>
+    private static string NormalizeFrontScheme(string? scheme) =>
+        string.Equals(scheme?.Trim(), "http", StringComparison.OrdinalIgnoreCase) ? "http" : "https";
 
     /// <summary>
     /// 回跳地址兜底的**公开入口**（微信/银行卡通道构建跳转与回调地址用）。
@@ -174,6 +191,92 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     /// 前端回跳类传 "pay-result"，由本方法决定端口（回调 5105 / 前端 CustomerPort）。
     /// </summary>
     public string FallbackChannelUrl(string configured, string path) => FallbackLocalUrl(configured, path);
+
+    /// <summary>
+    /// 从请求头还原「用户此刻访问的源」，供调用方拼回跳/通知地址。
+    ///
+    /// 优先用前端拦截器统一注入的 <c>X-Client-Origin</c>（最准，就是 window.location.origin）；
+    /// 它缺失时退回浏览器**自动**发送的 <c>Referer</c>——旧版本前端、第三方 WebView、
+    /// 或有人直接用 curl 复现时不会有自定义头，但同源请求的 Referer 一般完整。
+    /// 两者都拿不到才返回 null（调用方再退回配置值/局域网兜底）。
+    ///
+    /// 为什么值得多这一层：自定义头依赖前端代码已更新，而 Referer 是浏览器行为。
+    /// 少这一层时，一旦页面还是旧包，后端就会去猜 IP 与协议，猜成 http 打 HTTPS 端口，
+    /// 用户看到的就是「付完款回不到商家页面，提示未发送任何数据」。
+    /// </summary>
+    public static string? ResolveClientOrigin(string? explicitOrigin, string? referer)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitOrigin)) return explicitOrigin.Trim();
+        if (string.IsNullOrWhiteSpace(referer)) return null;
+        return Uri.TryCreate(referer.Trim(), UriKind.Absolute, out var uri)
+            ? $"{uri.Scheme}://{uri.Authority}"
+            : null;
+    }
+
+    /// <summary>
+    /// 构建「支付完成后回跳的前端地址」——**优先采用用户此刻访问的源**。
+    ///
+    /// 为什么不能只靠服务端拼：服务端只能按自己的网卡猜 IP（<see cref="NetworkHelper"/> 取
+    /// 第一个非回环 IPv4），一旦出现「换 Wi-Fi / 多网卡 / 热点 + 有线并存 / 走公网反代」，
+    /// 猜出来的地址就和用户地址栏里的不一样，表现为**付完款跳到另一个 IP**（端口往往还是对的，
+    /// 因为端口取的是固定配置）。更糟的是这个猜出来的值会被配置页展示成"可保存的值"，
+    /// 管理员一点保存就把它固化进 system_config，从此换网络也回不去。
+    ///
+    /// 所以浏览器把 <c>window.location.origin</c> 通过 X-Client-Origin 头带上来，
+    /// 从哪个地址来、付完款就回哪个地址。缺失或不合法时才退回配置值 → 局域网兜底，
+    /// 行为与改造前完全一致（服务端主动发起的场景没有浏览器，只能走这条）。
+    /// </summary>
+    /// <param name="origin">形如 <c>http://192.168.1.5:5173</c>；仅接受 http/https 裸源</param>
+    /// <param name="path">前端相对路径，如 <c>pay-result</c>、<c>supplement-pay/12</c></param>
+    public async Task<string> BuildReturnUrlAsync(string? origin, string path)
+    {
+        var normalized = NormalizeOrigin(origin);
+        if (normalized != null) return $"{normalized}/{path.TrimStart('/')}";
+
+        var raw = await GetRawAsync();
+        var configured = raw.TryGetValue(KeyReturnUrl, out var v) ? v.Trim() : "";
+        return FallbackChannelUrl(configured, path);
+    }
+
+    /// <summary>
+    /// 构建「支付平台异步通知地址」——同样优先采用用户当前访问的源。
+    ///
+    /// 为什么通知地址也要跟着访问源走：<c>pay.notify_url</c> 一旦被固化成某个内网 IP
+    /// （配置页把兜底值当真实值展示 → 一点保存就写死），换网络后就永久指不到本服务；
+    /// 而支付宝只会往商户下单时传的地址推通知，推不到就只能靠前端轮询查单兜底，
+    /// 表现为"钱付了但订单迟迟不变已支付"。
+    ///
+    /// 用访问源拼出来的地址，前端代理（开发期 Vite / 生产 nginx）会把
+    /// <c>/api/...</c> 转发到后端 5105，端口与协议自动对齐用户实际使用的入口。
+    /// </summary>
+    /// <param name="origin">形如 <c>https://106.53.204.201</c></param>
+    /// <param name="path">后端相对路径，如 <c>api/payment/alipay/notify</c></param>
+    public async Task<string> BuildNotifyUrlAsync(string? origin, string path)
+    {
+        var normalized = NormalizeOrigin(origin);
+        if (normalized != null) return $"{normalized}/{path.TrimStart('/')}";
+
+        var raw = await GetRawAsync();
+        var configured = raw.TryGetValue(KeyNotifyUrl, out var v) ? v.Trim() : "";
+        return FallbackChannelUrl(configured, path);
+    }
+
+    /// <summary>
+    /// 校验并规范化浏览器传来的 origin。
+    ///
+    /// 这里不做"开放重定向"的放行口：只认 http/https，且必须是「协议 + 主机 + 可选端口」，
+    /// 带路径、查询串、片段、用户名密码的一律拒绝（返回 null → 退回配置值）。
+    /// 拒绝非法值时**静默降级**而不是报错——回跳地址算不出来时，支付本身仍应能发起。
+    /// </summary>
+    private static string? NormalizeOrigin(string? origin)
+    {
+        if (string.IsNullOrWhiteSpace(origin)) return null;
+        if (!Uri.TryCreate(origin.Trim(), UriKind.Absolute, out var uri)) return null;
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return null;
+        if (uri.AbsolutePath != "/" || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)) return null;
+        if (!string.IsNullOrEmpty(uri.UserInfo)) return null;
+        return uri.GetLeftPart(UriPartial.Authority);
+    }
 
     /// <summary>敏感项分层解析的公开入口（env > secrets > db），供各支付服务复用同一套优先级。</summary>
     public string Secret(string key, string dbValue) => _secrets.Resolve(key, dbValue, out _);
@@ -359,21 +462,45 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             var row = existing.FirstOrDefault(c => c.ConfigKey == key);
             if (row == null)
             {
-                _db.SystemConfigs.Add(new SystemConfig
-                {
-                    ConfigKey = key,
-                    ConfigValue = value,
-                    ConfigDesc = desc,
-                    UpdateTime = DateTime.Now
-                });
+                _db.SystemConfigs.Add(SystemConfig.Create(key, value, desc));
             }
             else
             {
-                row.ConfigValue = value;
-                row.UpdateTime = DateTime.Now;
+                row.SetValue(value);
             }
         }
         await _db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// 可查看明文的密钥字段（前端字段名 → system_config 键）。
+    /// 白名单形式而非"透传 config_key"，避免这个端点变成任意配置的读取后门。
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string> SecretFieldKeys =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["prodPrivateKey"] = KeyProdPrivateKey,
+            ["prodAlipayPublicKey"] = KeyProdAlipayPublicKey,
+            ["sandboxPrivateKey"] = KeySandboxPrivateKey,
+            ["sandboxAlipayPublicKey"] = KeySandboxAlipayPublicKey,
+            ["wechatApiV3Key"] = KeyWechatApiV3Key,
+            ["wechatPrivateKey"] = KeyWechatPrivateKey,
+            ["wechatPlatformKey"] = KeyWechatPlatformKey,
+            ["wechatCertSerial"] = KeyWechatCertSerial,
+            ["bankSignKey"] = KeyBankSignKey,
+        };
+
+    /// <summary>
+    /// 读取单个密钥项的**明文**，只给管理员在「支付配置」弹窗里点「显示」时按需取用。
+    /// 返回 null 表示字段名不在白名单；返回空串表示这项确实还没配。
+    /// </summary>
+    public async Task<string?> GetSecretAsync(string? field)
+    {
+        var name = (field ?? "").Trim();
+        if (!SecretFieldKeys.TryGetValue(name, out var key)) return null;
+
+        var raw = await GetRawAsync();
+        return raw.TryGetValue(key, out var v) ? (v ?? "").Trim() : "";
     }
 
     /// <summary>把已存的值脱敏后返回（私钥/公钥只留首尾几位），供管理员端表单回显。</summary>
@@ -395,7 +522,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         var prodPub = Get(KeyProdAlipayPublicKey);
         var sbPriv = Get(KeySandboxPrivateKey);
         var sbPub = Get(KeySandboxAlipayPublicKey);
-        // 占位通道的密钥类字段同样脱敏（虽是占位，但管理员可能已提前填入真实值）
+        // 微信/银行卡的密钥类字段同样脱敏（管理员可能已提前填入真实值）
         var wxV3Key = Get(KeyWechatApiV3Key);
         var wxPriv = Get(KeyWechatPrivateKey);
         var bankKey = Get(KeyBankSignKey);
@@ -450,12 +577,17 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             BankSignKeyMasked = Mask(bankKey),
             BankNotifyUrl = FallbackLocalUrl(Get(KeyBankNotifyUrl), "api/payment/bank/notify"),
             BankRefundUrl = Get(KeyBankRefundUrl),
+            BankQueryUrl = Get(KeyBankQueryUrl),
+            BankBalanceUrl = Get(KeyBankBalanceUrl),
             BankSignKeySet = bankKey.Length > 0,
 
             SecretSources = sources,
 
             NotifyUrl = FallbackLocalUrl(Get(KeyNotifyUrl), "api/payment/alipay/notify"),
-            ReturnUrl = FallbackLocalUrl(Get(KeyReturnUrl), "pay-result")
+            ReturnUrl = FallbackLocalUrl(Get(KeyReturnUrl), "pay-result"),
+            // 库里为空 = 当前显示的不是"已配置"，而是运行时推算出来的兜底值
+            NotifyUrlAuto = Get(KeyNotifyUrl).Length == 0,
+            ReturnUrlAuto = Get(KeyReturnUrl).Length == 0
         };
 
         var rt = await ResolveAsync();
@@ -487,9 +619,15 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             return v == "CLEAR" ? "" : v;
         }
 
+        // 开关同理：null = 本次不涉及该渠道的启停（例如工作台的「账户绑定」弹窗只改账号标识），
+        // 必须保持库里的原值。早期实现写的是 `is true ? "1" : "0"`，null 会被当成 false，
+        // 结果只保存一个支付宝 PID 就把微信、银行卡、生产环境三个开关一起关掉。
+        string KeepEnabled(bool? incoming, string key)
+            => incoming is bool b ? (b ? "1" : "0") : raw.GetValueOrDefault(key, "0");
+
         var items = new List<(string Key, string Value, string Desc)>
         {
-            (KeyProdEnabled, dto.ProdEnabled is true ? "1" : "0", "支付-启用生产环境（1开0关）"),
+            (KeyProdEnabled, KeepEnabled(dto.ProdEnabled, KeyProdEnabled), "支付-启用生产环境（1开0关）"),
             (KeyProdAppId, KeepIfEmpty(dto.ProdAppId, KeyProdAppId), "支付-生产 AppId"),
             (KeyProdPid, KeepIfEmpty(dto.ProdPid, KeyProdPid), "支付-生产支付宝会员 ID（PID，查余额用）"),
             (KeyProdPrivateKey, KeepIfEmpty(dto.ProdPrivateKey, KeyProdPrivateKey), "支付-生产应用私钥"),
@@ -505,7 +643,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             // 微信支付（正式通道：WechatPayService 走 APIv3——下单 + 查单 + 回调解密验签；
             // 下单方式按 wechat_pay_mode 分派：h5 跳转收银台 / native 扫码；
             // 凭证不齐全期间自动退回内置模拟收银台，与支付宝的降级思路一致）
-            (KeyWechatEnabled, dto.WechatEnabled is true ? "1" : "0", "支付-启用微信支付"),
+            (KeyWechatEnabled, KeepEnabled(dto.WechatEnabled, KeyWechatEnabled), "支付-启用微信支付"),
             (KeyWechatAppId, KeepIfEmpty(dto.WechatAppId, KeyWechatAppId), "支付-微信 AppId"),
             (KeyWechatMchId, KeepIfEmpty(dto.WechatMchId, KeyWechatMchId), "支付-微信商户号 MchId"),
             (KeyWechatApiV3Key, KeepIfEmpty(dto.WechatApiV3Key, KeyWechatApiV3Key), "支付-微信 APIv3 密钥（回调解密用）"),
@@ -520,14 +658,16 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
                 ? raw.GetValueOrDefault(KeyWechatPayMode, WechatPayModeH5)
                 : NormalizeWechatPayMode(dto.WechatPayMode), "支付-微信支付方式（h5 跳转 / native 扫码）"),
 
-            // 银行卡支付（正式通道：BankPayService 走通用收银网关——签名跳转 + 回调验签；
-            // 通用网关没有统一查单协议，入账依赖异步回调，回调地址须公网可达）
-            (KeyBankEnabled, dto.BankEnabled is true ? "1" : "0", "支付-启用银行卡支付"),
+            // 银行卡支付（正式通道：BankPayService 走通用收银网关——签名跳转 + 回调验签。
+            // 网关无统一协议，查单/余额/退款三条路径均可推导，也可由管理员显式指定）
+            (KeyBankEnabled, KeepEnabled(dto.BankEnabled, KeyBankEnabled), "支付-启用银行卡支付"),
             (KeyBankMerchantNo, KeepIfEmpty(dto.BankMerchantNo, KeyBankMerchantNo), "支付-银行卡商户号"),
             (KeyBankGateway, KeepIfEmpty(dto.BankGateway, KeyBankGateway), "支付-银行卡网关"),
             (KeyBankSignKey, KeepIfEmpty(dto.BankSignKey, KeyBankSignKey), "支付-银行卡签名密钥"),
             (KeyBankNotifyUrl, KeepIfEmpty(dto.BankNotifyUrl, KeyBankNotifyUrl), "支付-银行卡异步回调地址"),
             (KeyBankRefundUrl, KeepIfEmpty(dto.BankRefundUrl, KeyBankRefundUrl), "支付-银行卡退款地址（留空按网关推导）"),
+            (KeyBankQueryUrl, KeepIfEmpty(dto.BankQueryUrl, KeyBankQueryUrl), "支付-银行卡查单地址（留空按网关推导）"),
+            (KeyBankBalanceUrl, KeepIfEmpty(dto.BankBalanceUrl, KeyBankBalanceUrl), "支付-银行卡余额地址（留空按网关推导）"),
 
             (KeyNotifyUrl, KeepIfEmpty(dto.NotifyUrl, KeyNotifyUrl), "支付-异步回调地址（须公网可达）"),
             (KeyReturnUrl, KeepIfEmpty(dto.ReturnUrl, KeyReturnUrl), "支付-同步跳转地址")

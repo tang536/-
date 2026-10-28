@@ -2,6 +2,7 @@
 using System.Text;
 using System.Text.Json;
 using ERental.Data;
+using ERental.DTOs;
 using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
@@ -44,12 +45,22 @@ public class WechatPayService(
     /// <summary>一次微信支付调用所需的运行参数（由配置解析而来）。</summary>
     public sealed record WechatRuntime(
         string AppId, string MchId, string ApiV3Key, string CertSerial,
-        string PrivateKey, string NotifyUrl, string Gateway, string PayMode)
+        string PrivateKey, string NotifyUrl, string Gateway, string PayMode, bool Enabled)
     {
         /// <summary>五项必填凭证是否齐全（缺任何一项都无法完成 APIv3 签名/解密）</summary>
         public bool CredentialsComplete =>
             !string.IsNullOrWhiteSpace(AppId) && !string.IsNullOrWhiteSpace(MchId)
             && !string.IsNullOrWhiteSpace(ApiV3Key) && !string.IsNullOrWhiteSpace(CertSerial)
+            && !string.IsNullOrWhiteSpace(PrivateKey);
+
+        /// <summary>
+        /// **查余额所需的最小凭证集**：商户号 + 证书序列号 + 商户私钥。
+        /// 余额接口是 GET，只用这三项做 APIv3 请求头签名（mchid / serial_no / signature），
+        /// 不涉及下单用的 AppId，也不涉及回调解密用的 APIv3 密钥——
+        /// 因此「账户绑定」弹窗只收这三项，填齊即可查余额，不必先把下单凭证配全。
+        /// </summary>
+        public bool BalanceCredentialsComplete =>
+            !string.IsNullOrWhiteSpace(MchId) && !string.IsNullOrWhiteSpace(CertSerial)
             && !string.IsNullOrWhiteSpace(PrivateKey);
     }
 
@@ -82,7 +93,8 @@ public class WechatPayService(
             Get(PayConfigService.KeyWechatGateway).Length > 0
                 ? Get(PayConfigService.KeyWechatGateway)
                 : DefaultGateway,
-            PayConfigService.NormalizeWechatPayMode(Get(PayConfigService.KeyWechatPayMode)));
+            PayConfigService.NormalizeWechatPayMode(Get(PayConfigService.KeyWechatPayMode)),
+            enabled);
 
         return (rt, enabled && rt.CredentialsComplete);
     }
@@ -252,6 +264,174 @@ public class WechatPayService(
         }
         // 其余状态（NOTPAY / USERPAYING / 未知）都以本地订单状态为准，无需再分支
         return tradeState == "CLOSED" ? "已关闭" : order.OrderStatus;
+    }
+
+    /// <summary>
+    /// 查询微信支付商户**账户余额**（管理员看板「支付账户余额」用）。
+    ///
+    /// 接口：<c>GET /v3/merchant/fund/balance/{account_type}</c>，
+    ///   · BASIC     —— 基本账户，收款资金默认进这里，绝大多数商户看的是它；
+    ///   · OPERATION —— 运营账户，仅当商户开通了「基本账户自动转入运营账户」才有钱。
+    /// 两级都试：BASIC 拿不到（未开通资金流 / 无权限）再退 OPERATION，
+    /// 这样「钱在运营账户里」的商户也不会看到一个空余额。
+    ///
+    /// 单位换算只在返回值处做一次：微信用**分**（整数），本系统全链路用元。
+    /// 失败原因只回 HTTP 状态码与微信错误码（如 NO_AUTH / PARAM_ERROR），
+    /// 不回原始报文——报文里含商户号等排查信息，属日志而非展示信息。
+    /// </summary>
+    public async Task<(bool Ok, decimal? Available, decimal? Pending, string? Error)> QueryBalanceAsync()
+    {
+        var (rt, _) = await ResolveAsync();
+        // 余额只认「商户号 + 证书序列号 + 私钥」这三项（见 BalanceCredentialsComplete），
+        // 不因缺 AppId / APIv3 密钥而拒绝——那两项与余额接口无关。
+        if (!rt.BalanceCredentialsComplete)
+            return (false, null, null, "微信支付余额查询凭证不完整（商户号 / 证书序列号 / 商户私钥）");
+        if (!rt.Enabled)
+            return (false, null, null, "微信支付开关未启用");
+
+        string? lastError = null;
+        foreach (var accountType in new[] { "BASIC", "OPERATION" })
+        {
+            var url = $"{rt.Gateway.TrimEnd('/')}/v3/merchant/fund/balance/{accountType}";
+            try
+            {
+                var http = _httpFactory.CreateClient();
+                http.DefaultRequestHeaders.Remove("Authorization");
+                http.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", BuildAuthorization(rt, "GET", url, ""));
+                http.Timeout = TimeSpan.FromSeconds(10);
+
+                var resp = await http.GetAsync(url);
+                var body = await resp.Content.ReadAsStringAsync();
+                if (!resp.IsSuccessStatusCode)
+                {
+                    // 403/404 多为此商户未开通该账户类型的资金流，属正常业务限制，换下一级再试
+                    lastError = $"{accountType} 账户返回 HTTP {(int)resp.StatusCode}{ReadWechatErrorCode(body)}";
+                    continue;
+                }
+
+                using var doc = JsonDocument.Parse(body);
+                if (!doc.RootElement.TryGetProperty("available_amount", out var avail) || !avail.TryGetInt64(out var fen))
+                {
+                    lastError = $"{accountType} 账户响应无可用余额字段";
+                    continue;
+                }
+
+                decimal? pending = null;
+                if (doc.RootElement.TryGetProperty("pending_amount", out var pend) && pend.TryGetInt64(out var pfen))
+                    pending = pfen / 100m;
+
+                return (true, fen / 100m, pending, null);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex is TaskCanceledException or OperationCanceledException
+                    ? $"{accountType} 账户查询超时"
+                    : $"{accountType} 账户查询异常（{ex.GetType().Name}）";
+            }
+        }
+
+        return (false, null, null, lastError ?? "微信余额查询失败");
+    }
+
+    /// <summary>从微信错误响应里取 <c>code</c>（如 NO_AUTH），取不到回空串。只用于提示，不含敏感数据。</summary>
+    private static string ReadWechatErrorCode(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String)
+            {
+                var v = code.GetString();
+                return string.IsNullOrWhiteSpace(v) ? "" : $"（{v}）";
+            }
+        }
+        catch
+        {
+            // 非 JSON（网关 HTML 错误页）时忽略，状态码已足够定位
+        }
+        return "";
+    }
+
+    /// <summary>
+    /// 微信支付接线自检：向网关发一次最小查询（假订单号），判断签名/证书是否配对。
+    ///
+    /// 与支付宝自检同构的思路——不依赖真实订单：
+    ///   - 网关回 <c>401 / SIGN_ERROR</c> → 签名或证书序列号被拒（密钥不配对，或 cert_serial 填错）；
+    ///   - 网关回 <c>404 / ORDER_NOT_EXIST</c>（或 200）→ 签名已通过，只是订单不存在，属正常；
+    ///   因此「订单不存在」恰恰证明「签名被接受」，是我们要的成功信号。
+    /// 教学价值：把"微信配置是否正确"也变成一个可一键回答的问题。
+    /// </summary>
+    public async Task<ChannelSelfCheckDto> SelfCheckAsync()
+    {
+        var (rt, _) = await ResolveAsync();
+        var enabled = (await _payConfig.GetRawAsync())
+            .GetValueOrDefault(PayConfigService.KeyWechatEnabled, "").Trim() is "1" or "true" or "True";
+
+        var dto = new ChannelSelfCheckDto
+        {
+            Channel = "wechat",
+            ChannelName = "微信支付",
+            Enabled = enabled,
+            Configured = rt.CredentialsComplete,
+            MerchantId = rt.MchId,
+            Gateway = rt.Gateway
+        };
+
+        if (!rt.CredentialsComplete)
+        {
+            dto.Message = "微信支付凭证不完整：AppId、商户号、APIv3 密钥、证书序列号、商户私钥 五项缺一不可，请补全后再自检。";
+            return dto;
+        }
+        if (!enabled)
+        {
+            dto.Message = "微信支付开关未启用，自检跳过联网探测。如需验证配置，请先打开「启用微信支付」。";
+            return dto;
+        }
+
+        // 顺手把私钥格式算出来，方便管理员核对粘贴的是不是完整 PEM
+        try { dto.KeyFormat = AlipaySigner.DetectPrivateKeyFormat(rt.PrivateKey); }
+        catch { dto.KeyFormat = "无法解析（私钥可能不完整）"; }
+
+        // 用一个必然不存在的订单号发查询：签名通过则网关会回「订单不存在」，这证明签名被接受。
+        var outTradeNo = "__SELFCHECK__";
+        var url = $"{rt.Gateway.TrimEnd('/')}/v3/pay/transactions/out-trade-no/{Uri.EscapeDataString(outTradeNo)}?mchid={Uri.EscapeDataString(rt.MchId)}";
+        try
+        {
+            var http = _httpFactory.CreateClient();
+            http.DefaultRequestHeaders.Remove("Authorization");
+            http.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", BuildAuthorization(rt, "GET", url, ""));
+            http.Timeout = TimeSpan.FromSeconds(15);
+            var resp = await http.GetAsync(url);
+            var body = await resp.Content.ReadAsStringAsync();
+            // 先脱敏（清掉私钥/APIv3 密钥字面值）再截断：网关回显里可能带签名与证书片段，
+            // 这道处理保证「查看原始响应」这个排查入口不会成为密钥外泄通道。
+            dto.RawResponse = SecretMasker.Truncate(
+                SecretMasker.Scrub(body, rt.PrivateKey, rt.ApiV3Key), 800);
+
+            var status = (int)resp.StatusCode;
+            // 401 = 鉴权/验签失败（SIGN_ERROR）；其余（404 订单不存在、200）都说明签名已通过。
+            if (status == 401 || body.Contains("SIGN_ERROR") || body.Contains("签名错误") || body.Contains("验签失败"))
+            {
+                dto.SignatureAccepted = false;
+                dto.Message = "微信网关拒绝请求：签名或证书序列号不配对。请核对商户 API 私钥与商户 API 证书序列号" +
+                              "（cert_serial 应填商户 API 证书序列号，而非 PUB 开头的微信支付公钥序号）。";
+            }
+            else
+            {
+                dto.SignatureAccepted = true;
+                dto.Message = "微信网关已接受本次签名，配置正确（返回的业务错误属正常，因为订单号是探测用的假号）。";
+            }
+            return dto;
+        }
+        catch (Exception ex)
+        {
+            // 只回异常类型：HttpRequestException 的 Message 可能带完整网关 URL，TaskCanceledException 则是超时。
+            _logger.LogWarning("微信自检请求异常：{ExType}", ex.GetType().Name);
+            dto.Message = ex is TaskCanceledException or OperationCanceledException
+                ? "自检请求超时：网关在 15 秒内未响应，请检查网络或网关地址。"
+                : $"自检请求异常（{ex.GetType().Name}），请检查网络与网关地址是否正确。";
+            return dto;
+        }
     }
 
     /// <summary>

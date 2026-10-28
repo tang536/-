@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/useAuth'
 import Icon from '@/components/Icon'
 import ReceiptModal from '@/components/ReceiptModal'
 import { fmtDT } from '@/utils/datetime'
+import type { SupplementPayItem } from '@/types'
 
 const statusMap: Record<string, string> = {
   '待支付': 'status-warning',
@@ -32,7 +33,7 @@ export default function MyOrders() {
   // 待支付倒计时：每秒减 1，用于给「待支付」订单展示剩余支付时间（超时会被系统自动取消）
   const [now, setNow] = useState(Date.now())
   // 线上补缴单（门店结算选「线上补缴」生成），顾客在此去支付
-  const [supplements, setSupplements] = useState<any[]>([])
+  const [supplements, setSupplements] = useState<SupplementPayItem[]>([])
 
   const load = () => {
     setLoading(true)
@@ -131,7 +132,9 @@ export default function MyOrders() {
   const active = list.filter(o => o.orderStatus === '已支付' || o.orderStatus === '租赁中' || o.orderStatus === '待支付')
   const finished = list.filter(o => o.orderStatus === '已完成' || o.orderStatus === '已完结')
   // 门店结算选「线上补缴」生成的待支付补缴单，顾客在此在线缴款
-  const pendingSupplements = supplements.filter((s: any) => s.PayStatus === '待支付')
+  // 注意字段名与后端 JSON 一致（camelCase）：写成 PayStatus 会永远过滤出空列表，
+  // 表现就是「关掉支付页以后再也找不到补缴入口」。
+  const pendingSupplements = supplements.filter(s => s.payStatus === '待支付')
 
   const summary = [
     { label: '累计订单', value: list.length, icon: 'orders' as const, tone: 'sky' },
@@ -208,18 +211,20 @@ export default function MyOrders() {
                   <td>{o.vehicleNo}</td>
                   <td className="cell-time">{fmtDT(o.leaseStart)}</td>
                   <td className="cell-time">{fmtDT(o.leaseEnd)}</td>
-                  <td className="num">¥{o.totalRent}</td>
+                  {/* 已结算的显示实际租金（按实际归还时长重算）；未结算的先显示预收预估 */}
+                  <td className="num">
+                    ¥{o.actualRent ?? o.totalRent}
+                  </td>
                   <td className="num">¥{o.deposit}</td>
                   <td>
                     <span className={`status-tag ${statusMap[o.orderStatus] || 'status-default'}`}>{o.orderStatus}</span>
-                    {o.earlyReturnStatus === '待审核' && (
+                    {/*
+                      只在订单还没结束时挂「还车申请待审核」：订单一旦「已完结」，
+                      那份申请在结算时就已经一并关闭了，再显示会让顾客以为自己还要等门店审核。
+                    */}
+                    {o.earlyReturnStatus === '待审核'
+                      && (o.orderStatus === '已支付' || o.orderStatus === '租赁中') && (
                       <span className="status-tag status-warning" style={{ marginLeft: 6 }}>还车申请待审核</span>
-                    )}
-                    {o.isOverdue && (o.orderStatus === '已支付' || o.orderStatus === '租赁中') && (
-                      <div className="pay-countdown">
-                        <Icon name="warning" size={12} />
-                        已超过约定还车时间，可直接在线提交还车申请，超时费用按系统倍数计收
-                      </div>
                     )}
                     {isPending && remain !== null && (
                       <div className="pay-countdown">
@@ -286,14 +291,14 @@ export default function MyOrders() {
                 </tr>
               </thead>
               <tbody>
-                {pendingSupplements.map((s: any) => (
-                  <tr key={s.PayId}>
-                    <td className="mono">{s.OrderNo}</td>
-                    <td className="num">¥{Number(s.PayAmount).toFixed(2)}</td>
-                    <td>{s.PayType || '—'}</td>
+                {pendingSupplements.map(s => (
+                  <tr key={s.payId}>
+                    <td className="mono">{s.orderNo}</td>
+                    <td className="num">¥{Number(s.payAmount).toFixed(2)}</td>
+                    <td>{s.payType || '—'}</td>
                     <td><span className="status-tag status-warning">待支付</span></td>
                     <td>
-                      <button className="btn-sm btn-sm-primary" onClick={() => navigate(`/supplement-pay/${s.PayId}`)}>
+                      <button className="btn-sm btn-sm-primary" onClick={() => navigate(`/supplement-pay/${s.payId}`)}>
                         <Icon name="rent" size={13} color="#fff" />去支付
                       </button>
                     </td>

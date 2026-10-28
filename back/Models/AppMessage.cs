@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ERental.Models;
@@ -65,11 +65,34 @@ public class AppMessage
 
     /// <summary>是否已读（0=未读，1=已读）</summary>
     [Column("is_read")]
-    public bool IsRead { get; set; }
+    public bool IsRead { get; private set; }
 
     [Column("created_at")]
     public DateTime CreatedAt { get; init; } = DateTime.Now;
 
     [Column("read_at")]
-    public DateTime? ReadAt { get; set; }
+    public DateTime? ReadAt { get; private set; }
+
+    /// <summary>
+    /// 忽略时间（员工侧「删除」通知 = 软删）：非空即对该接收人隐藏。
+    /// 员工预警由实时状态推导、每次查询都会幂等重建，硬删会被下一次拉取复活，
+    /// 故用软删；预警随业务失效时行被硬删、标记一并清除，之后再次触发按新预警处理。
+    /// 顾客侧消息是真实事件、不重建，仍走硬删，本列保持 NULL。
+    /// </summary>
+    [Column("dismissed_at")]
+    public DateTime? DismissedAt { get; private set; }
+
+    // -------------------------------------------------------------- 领域方法
+    /// <summary>标记已读（已读时间与「已读」标志必须同进同出，否则会出现「已读但没有阅读时间」）。</summary>
+    public void MarkRead(DateTime readAt)
+    {
+        IsRead = true;
+        ReadAt = readAt;
+    }
+
+    /// <summary>
+    /// 软删（员工侧「删除通知」）：只写忽略时间，行保留。
+    /// 员工预警由实时状态推导、每次查询都会幂等重建，硬删会被下一次拉取复活。
+    /// </summary>
+    public void Dismiss(DateTime dismissedAt) => DismissedAt = dismissedAt;
 }

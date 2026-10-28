@@ -1,6 +1,7 @@
 ﻿using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.RateLimiting;
 using ERental.Authorization;
 using ERental.Data;
@@ -23,6 +24,12 @@ foreach (var sub in new[] { "maintenance", "vehicle" })
 }
 
 var builder = WebApplication.CreateBuilder(args);
+
+// HTTP 上下文访问器：AuthService 要把登录来源 IP 写进 system_log。
+// 登录方法本身拿不到 HttpContext（它是纯服务），由框架注入访问器是标准做法。
+// 注意它是单例、内部按 AsyncLocal 取当前请求，后台任务里为 null，
+// 调用方（AuthService.ClientIp）已按空值处理。
+builder.Services.AddHttpContextAccessor();
 
 // 支付宝沙箱网关的响应可能用 GBK 声明编码，而 .NET Core 默认不带非 Unicode 编码表（CodePages）。
 // 不注册的话，读取响应时会抛「'GBK' is not a supported encoding name」。
@@ -95,6 +102,9 @@ builder.Services.AddAuthorization(AuthorizationSetup.Configure);
 builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, JsonAuthorizationResultHandler>();
 builder.Services.AddControllers(o =>
     {
+        // 入参 XSS 清洗：必须排在其它过滤器之前——后面任何过滤器/动作方法
+        // 读到的都应该是清洗过的值，否则「先记录后清洗」等于把原始载荷写进日志。
+        o.Filters.Add<XssGuardFilter>();
         // 全局授权兜底：未声明 [Authorize]/[AllowAnonymous] 的接口一律拒绝，杜绝「忘标注=匿名可访问」。
         o.Filters.Add<RequireAuthorizationFilter>();
         // 关键写操作自动审计：POST/PUT/DELETE/PATCH 自动落 system_log（需求 4.2.1「全量记录」）。
@@ -110,11 +120,43 @@ builder.Services.AddControllers(o =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// CORS
+// ── CORS：来源白名单（不再 AllowAnyOrigin）──
+// 原写法 AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader() 是把接口对全互联网敞开：
+// 任何站点放进一段脚本，就能借访客浏览器直接调本系统接口，并把响应原文读走。
+// 现在来源必须命中显式白名单，规则三条：
+//   ① 默认只放行本机开发端口与内网私有网段（教室 / 门店局域网访问要能用）；
+//   ② 生产由 Nginx 同源反代，浏览器压根不产生跨域请求，白名单里无需写域名；
+//   ③ **不启用 AllowCredentials** —— 本系统用 Authorization: Bearer 传令牌，
+//      不靠浏览器自动带 cookie；不共享凭据，跨站危害面就小一个量级。
+// 注意 CORS 是浏览器侧机制：不带 Origin 的调用（支付宝回调、curl、服务端互调）
+// 不受影响，收紧白名单不会切断支付回调。
+const string CorsPolicyName = "SpaPolicy";
+var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+var corsOriginPatterns = builder.Configuration.GetSection("Cors:AllowedOriginPatterns").Get<string[]>() ?? [];
+// 注意 Get<string[]>() 对「配置了空数组」返回的是 length=0 而不是 null，
+// 所以这里必须按 Length 判空——写 ?? 默认值的话，配置文件里写一个 [] 就会变成
+// 「白名单为空 = 拒绝一切跨域」，本地开发先炸，而不是像预期那样回退默认规则。
+if (corsOriginPatterns.Length == 0)
+{
+    corsOriginPatterns =
+    [
+        // 本机任意端口：Vite 开发服务器、预览服务、临时调试端口都在这
+        @"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$",
+        // 内网私有网段：10/8、192.168/16、172.16/12（教室 / 门店局域网）
+        @"^https?://((10|192\.168)\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d{1,5})?$",
+    ];
+}
+var corsRegexes = corsOriginPatterns
+    .Select(p => new Regex(p, RegexOptions.IgnoreCase | RegexOptions.Compiled))
+    .ToArray();
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", policy =>
-        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
+    options.AddPolicy(CorsPolicyName, policy => policy
+        .SetIsOriginAllowed(origin =>
+            corsOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase)
+            || corsRegexes.Any(r => r.IsMatch(origin)))
+        .AllowAnyMethod()
+        .AllowAnyHeader());
 });
 
 // ── 反向代理头还原 ──
@@ -206,12 +248,17 @@ builder.Services.AddHttpClient("comfy-probe", c => c.Timeout = TimeSpan.FromSeco
 
 // 业务服务
 builder.Services.AddScoped<ImageStorage>();
+// 登录 IP 防护闸：按来源 IP 累计登录失败并封锁。进程内单例——封锁记录只在内存，
+// 不需要跨实例共享（重启即清零，届时限流策略仍兜底），换来零 Schema 变更
+builder.Services.AddSingleton<LoginIpGuard>();
 // 单点登录登记表：同一账号不允许同时登录。进程内单例（本地单实例部署），
 // 会话登记表落在库表（system_config），多实例共享；因此随请求作用域解析，不能做单例
 builder.Services.AddScoped<SessionRegistry>();
 // 基于 MySQL GET_LOCK 的分布式锁：定时任务（备份、超时单回收）多实例选主
 builder.Services.AddScoped<DbLockService>();
 builder.Services.AddScoped<AuthService>();
+// 系统操作 startup()：仅在启动时解析一次，按作用域释放连接
+builder.Services.AddScoped<SystemStartupService>();
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<CustomerService>();
 builder.Services.AddScoped<VehicleService>();
@@ -279,13 +326,12 @@ if (jwtKeySource.StartsWith("新生成", StringComparison.Ordinal))
 else
     app.Logger.LogInformation("JWT 签名密钥来源：{Source}", jwtKeySource);
 
-// 自动迁移和种子数据
+// 系统操作 startup()：建表 → 老库平滑升级 → 种子数据，三步均幂等。
+// 抽到 SystemStartupService 里，是为了对齐设计文档中的 1 号系统操作（启动顺序即该操作的后置条件）。
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
-    DbInitializer.EnsureSchemaUpgrades(db);   // 老库平滑升级（customer.login_account、id_card 可空）
-    DbInitializer.Seed(db, app.Configuration);
+    var startup = scope.ServiceProvider.GetRequiredService<SystemStartupService>();
+    startup.Startup();
 }
 
 app.UseMiddleware<ExceptionMiddleware>();
@@ -306,7 +352,7 @@ if (!app.Environment.IsDevelopment())
     app.UseHttpsRedirection();
 }
 
-app.UseCors("AllowAll");
+app.UseCors(CorsPolicyName);
 
 // 限流位置很关键：
 //   放在 UseCors 之后 —— 429 响应才会带上跨域头，浏览器能读到提示文案而不是笼统的 CORS 报错；
@@ -336,7 +382,12 @@ if (!string.IsNullOrWhiteSpace(lanIp))
 {
     // 员工端与顾客端为同一份 React 工程，
     // 登录时按角色决定进入后台工作台还是顾客自助端。
-    Console.WriteLine($"[局域网] 前端     http://{lanIp}:5173");
+    // 协议取 Lan:FrontScheme：局域网模式下 vite 启用自签 HTTPS，
+    // 打印成 http 会让人照着去访问，结果明文打 TLS 端口报「未发送任何数据」。
+    var lanCfg = builder.Configuration.GetSection("Lan").Get<ERental.Options.LanOptions>() ?? new();
+    var frontScheme = string.Equals(lanCfg.FrontScheme?.Trim(), "http", StringComparison.OrdinalIgnoreCase)
+        ? "http" : "https";
+    Console.WriteLine($"[局域网] 前端     {frontScheme}://{lanIp}:{lanCfg.CustomerPort}");
     Console.WriteLine($"[局域网] 接口文档 http://{lanIp}:5105/swagger");
 }
 

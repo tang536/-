@@ -140,3 +140,44 @@ public class BatchVehicleUpdateDto
     public bool ApplyBrand { get; init; }
     public string? Brand { get; init; }
 }
+
+/// <summary>
+/// 新增 / 编辑车辆档案的入参（用况4「车辆管理」）。
+///
+/// 为什么不直接收 <c>Vehicle</c> 实体：
+///   1) **越权写入（overposting）**：实体上有 <c>VehicleId</c>、<c>QrCode</c>、两张关联表集合，
+///      请求体一旦能写这些，客户端就能指定主键、伪造二维码码值、甚至顺带塞入关联对象；
+///   2) **循环引用**：<c>Vehicle.RentalOrders</c> 与 <c>RentalOrder.Vehicle</c> 双向导航，
+///      实体被整体回收并序列化时容易成环；
+///   3) 表单上管理员真正能填的只有下面 9 个字段，多一个都不该被接收。
+///
+/// 二维码码值必须由服务端按自增主键生成（<c>BuildQrCode</c>），所以这里没有 QrCode。
+/// </summary>
+public class VehicleSaveDto
+{
+    /// <summary>车辆编号（车牌/内部编号，唯一，不允许含空格）</summary>
+    public string VehicleNo { get; init; } = string.Empty;
+    /// <summary>车架号（可空，唯一）</summary>
+    public string? FrameNumber { get; init; }
+    /// <summary>品牌</summary>
+    public string? Brand { get; init; }
+    /// <summary>购入时间</summary>
+    public DateTime? BuyTime { get; init; }
+    /// <summary>购入价（元）</summary>
+    public decimal? BuyPrice { get; init; }
+    /// <summary>车辆状态：空闲 / 维保 / 报废（「在租」由开单流程自动产生）</summary>
+    public string VehicleStatus { get; init; } = "空闲";
+    /// <summary>日租金（元/天，留空 = 回退系统配置）</summary>
+    public decimal? DailyRent { get; init; }
+    /// <summary>押金（元，留空 = 回退系统配置）</summary>
+    public decimal? Deposit { get; init; }
+    /// <summary>车辆图片地址</summary>
+    public string? ImageUrl { get; init; }
+
+    /// <summary>
+    /// 落成实体：只赋值白名单里的字段。
+    /// <c>VehicleId</c> 走数据库自增，<c>QrCode</c> 由服务层拿到主键后生成，二者都不从入参来。
+    /// </summary>
+    public ERental.Models.Vehicle ToEntity() => ERental.Models.Vehicle.Create(
+        VehicleNo, FrameNumber, Brand, BuyTime, BuyPrice, VehicleStatus, DailyRent, Deposit, ImageUrl);
+}

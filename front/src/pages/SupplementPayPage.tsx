@@ -10,6 +10,8 @@ import { qrSvg } from '../utils/qrcode'
 /** 轮询间隔与上限：30 次 × 3s ≈ 90s，超时提示用户手动刷新，避免无限轮询 */
 const POLL_INTERVAL = 3000
 const POLL_MAX = 30
+/** 「页面重新可见」补查的节流窗口：切标签页会同时触发 visibilitychange + focus + pageshow */
+const RECHECK_THROTTLE = 1500
 
 /**
  * 线上补缴支付页（逾期 / 损坏费用）。
@@ -35,9 +37,11 @@ export default function SupplementPayPage() {
 
   const timerRef = useRef<number>(0)
   const paidRef = useRef(false)
+  const lastCheckRef = useRef(0)
 
   /** 拉取补缴单状态：status 接口在「待支付」时也会主动查单兜底 */
   const loadStatus = useCallback(async () => {
+    lastCheckRef.current = Date.now()
     try {
       const res: any = await supplementApi.status(pid)
       const d = res.data
@@ -56,6 +60,29 @@ export default function SupplementPayPage() {
   }, [pid, toast, navigate])
 
   useEffect(() => { loadStatus() }, [loadStatus])
+
+  /**
+   * 从支付平台返回时补查一次（与首付款支付页同一口径）。
+   *
+   * 真实支付是 window.location.href 整页跳转，本页组件与轮询随之销毁；顾客付完款
+   * 切回标签页 / 浏览器后退 / 窗口重新聚焦时若不主动问一次，页面会一直停在
+   * 「待支付」，顾客很可能再缴一遍。
+   */
+  useEffect(() => {
+    const probe = () => {
+      if (document.visibilityState !== 'visible' || paidRef.current) return
+      if (Date.now() - lastCheckRef.current < RECHECK_THROTTLE) return
+      loadStatus()
+    }
+    document.addEventListener('visibilitychange', probe)
+    window.addEventListener('pageshow', probe)
+    window.addEventListener('focus', probe)
+    return () => {
+      document.removeEventListener('visibilitychange', probe)
+      window.removeEventListener('pageshow', probe)
+      window.removeEventListener('focus', probe)
+    }
+  }, [loadStatus])
 
   useEffect(() => () => window.clearInterval(timerRef.current), [])
 

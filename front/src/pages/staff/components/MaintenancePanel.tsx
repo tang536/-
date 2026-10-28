@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useUI } from '@/components/UIProvider'
 import { useAuth, ROLE } from '@/hooks/useAuth'
 import { maintenanceApi, vehicleApi, configApi, printApi } from '@/api'
 import Icon from '@/components/Icon'
 import DictThFilter from '@/components/DictThFilter'
+import RowActions, { type RowAction } from '@/components/RowActions'
+import VehicleQrLookup from './VehicleQrLookup'
 import { downloadBlob, todayStamp } from '@/utils/download'
 import { fmtDT } from '@/utils/datetime'
 
@@ -62,6 +64,20 @@ export default function MaintenancePanel() {
   const [scrapForm, setScrapForm] = useState({ vehicleId: 0, reason: '' })
   const [scrapErrors, setScrapErrors] = useState<Record<string, string>>({})
 
+  /** 新增工单：扫码选车弹窗（扫描车上二维码直接填入故障车辆，省去在下拉里翻找） */
+  const [showLookup, setShowLookup] = useState(false)
+  /** 报废：扫码选车弹窗 */
+  const [showScrapLookup, setShowScrapLookup] = useState(false)
+
+  /** 编辑工单弹窗状态（前台 / 管理员均可修改工单内容） */
+  const [showEdit, setShowEdit] = useState(false)
+  const [editForm, setEditForm] = useState<{ workOrderId: number; faultType: string; faultDescription: string; faultImage: string }>({
+    workOrderId: 0, faultType: DEFAULT_FAULT_TYPES[0], faultDescription: '', faultImage: '',
+  })
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({})
+  const [editUploading, setEditUploading] = useState(false)
+  const editFileRef = useRef<HTMLInputElement>(null)
+
   const load = async () => {
     setLoading(true)
     try {
@@ -107,19 +123,24 @@ export default function MaintenancePanel() {
   const [faultFilter, setFaultFilter] = useState('')
 
   /**
-   * 上传故障现场照片：先调 /maintenance/upload 拿到落盘路径，
-   * 再把路径随工单一起提交 —— 这样照片与工单**同时落库、同时锁定**，
-   * 后续没有任何修改接口，可作为定责与追溯的原始凭证。
+   * 上传故障现场照片：先调 /maintenance/upload 拿到落盘路径，再把路径随工单一起提交。
+   * 抽成通用函数，新建工单与编辑工单共用同一套上传逻辑（各自带自己的 loading 态与 file ref）。
    */
-  const handleUpload = async (files: FileList | null) => {
+  const uploadInto = async (
+    files: FileList | null,
+    current: string,
+    onSet: (v: string) => void,
+    setFlag: (v: boolean) => void,
+    ref: RefObject<HTMLInputElement>,
+  ) => {
     if (!files || files.length === 0) return
-    const current = imageList(workForm.faultImage)
-    const room = MAX_IMAGES - current.length
+    const currentList = imageList(current)
+    const room = MAX_IMAGES - currentList.length
     if (room <= 0) {
       toast(`最多上传 ${MAX_IMAGES} 张现场照片`, 'warning')
       return
     }
-    setUploading(true)
+    setFlag(true)
     const added: string[] = []
     try {
       for (const f of Array.from(files).slice(0, room)) {
@@ -135,16 +156,22 @@ export default function MaintenancePanel() {
         if (res?.data?.url) added.push(res.data.url)
       }
       if (added.length > 0) {
-        setWorkForm(prev => ({ ...prev, faultImage: [...imageList(prev.faultImage), ...added].join(',') }))
+        onSet([...imageList(current), ...added].join(','))
         toast(`已上传 ${added.length} 张现场照片`, 'success')
       }
     } catch (e: any) {
       toast(e?.message || '照片上传失败', 'error')
     } finally {
-      setUploading(false)
-      if (fileRef.current) fileRef.current.value = ''   // 允许重复选择同一文件
+      setFlag(false)
+      if (ref.current) ref.current.value = ''   // 允许重复选择同一文件
     }
   }
+
+  const handleUpload = (files: FileList | null) =>
+    uploadInto(files, workForm.faultImage, v => setWorkForm(prev => ({ ...prev, faultImage: v })), setUploading, fileRef)
+
+  const handleEditUpload = (files: FileList | null) =>
+    uploadInto(files, editForm.faultImage, v => setEditForm(prev => ({ ...prev, faultImage: v })), setEditUploading, editFileRef)
 
   const removeImage = (url: string) => {
     setWorkForm(prev => ({ ...prev, faultImage: imageList(prev.faultImage).filter(u => u !== url).join(',') }))
@@ -210,6 +237,79 @@ export default function MaintenancePanel() {
     } catch (err: any) { toast(err?.message || '操作失败', 'error') }
   }
 
+  /** 新增工单扫码选车：扫车上的二维码直接定位故障车辆；已报废车辆不可送修 */
+  const handleWorkPick = (detail: any) => {
+    setShowLookup(false)
+    if (detail?.vehicleStatus === '报废') {
+      toast(`车辆 ${detail.vehicleNo} 已报废，不可送修`, 'warning')
+      return
+    }
+    setWorkForm(prev => ({ ...prev, vehicleId: detail.vehicleId }))
+    setWorkErrors({ ...workErrors, vehicleId: '' })
+    toast(`已选定 ${detail.vehicleNo}（系统状态：${detail.vehicleStatus}）`, 'info')
+  }
+
+  /** 报废扫码选车：仅可选「空闲 / 维保」车辆（在租须先结算、报废不可重复报废） */
+  const handleScrapPick = (detail: any) => {
+    setShowScrapLookup(false)
+    if (detail?.vehicleStatus === '在租') {
+      toast(`车辆 ${detail.vehicleNo} 正在租赁中，须先完成归还结算才能报废`, 'warning')
+      return
+    }
+    if (detail?.vehicleStatus === '报废') {
+      toast(`车辆 ${detail.vehicleNo} 已报废`, 'warning')
+      return
+    }
+    setScrapForm(prev => ({ ...prev, vehicleId: detail.vehicleId }))
+    setScrapErrors({ ...scrapErrors, vehicleId: '' })
+    toast(`已选定 ${detail.vehicleNo}（${detail.vehicleStatus}）`, 'info')
+  }
+  const openEdit = (m: any) => {
+    setEditForm({
+      workOrderId: m.workOrderId,
+      faultType: m.faultType || DEFAULT_FAULT_TYPES[0],
+      faultDescription: m.faultDescription || '',
+      faultImage: m.faultImage || '',
+    })
+    setEditErrors({})
+    setShowEdit(true)
+  }
+
+  /** 保存工单编辑：仅改故障类型 / 描述 / 现场照片 */
+  const handleEditSave = async () => {
+    const e: Record<string, string> = {}
+    if (!editForm.faultDescription.trim()) e.faultDescription = '请简述故障现象'
+    setEditErrors(e)
+    if (Object.keys(e).length) return
+    try {
+      await maintenanceApi.update(editForm.workOrderId, {
+        faultType: editForm.faultType,
+        faultDescription: editForm.faultDescription.trim(),
+        faultImage: editForm.faultImage || undefined,
+      })
+      toast('维保工单已更新', 'success')
+      setShowEdit(false)
+      load()
+    } catch (err: any) { toast(err?.message || '保存失败', 'error') }
+  }
+
+  /** 撤回工单：撤销该工单并释放车辆（若同车无其它在修工单） */
+  const handleWithdraw = async (m: any) => {
+    const ok = await confirm({
+      title: '撤回维保工单',
+      message: `确定撤回工单 ${m.workOrderNo} 吗？撤回后车辆将释放（若无其它在修工单）。`,
+      type: 'warning',
+      danger: true,
+      confirmText: '确认撤回',
+    })
+    if (!ok) return
+    try {
+      await maintenanceApi.withdraw(m.workOrderId)
+      toast('工单已撤回', 'success')
+      load()
+    } catch (e: any) { toast(e?.message || '操作失败', 'error') }
+  }
+
   const pending = list.filter(m => m.status !== '已完成').length
 
   /** 维保记录导出（需求 4.2.6）：仅管理员（用况4 车辆全生命周期管理） */
@@ -240,6 +340,14 @@ export default function MaintenancePanel() {
           )}
           {pending > 0 && tab === 'work' && <span className="status-tag status-warning">{pending} 个工单待处理</span>}
         </div>
+        {/* 报废入口：管理员才可对车辆做报废处置；此前报废仅藏在弹窗里、缺显式入口，这里补上 */}
+        {isAdmin && (
+          <div className="toolbar-actions">
+            <button className="btn-sm btn-sm-danger btn-icon-sm" onClick={() => setShowScrap(true)}>
+              <Icon name="warning" size={14} color="#fff" /><span className="btn-label">报废车辆</span>
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="table-wrap">
@@ -283,11 +391,15 @@ export default function MaintenancePanel() {
                   <td><span className={`status-tag ${statusMap[m.status] || 'status-default'}`}>{m.status}</span></td>
                   <td className="cell-time col-hide-lg">{fmtDT(m.createTime)}</td>
                   <td>
-                    {m.status === '已完成'
-                      ? <span className="text-muted">已完结</span>
-                      : isAdmin
-                        ? <button className="btn-sm btn-sm-success" onClick={() => handleComplete(m.workOrderId)}>完成维保</button>
-                        : <span className="text-muted">待管理员处理</span>}
+                    {m.status === '已完成' ? (
+                      <span className="text-muted">已完结</span>
+                    ) : (() => {
+                      const ops: RowAction[] = []
+                      if (isAdmin) ops.push({ key: 'complete', label: '完成维保', icon: 'success', tone: 'success', onClick: () => handleComplete(m.workOrderId) })
+                      ops.push({ key: 'edit', label: '编辑', icon: 'replace', tone: 'default', onClick: () => openEdit(m) })
+                      ops.push({ key: 'withdraw', label: '撤回', icon: 'close', tone: 'danger', onClick: () => handleWithdraw(m) })
+                      return <RowActions items={ops} />
+                    })()}
                   </td>
                 </tr>
               ))}
@@ -331,16 +443,21 @@ export default function MaintenancePanel() {
             <div className="modal-body">
               <div className="form-group">
                 <label>故障车辆 <span className="req">*</span></label>
-                <select
-                  className={workErrors.vehicleId ? 'has-error' : ''}
-                  value={workForm.vehicleId}
-                  onChange={e => { setWorkForm({ ...workForm, vehicleId: parseInt(e.target.value) }); setWorkErrors({ ...workErrors, vehicleId: '' }) }}
-                >
-                  <option value={0}>请选择车辆</option>
-                  {vehicles.filter(v => v.vehicleStatus !== '报废').map(v => (
-                    <option key={v.vehicleId} value={v.vehicleId}>{v.vehicleNo} - {v.brand}（{v.vehicleStatus}）</option>
-                  ))}
-                </select>
+                <div className="field-with-scan">
+                  <select
+                    className={workErrors.vehicleId ? 'has-error' : ''}
+                    value={workForm.vehicleId}
+                    onChange={e => { setWorkForm({ ...workForm, vehicleId: parseInt(e.target.value) }); setWorkErrors({ ...workErrors, vehicleId: '' }) }}
+                  >
+                    <option value={0}>请选择车辆</option>
+                    {vehicles.filter(v => v.vehicleStatus !== '报废').map(v => (
+                      <option key={v.vehicleId} value={v.vehicleId}>{v.vehicleNo} - {v.brand}（{v.vehicleStatus}）</option>
+                    ))}
+                  </select>
+                  <button type="button" className="btn-sm btn-sm-default scan-btn" onClick={() => setShowLookup(true)}>
+                    <Icon name="qrcode" size={15} /><span>扫码选车</span>
+                  </button>
+                </div>
                 {workErrors.vehicleId && <div className="field-error">{workErrors.vehicleId}</div>}
                 {workForm.vehicleId > 0 && vehicles.find(v => v.vehicleId === workForm.vehicleId)?.vehicleStatus === '在租' && (
                   <div className="field-hint">该车辆正在租赁中，需先完成归还结算才能送修。</div>
@@ -354,7 +471,8 @@ export default function MaintenancePanel() {
               </div>
               <div className="form-group">
                 <label>故障描述 <span className="req">*</span></label>
-                <input
+                <textarea
+                  rows={4}
                   className={workErrors.faultDescription ? 'has-error' : ''}
                   value={workForm.faultDescription}
                   onChange={e => { setWorkForm({ ...workForm, faultDescription: e.target.value }); setWorkErrors({ ...workErrors, faultDescription: '' }) }}
@@ -411,6 +529,24 @@ export default function MaintenancePanel() {
         </div>
       )}
 
+      {/* 新增工单：扫码选车（扫描车上二维码直接填入故障车辆） */}
+      {showLookup && (
+        <VehicleQrLookup
+          onClose={() => setShowLookup(false)}
+          onPick={handleWorkPick}
+          pickLabel="选为故障车辆"
+        />
+      )}
+
+      {/* 报废：扫码选车 */}
+      {showScrapLookup && (
+        <VehicleQrLookup
+          onClose={() => setShowScrapLookup(false)}
+          onPick={handleScrapPick}
+          pickLabel="选为报废车辆"
+        />
+      )}
+
       {/* 查看已锁定的现场照片 */}
       {viewImages && (
         <div className="modal-overlay" onClick={() => setViewImages(null)}>
@@ -449,16 +585,21 @@ export default function MaintenancePanel() {
               </div>
               <div className="form-group">
                 <label>报废车辆 <span className="req">*</span></label>
-                <select
-                  className={scrapErrors.vehicleId ? 'has-error' : ''}
-                  value={scrapForm.vehicleId}
-                  onChange={e => { setScrapForm({ ...scrapForm, vehicleId: parseInt(e.target.value) }); setScrapErrors({ ...scrapErrors, vehicleId: '' }) }}
-                >
-                  <option value={0}>请选择车辆</option>
-                  {vehicles.filter(v => v.vehicleStatus !== '报废' && v.vehicleStatus !== '在租').map(v => (
-                    <option key={v.vehicleId} value={v.vehicleId}>{v.vehicleNo} - {v.brand}（{v.vehicleStatus}）</option>
-                  ))}
-                </select>
+                <div className="field-with-scan">
+                  <select
+                    className={scrapErrors.vehicleId ? 'has-error' : ''}
+                    value={scrapForm.vehicleId}
+                    onChange={e => { setScrapForm({ ...scrapForm, vehicleId: parseInt(e.target.value) }); setScrapErrors({ ...scrapErrors, vehicleId: '' }) }}
+                  >
+                    <option value={0}>请选择车辆</option>
+                    {vehicles.filter(v => v.vehicleStatus !== '报废' && v.vehicleStatus !== '在租').map(v => (
+                      <option key={v.vehicleId} value={v.vehicleId}>{v.vehicleNo} - {v.brand}（{v.vehicleStatus}）</option>
+                    ))}
+                  </select>
+                  <button type="button" className="btn-sm btn-sm-default scan-btn" onClick={() => setShowScrapLookup(true)}>
+                    <Icon name="qrcode" size={15} /><span>扫码选车</span>
+                  </button>
+                </div>
                 {scrapErrors.vehicleId && <div className="field-error">{scrapErrors.vehicleId}</div>}
                 <div className="field-hint">在租车辆需先完成归还结算，才能执行报废。</div>
               </div>
@@ -476,6 +617,80 @@ export default function MaintenancePanel() {
             <div className="modal-footer">
               <button className="btn-sm btn-sm-default" onClick={() => setShowScrap(false)}>取消</button>
               <button className="btn-sm btn-sm-danger" onClick={handleScrap}>确认报废</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 编辑维保工单：前台 / 管理员均可修改故障内容（已完成工单不可编辑） */}
+      {showEdit && (
+        <div className="modal-overlay" onClick={() => setShowEdit(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span>编辑维保工单</span>
+              <button className="close-btn" onClick={() => setShowEdit(false)}><Icon name="close" size={15} /></button>
+            </div>
+            <div className="modal-body">
+              <div className="field-hint">
+                <Icon name="info" size={14} />仅可修改故障类型、故障描述与现场照片；已完成的工单不可编辑。
+              </div>
+              <div className="form-group">
+                <label>故障类型</label>
+                <select value={editForm.faultType} onChange={e => setEditForm({ ...editForm, faultType: e.target.value })}>
+                  {faultTypes.map(f => <option key={f}>{f}</option>)}
+                </select>
+              </div>
+              <div className="form-group">
+                <label>故障描述 <span className="req">*</span></label>
+                <textarea
+                  className={editErrors.faultDescription ? 'has-error' : ''}
+                  rows={4}
+                  value={editForm.faultDescription}
+                  onChange={e => { setEditForm({ ...editForm, faultDescription: e.target.value }); setEditErrors({ ...editErrors, faultDescription: '' }) }}
+                  placeholder="例如：前刹异响，需更换刹车片"
+                />
+                {editErrors.faultDescription && <div className="field-error">{editErrors.faultDescription}</div>}
+              </div>
+              <div className="form-group">
+                <label>故障现场照片（{imageList(editForm.faultImage).length}/{MAX_IMAGES}）</label>
+                <div className="upload-row">
+                  <label className={`upload-trigger ${editUploading ? 'is-loading' : ''}`}>
+                    <Icon name={editUploading ? 'refresh' : 'upload'} size={16} color="#fff" />
+                    {editUploading ? '上传中…' : '拍照 / 选择图片'}
+                    <input
+                      ref={editFileRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      disabled={editUploading}
+                      onChange={e => handleEditUpload(e.target.files)}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
+                  <span className="upload-hint">支持 jpg/png/webp/gif，单张不超过 5MB，最多 {MAX_IMAGES} 张</span>
+                </div>
+                {imageList(editForm.faultImage).length > 0 && (
+                  <div className="upload-thumbs">
+                    {imageList(editForm.faultImage).map(url => (
+                      <div className="upload-thumb" key={url}>
+                        <img src={url} alt="故障现场" />
+                        <button type="button" className="upload-thumb-del" title="移除该照片" onClick={() => setEditForm({ ...editForm, faultImage: imageList(editForm.faultImage).filter(u => u !== url).join(',') })}>
+                          <Icon name="close" size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="field-hint">
+                  <Icon name="image" size={14} />照片用于记录并锁定维保位置，编辑后随工单更新存档。
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-sm btn-sm-default" onClick={() => setShowEdit(false)}>取消</button>
+              <button className="btn-sm btn-sm-primary" onClick={handleEditSave} disabled={editUploading}>
+                {editUploading ? '上传中…' : '保存'}
+              </button>
             </div>
           </div>
         </div>

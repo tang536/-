@@ -24,8 +24,11 @@ public class ReportService(AppDbContext db, MessageService messages)
         var rangeTo = to?.Date.AddDays(1);
         var hasRange = rangeFrom.HasValue && rangeTo.HasValue;
 
-        // 落在区间内的支付 / 订单
-        var payQ = _db.PaymentRecords.Where(p => p.PayStatus == "已支付");
+        // 落在区间内的支付 / 订单。
+        // 营收口径 = 「钱到过账」：结算后退押金会把支付记录改成「部分退款」，
+        // 只数「已支付」会把已完结订单整批漏掉（对账差额 28,646.72 的根因），
+        // 看板营收会与对账页实收对不上。补缴支付同样是营收，随流水计入。
+        var payQ = _db.PaymentRecords.Where(p => PayStatuses.MoneyArrived.Contains(p.PayStatus));
         var orderQ = _db.RentalOrders.AsQueryable();
         if (hasRange)
         {
@@ -73,7 +76,7 @@ public class ReportService(AppDbContext db, MessageService messages)
 
             // ===== 首页看板指标 =====
             TodayRevenue = await _db.PaymentRecords
-                .Where(p => p.PayStatus == "已支付" && p.PayTime.HasValue && p.PayTime >= today && p.PayTime < tomorrow)
+                .Where(p => PayStatuses.MoneyArrived.Contains(p.PayStatus) && p.PayTime.HasValue && p.PayTime >= today && p.PayTime < tomorrow)
                 .SumAsync(p => p.PayAmount),
             TodayOrders = await _db.RentalOrders.CountAsync(o => o.CreateTime >= today && o.CreateTime < tomorrow),
             RentedCount = vehicleStatusStats.GetValueOrDefault("在租"),
@@ -86,6 +89,8 @@ public class ReportService(AppDbContext db, MessageService messages)
             PendingPayCount = await _db.RentalOrders.CountAsync(o => o.OrderStatus == "待支付"),
             MaintenanceCount = vehicleStatusStats.GetValueOrDefault("维保"),
             IncompleteProfileCount = await _db.Customers.CountAsync(c => c.IdCard == null || c.IdCard == "" || c.ContactPhone == null || c.ContactPhone == ""),
+            // 保养到期：与工作台预警区、通知列表共用同一段计算，避免两处口径算出两个数
+            MaintenanceDueCount = (await GetMaintenanceDueAsync(now)).Count,
             // 营收趋势：无区间给最近 7 天；区间超过 31 天按天铺会出几百个点，改为按月聚合
             MonthlyRevenue = monthlyRevenue,
             OrderTrend = orderTrend
@@ -188,7 +193,15 @@ public class ReportService(AppDbContext db, MessageService messages)
         var rangeTo = to?.Date.AddDays(1);
         var hasRange = rangeFrom.HasValue && rangeTo.HasValue;
 
-        var payQ = _db.PaymentRecords.Where(p => p.PayStatus == "已支付" && p.PayTime.HasValue);
+        // 实收口径与对账页严格一致：只数订单支付（biz_type='order'）里「钱到过账」的记录。
+        // ① 状态：结算退押金后支付记录变为「部分退款」，只数「已支付」会漏掉已完结订单
+        //    （对账差额 28,646.72 的根因），下钻的「实收」卡会与对账卡的「实收」对不上；
+        // ② 补缴（biz_type='supplement'）不计入实收——对账页把它单列在「补缴」一行，
+        //    混进来两个卡片的数就对不上了（补缴明细在「支付流水」区照常可见）。
+        // 注意与对账页的视角差异：这里按支付日期（PayTime）取数，对账页按订单下单日期取数，
+        // 跨日收款的订单两屏数字本就不同属同一口径，财务以下钻看每日进账、以对账看订单应收。
+        var payQ = _db.PaymentRecords.Where(p => p.BizType == "order"
+            && PayStatuses.MoneyArrived.Contains(p.PayStatus) && p.PayTime.HasValue);
         var orderQ = _db.RentalOrders.AsQueryable();
         if (hasRange)
         {
@@ -345,16 +358,43 @@ public class ReportService(AppDbContext db, MessageService messages)
     public async Task<List<NotificationDto>> GetNotifications(int userId)
     {
         // ① 实时预警 → 幂等 upsert 进通用消息表（同一条业务预警对同一员工只保留一行）
-        foreach (var a in await BuildNotifications())
+        var alerts = await BuildNotifications();
+        var liveGlobal = new HashSet<string>();
+        foreach (var a in alerts)
         {
             var (refType, refId) = SplitAlertId(a.Id);
+            // 本轮真正触发的全局预警（维保中 / 资料待完善 / 保养到期），供下一步清理旧行用
+            if (GlobalAlertTypes.Contains(refType)) liveGlobal.Add(refType);
+            // keepReadStateOnChange: 实时预警的标题含「已逾期 N 小时」这类会自己走的时长，
+            // 不能让文案一变就把员工刚读过的通知重新标成未读。
             await _messages.SendAsync("staff", userId, refType, refId,
-                a.Title, a.Description, a.Level, a.Link);
+                a.Title, a.Description, a.Level, a.Link, keepReadStateOnChange: true);
         }
 
-        // ② 从 message 表读取（含历史已读状态），按时间倒序
+        // ② 清掉已经失效的实时预警行。
+        //    实时预警是「当前状态」的快照，不是业务流水：订单完结、客户付清、车辆出维保之后，
+        //    对应的行如果一直留着，面板只会越堆越多（用户感受就是「消息源源不断」），
+        //    还会出现「同一订单既显示即将到期、又显示已逾期」这种自相矛盾的残留。
+        //    这里只动 staff 的实时预警类型，顾客的退款/补缴消息一律不碰。
+        var liveKeys = await AlertLiveKeysAsync(liveGlobal);
+
+        var realtimeRows = await _db.Messages
+            .Where(m => m.ReceiverType == "staff" && m.ReceiverId == userId
+                        && RealtimeAlertTypes.Contains(m.RefType!))
+            .ToListAsync();
+
+        var dead = realtimeRows.Where(m => !liveKeys.Contains(AlertKey(m.RefType, m.RefId))).ToList();
+
+        if (dead.Count > 0)
+        {
+            _db.Messages.RemoveRange(dead);
+            await _db.SaveChangesAsync();
+        }
+
+        // ③ 从 message 表读取（含历史已读状态），按时间倒序。
+        //    已忽略（软删）的行不返回——员工「删除」通知走 dismissed_at，原因见 MessageService.DismissAsync。
         var rows = await _db.Messages.AsNoTracking()
-            .Where(m => m.ReceiverType == "staff" && m.ReceiverId == userId)
+            .Where(m => m.ReceiverType == "staff" && m.ReceiverId == userId && m.DismissedAt == null)
             .OrderByDescending(m => m.CreatedAt)
             .ToListAsync();
 
@@ -373,6 +413,47 @@ public class ReportService(AppDbContext db, MessageService messages)
         }).ToList();
     }
 
+    /// <summary>全局聚合类预警的 ref_id 固定值（不能为空：唯一索引里 NULL 互不相等，会反复插新行）。</summary>
+    private const string GlobalRefId = "global";
+
+    /// <summary>message 行业务键：与前端拿到的 Id（ref_type-ref_id）保持同一套拼法。</summary>
+    private static string AlertKey(string? refType, string? refId) => $"{refType}-{refId ?? string.Empty}";
+
+    /// <summary>
+    /// 本轮「应当存在」的实时预警键集合。
+    ///
+    /// 单独查一次，而不是复用 <see cref="BuildNotifications"/> 的结果：后者为了界面性能做了 Take(20)，
+    /// 拿它当清理依据会把第 21 条之后的预警每轮删掉再重建（未读状态来回跳）。
+    /// </summary>
+    private async Task<HashSet<string>> AlertLiveKeysAsync(HashSet<string> liveGlobal)
+    {
+        var now = DateTime.Now;
+        var soon = now.AddHours(24);
+        var live = new HashSet<string>();
+
+        var orders = await _db.RentalOrders.AsNoTracking()
+            .Where(o => o.OrderStatus != "已完结" && o.OrderStatus != "已取消")
+            .Select(o => new { o.OrderId, o.LeaseEnd, o.OrderStatus })
+            .ToListAsync();
+
+        foreach (var o in orders)
+        {
+            var id = o.OrderId.ToString();
+            if (o.LeaseEnd < now) live.Add(AlertKey("overdue", id));
+            else if (o.LeaseEnd <= soon) live.Add(AlertKey("expiring", id));
+            if (o.OrderStatus == "待支付") live.Add(AlertKey("pending", id));
+        }
+
+        foreach (var t in liveGlobal) live.Add(AlertKey(t, GlobalRefId));
+        return live;
+    }
+
+    private static readonly HashSet<string> GlobalAlertTypes = ["maintenance", "maintain_due", "profile_incomplete"];
+
+    /// <summary>由实时状态推导的预警类型：都随业务状态变化而失效，需要按轮次清理。</summary>
+    private static readonly HashSet<string> RealtimeAlertTypes =
+        ["overdue", "expiring", "pending", "maintenance", "maintain_due", "profile_incomplete"];
+
     /// <summary>
     /// 标记已读：ids 为消息主键（message_id）列表；为空表示「全部标记已读」。
     /// 直接更新 message 表中的 is_read / read_at，按 (staff, userId) 限定归属。
@@ -389,18 +470,34 @@ public class ReportService(AppDbContext db, MessageService messages)
         var targets = await q.ToListAsync();
         foreach (var m in targets)
         {
-            m.IsRead = true;
-            m.ReadAt = now;
+            m.MarkRead(now);
         }
         if (targets.Count > 0) await _db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// 删除（忽略）通知：ids 为空表示「忽略全部」。返回实际忽略条数。
+    /// 员工预警由实时状态推导、每次查询都幂等重建，硬删会被下一次拉取复活，
+    /// 因此软删（dismissed_at）；读取端过滤已忽略行，预警失效时行被硬删、标记清除。
+    /// </summary>
+    public async Task<int> Dismiss(int userId, List<int>? ids) =>
+        await _messages.DismissAsync("staff", userId, ids);
+
     /// <summary>把预警的稳定字符串 ID（overdue-12 / maintain-due 等）拆成 (ref_type, ref_id)。</summary>
     private static (string RefType, string RefId) SplitAlertId(string id) => id switch
     {
-        "maintenance" => ("maintenance", ""),
-        "profile-incomplete" => ("profile_incomplete", ""),
-        "maintain-due" => ("maintain_due", ""),
+        /*
+         * 全局聚合类预警（维保中车辆数 / 待完善资料数 / 保养到期数）没有业务实体，
+         * 归一到固定的 ref_id="global"。
+         *
+         * 这里不能像以前那样给空串：SendAsync 会把空串还原成 NULL，而 uk_msg_biz
+         * 的唯一索引里 NULL 彼此互不相等 —— MySQL 认为 (staff,1,maintenance,NULL) 每条都不一样，
+         * ON DUPLICATE KEY 永远不命中，于是每轮 60 秒轮询都插一条新消息，
+         * 表现就是铃铛未读数一路狂涨、列表里全是「有 N 台车辆处于维保中」。
+         */
+        "maintenance" => ("maintenance", GlobalRefId),
+        "profile-incomplete" => ("profile_incomplete", GlobalRefId),
+        "maintain-due" => ("maintain_due", GlobalRefId),
         _ => SplitPrefixedId(id)
     };
 
@@ -437,13 +534,29 @@ public class ReportService(AppDbContext db, MessageService messages)
             .OrderBy(o => o.LeaseEnd).Take(20).ToListAsync();
         foreach (var o in overdue)
         {
-            var days = Math.Max(1, (int)(now - o.LeaseEnd).TotalDays);
+            /*
+             * 逾期时长必须按「实际过了多久」写，不能一律按天取整。
+             *
+             * 原来是 Math.Max(1, (int)(now - LeaseEnd).TotalDays)：
+             *   · 刚过期 44 分钟 → TotalDays = 0.03 → (int) 截断成 0 → Max(1, 0) 又抬成 1，
+             *     于是「到期 15:35、通知 16:19」也能写出「已逾期 1 天」，与实际差了 30 多倍；
+             *   · 反过来逾期 1 天 23 小时也只显示「1 天」，把快到惩罚档的账写成刚过期。
+             * 现在按「天 + 小时」分段：不足 1 小时报分钟，不足 1 天报小时，满 1 天带零头小时。
+             */
+            var span = now - o.LeaseEnd;
+            var fullDays = (int)span.TotalDays;            // 满 24 小时才算一天
+            var restHours = span.Hours;                    // 不足一天的零头
+            var overdueText = fullDays > 0
+                ? (restHours > 0 ? $"{fullDays} 天 {restHours} 小时" : $"{fullDays} 天")
+                : span.TotalHours >= 1
+                    ? $"{(int)span.TotalHours} 小时"
+                    : $"{Math.Max(1, (int)Math.Round(span.TotalMinutes))} 分钟";
             list.Add(new NotificationDto
             {
                 Id = $"overdue-{o.OrderId}",
                 Level = "danger",
                 Category = "逾期预警",
-                Title = $"订单 {o.OrderNo} 已逾期 {days} 天",
+                Title = $"订单 {o.OrderNo} 已逾期 {overdueText}",
                 Description = $"客户：{o.Customer?.FullName}　车辆：{o.Vehicle?.VehicleNo}　到期：{o.LeaseEnd:MM-dd HH:mm}，请尽快联系客户跟进",
                 Time = o.LeaseEnd,
                 Link = "/orders"
@@ -521,26 +634,12 @@ public class ReportService(AppDbContext db, MessageService messages)
         }
 
         // 6. 保养提醒（需求 4.2.6）：周期取 maintain_cycle_days，以「最近一次已完成维保」为基准，
-        //    从未维保过的以购入时间为基准；配置为 0 表示关闭
+        //    从未维保过的以购入时间为基准；配置为 0 表示关闭。
+        //    计算与工作台预警卡的「保养到期」计数共用 GetMaintenanceDueAsync，两处永不打架。
         var maintainCycleDays = ConfigValue.Int(await _db.SystemConfigs.ToListAsync(), "maintain_cycle_days", 90);
         if (maintainCycleDays > 0)
         {
-            var alive = await _db.Vehicles.Where(v => v.VehicleStatus != "报废").ToListAsync();
-            var lastFinish = await _db.MaintenanceOrders
-                .Where(m => m.FinishTime != null)
-                .GroupBy(m => m.VehicleId)
-                .Select(g => new { VehicleId = g.Key, Last = g.Max(m => m.FinishTime) })
-                .ToListAsync();
-            var lastMap = lastFinish.ToDictionary(x => x.VehicleId, x => x.Last);
-
-            var due = new List<string>();
-            foreach (var v in alive)
-            {
-                var basis = lastMap.TryGetValue(v.VehicleId, out var t) && t.HasValue ? t.Value : v.BuyTime;
-                if (basis == null) continue;
-                var days = (int)(now - basis.Value).TotalDays;
-                if (days >= maintainCycleDays) due.Add($"{v.VehicleNo}（已 {days} 天）");
-            }
+            var due = await GetMaintenanceDueAsync(now);
             if (due.Count > 0)
             {
                 list.Add(new NotificationDto
@@ -549,7 +648,8 @@ public class ReportService(AppDbContext db, MessageService messages)
                     Level = "warning",
                     Category = "保养提醒",
                     Title = $"有 {due.Count} 台车辆已超过 {maintainCycleDays} 天保养周期",
-                    Description = string.Join("、", due.Take(10)) + (due.Count > 10 ? $" 等 {due.Count} 台" : ""),
+                    Description = string.Join("、", due.Take(10).Select(d => $"{d.VehicleNo}（已 {d.Days} 天）"))
+                        + (due.Count > 10 ? $" 等 {due.Count} 台" : ""),
                     Time = now,
                     Link = "/maintenance"
                 });
@@ -557,6 +657,39 @@ public class ReportService(AppDbContext db, MessageService messages)
         }
 
         return [.. list.OrderByDescending(n => n.Time)];
+    }
+
+    /// <summary>
+    /// 保养到期车辆清单（需求 4.2.6）。口径：以每台车「最近一次已完成维保」为基准，
+    /// 从未维保过的以购入时间为基准，达到 maintain_cycle_days（默认 90，设为 0 关闭）即列入。
+    /// </summary>
+    /// <remarks>
+    /// 工作台预警卡要的是「有几台」，通知列表要的是「哪几台」——同一套判定逻辑抽在这里，
+    /// 两处调用同一个方法，避免卡片上是 3 台、点进列表只剩 2 台的打脸情况。
+    /// 报废车辆不参与保养巡检。
+    /// </remarks>
+    private async Task<List<(string VehicleNo, int Days)>> GetMaintenanceDueAsync(DateTime now)
+    {
+        var cycle = ConfigValue.Int(await _db.SystemConfigs.ToListAsync(), "maintain_cycle_days", 90);
+        if (cycle <= 0) return [];
+
+        var alive = await _db.Vehicles.AsNoTracking().Where(v => v.VehicleStatus != "报废").ToListAsync();
+        var lastFinish = await _db.MaintenanceOrders.AsNoTracking()
+            .Where(m => m.FinishTime != null)
+            .GroupBy(m => m.VehicleId)
+            .Select(g => new { VehicleId = g.Key, Last = g.Max(m => m.FinishTime) })
+            .ToListAsync();
+        var lastMap = lastFinish.ToDictionary(x => x.VehicleId, x => x.Last);
+
+        var due = new List<(string, int)>();
+        foreach (var v in alive)
+        {
+            var basis = lastMap.TryGetValue(v.VehicleId, out var t) && t.HasValue ? t.Value : v.BuyTime;
+            if (basis == null) continue;
+            var days = (int)(now - basis.Value).TotalDays;
+            if (days >= cycle) due.Add((v.VehicleNo, days));
+        }
+        return due;
     }
 
     // ===== 车辆运营统计 / 维保费用统计（需求 4.2.7）=====
@@ -583,7 +716,7 @@ public class ReportService(AppDbContext db, MessageService messages)
             .Select(o => new { o.OrderId, o.VehicleId, o.LeaseStart, o.LeaseEnd })
             .ToListAsync();
 
-        var payQ = _db.PaymentRecords.AsNoTracking().Where(p => p.PayStatus == "已支付" && p.PayTime.HasValue);
+        var payQ = _db.PaymentRecords.AsNoTracking().Where(p => PayStatuses.MoneyArrived.Contains(p.PayStatus) && p.PayTime.HasValue);
         if (hasRange) payQ = payQ.Where(p => p.PayTime >= rangeFrom && p.PayTime < rangeTo);
         var pays = await payQ.Select(p => new { p.OrderId, p.PayAmount }).ToListAsync();
 
@@ -769,7 +902,7 @@ public class ReportService(AppDbContext db, MessageService messages)
         Dictionary<string, decimal> revenue, Dictionary<string, int> orders)
     {
         var revenueRows = await _db.PaymentRecords
-            .Where(p => p.PayStatus == "已支付" && p.PayTime.HasValue && p.PayTime >= start && p.PayTime < end)
+            .Where(p => PayStatuses.MoneyArrived.Contains(p.PayStatus) && p.PayTime.HasValue && p.PayTime >= start && p.PayTime < end)
             .GroupBy(p => p.PayTime!.Value.Date)
             .Select(g => new { Day = g.Key, Total = g.Sum(x => x.PayAmount) })
             .ToListAsync();
@@ -799,7 +932,7 @@ public class ReportService(AppDbContext db, MessageService messages)
         Dictionary<string, decimal> revenue, Dictionary<string, int> orders)
     {
         var revenueRows = await _db.PaymentRecords
-            .Where(p => p.PayStatus == "已支付" && p.PayTime.HasValue && p.PayTime >= start && p.PayTime < end)
+            .Where(p => PayStatuses.MoneyArrived.Contains(p.PayStatus) && p.PayTime.HasValue && p.PayTime >= start && p.PayTime < end)
             .GroupBy(p => new { p.PayTime!.Value.Year, p.PayTime.Value.Month })
             .Select(g => new { g.Key.Year, g.Key.Month, Total = g.Sum(x => x.PayAmount) })
             .ToListAsync();

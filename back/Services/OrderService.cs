@@ -29,6 +29,25 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
     private const int PendingPayTimeoutMinutes = 15;
 
     /// <summary>
+    /// 「已发起支付」订单的额外宽限（分钟）。
+    ///
+    /// 只按创建时间判定超时会误伤一类最常见的正常场景：顾客 14 分钟时才点「去支付」，
+    /// 正在支付宝里输密码 / 选银行卡 / 扫码，第 16 分钟后台任务就把他这单取消了。
+    /// 之后回调到达只能落到「订单已取消，该笔收款需人工退款」分支——钱收了、单作废，
+    /// 柜台还得手工退一次款，顾客体验也差。
+    ///
+    /// 判定依据不用新增字段：顾客点「去支付」时，PaymentController 会把支付记录的渠道
+    /// 从占位值「待定」改成真实渠道（支付宝/微信/银行卡）。所以
+    /// 「pay_type ≠ 待定 且仍待支付」就等价于「人已经在收银台上，只是还没回来」。
+    /// 这类订单给 10 分钟宽限，总时长 25 分钟，足够一次含短信验证的支付走完；
+    /// 超时后照样释放车辆，不会让车被无限占住。
+    /// </summary>
+    private const int PendingPayGraceMinutes = 10;
+
+    /// <summary>支付记录上的渠道占位值：下单时写入，顾客点「去支付」后被改成真实渠道。</summary>
+    private const string PayTypePlaceholder = "待定";
+
+    /// <summary>
     /// 订单号尾号发号器（进程内自增）。
     /// 原实现是 Random(100,999) 三位随机数：同一秒内的并发请求只有 900 个取值，
     /// 撞上 uk_order_no 会让其中一单直接失败。这里改成自增序列，
@@ -80,7 +99,13 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         {
             await DbRowLock.PrepareAsync(_db);
 
-            var expired = await DbRowLock.LockExpiredPendingAsync(_db, deadline, CleanupBatchSize);
+            // 两个阈值：普通超时单按 15 分钟；已经向通道下过单的按 25 分钟。
+            // 宽限判定压在 SQL 里，而不是取出来再用 C# 过滤——过滤会让「正在支付」的订单
+            // 反复占掉每批 200 个名额（它们的 order_id 更小、永远排在前面），
+            // 结果把后面真正超时的单饿死在批次之外。
+            var expired = await DbRowLock.LockExpiredPendingAsync(
+                _db, deadline, CleanupBatchSize,
+                deadline.AddMinutes(-PendingPayGraceMinutes));
             if (expired.Count == 0)
             {
                 await tx.CommitAsync();
@@ -88,17 +113,28 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             }
 
             var ids = expired.Select(o => o.OrderId).ToList();
-            foreach (var o in expired)
-            {
-                o.OrderStatus = "已取消";
-                o.CancelReason = $"超过 {PendingPayTimeoutMinutes} 分钟未支付，系统自动取消并释放车辆";
-            }
 
             // 待支付的支付记录一并作废，避免财务对账时看到悬空的「待支付」流水
             var pending = await _db.PaymentRecords
                 .Where(p => ids.Contains(p.OrderId) && p.PayStatus == "待支付")
                 .ToListAsync();
-            foreach (var p in pending) p.PayStatus = "已取消";
+
+            // 渠道仍是占位「待定」＝顾客从没点过「去支付」，按 15 分钟口径取消；
+            // 已写成真实渠道＝顾客已在收银台、享受了宽限，取消原因必须写明更长时限，
+            // 否则顾客对账时看不懂「我明明只超了几分钟，单怎么没了」。
+            var startedPaying = pending
+                .Where(p => p.PayType is not (null or PayTypePlaceholder))
+                .Select(p => p.OrderId)
+                .ToHashSet();
+
+            foreach (var o in expired)
+            {
+                o.Cancel(startedPaying.Contains(o.OrderId)
+                    ? $"已发起支付但超过 {PendingPayTimeoutMinutes + PendingPayGraceMinutes} 分钟仍未完成，系统自动取消并释放车辆"
+                    : $"超过 {PendingPayTimeoutMinutes} 分钟未支付，系统自动取消并释放车辆");
+            }
+
+            foreach (var p in pending) p.Cancel();
 
             // 必须先把「已取消」落库，再做车辆归属判定：
             // 归属判定要读 rental_order 表，若订单状态还停在「待支付」，
@@ -140,12 +176,11 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             if (order.OrderStatus != "待支付")
                 throw new Exception("仅「待支付」的订单可以自助取消；已支付订单请联系门店处理");
 
-            order.OrderStatus = "已取消";
-            order.CancelReason = "顾客主动取消（未支付）";
+            order.Cancel("顾客主动取消（未支付）");
 
             var pending = await _db.PaymentRecords
                 .Where(p => p.OrderId == order.OrderId && p.PayStatus == "待支付").ToListAsync();
-            foreach (var p in pending) p.PayStatus = "已取消";
+            foreach (var p in pending) p.Cancel();
 
             await _db.SaveChangesAsync();
 
@@ -163,19 +198,26 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
     }
 
     /// <summary>订单查询。customerId 非空时仅返回该顾客的订单（顾客端数据隔离）</summary>
-    public async Task<List<OrderDto>> GetAll(string? status = null, string? keyword = null, int? customerId = null)
-        => (await QueryAsync(status, keyword, customerId, 0, 0)).Rows;
+    public async Task<List<OrderDto>> GetAll(
+        string? status = null, string? keyword = null, int? customerId = null,
+        DateTime? dateFrom = null, DateTime? dateTo = null,
+        string? sortBy = null, bool sortDesc = true)
+        => (await QueryAsync(status, keyword, customerId, dateFrom, dateTo, sortBy, sortDesc, 0, 0)).Rows;
 
     /// <summary>
     /// 分页查询（管理端长列表用）：pageSize≤0 时等价于 <see cref="GetAll"/>。
     /// 总数在**分页前**统计，前端据此渲染页码；排序与过滤条件与全量查询完全一致。
     /// </summary>
     public async Task<(List<OrderDto> Rows, int Total)> GetPaged(
-        string? status, string? keyword, int? customerId, int page, int pageSize)
-        => await QueryAsync(status, keyword, customerId, page, pageSize);
+        string? status, string? keyword, int? customerId,
+        DateTime? dateFrom, DateTime? dateTo, string? sortBy, bool sortDesc,
+        int page, int pageSize)
+        => await QueryAsync(status, keyword, customerId, dateFrom, dateTo, sortBy, sortDesc, page, pageSize);
 
     private async Task<(List<OrderDto> Rows, int Total)> QueryAsync(
-        string? status, string? keyword, int? customerId, int page, int pageSize)
+        string? status, string? keyword, int? customerId,
+        DateTime? dateFrom, DateTime? dateTo, string? sortBy, bool sortDesc,
+        int page, int pageSize)
     {
         // 进列表前先回收超时单，保证用户看到的状态与车辆可用性都是最新的
         await ReleaseExpiredPendingOrders();
@@ -193,7 +235,22 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
                           || (o.Vehicle != null && o.Vehicle.VehicleNo.Contains(k)));
         }
 
-        var ordered = q.OrderByDescending(o => o.CreateTime);
+        // 起租日期区间：对账时按「哪几天起租的单」圈范围，比按创建时间更贴近业务口径。
+        // 上界取当日 24:00（即次日 00:00 的排他上界），选同一天也能查到当天起租的单。
+        if (dateFrom.HasValue) q = q.Where(o => o.LeaseStart >= dateFrom.Value.Date);
+        if (dateTo.HasValue) q = q.Where(o => o.LeaseStart < dateTo.Value.Date.AddDays(1));
+
+        // 表头点击排序：字段名由前端传（白名单映射，避免拼 SQL），未识别时回落创建时间倒序
+        var desc = sortDesc;
+        var ordered = sortBy?.ToLowerInvariant() switch
+        {
+            "leasestart" => desc ? q.OrderByDescending(o => o.LeaseStart) : q.OrderBy(o => o.LeaseStart),
+            "leaseend" => desc ? q.OrderByDescending(o => o.LeaseEnd) : q.OrderBy(o => o.LeaseEnd),
+            "totalrent" => desc ? q.OrderByDescending(o => o.TotalRent) : q.OrderBy(o => o.TotalRent),
+            "deposit" => desc ? q.OrderByDescending(o => o.Deposit) : q.OrderBy(o => o.Deposit),
+            "orderno" => desc ? q.OrderByDescending(o => o.OrderNo) : q.OrderBy(o => o.OrderNo),
+            _ => desc ? q.OrderByDescending(o => o.CreateTime) : q.OrderBy(o => o.CreateTime),
+        };
         var total = await ordered.CountAsync();
         var (_, _, skip, take) = DTOs.Paging.Normalize(page, pageSize);
         var pageQuery = take > 0 ? ordered.Skip(skip).Take(take) : ordered;
@@ -204,9 +261,15 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             OrderNo = o.OrderNo,
             CustomerName = o.Customer!.FullName,
             VehicleNo = o.Vehicle!.VehicleNo,
+            VehicleBrand = o.Vehicle!.Brand,
             LeaseStart = o.LeaseStart,
             LeaseEnd = o.LeaseEnd,
             TotalRent = o.TotalRent,
+            // 已结算的单子补一条实际租金：下单时那条只是预估，结算后才是真实消费
+            ActualRent = o.SettleRecords
+                .OrderByDescending(s => s.SettleId)
+                .Select(s => (decimal?)s.ActualRent)
+                .FirstOrDefault(),
             Deposit = o.Deposit,
             OrderStatus = o.OrderStatus,
             CreateTime = o.CreateTime,
@@ -350,17 +413,8 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         var exist = await _db.Customers.FirstOrDefaultAsync(c => c.IdCard == idCard);
         if (exist != null) return exist;
 
-        var created = new Customer
-        {
-            LoginAccount = null,          // 线下客户没有线上账号，留 NULL 释放唯一索引
-            LoginPassword = null,         // 无登录凭据，不能线上登录
-            IdCard = idCard,
-            FullName = name,
-            ContactPhone = string.IsNullOrWhiteSpace(phone) ? null : phone,
-            MemberLevel = "普通会员",
-            AccountStatus = "正常",
-            CreateTime = DateTime.Now
-        };
+        // 线下客户没有线上账号（登录名/密码留空释放唯一索引），由工厂构造
+        var created = Customer.WalkIn(name, idCard, phone);
         _db.Customers.Add(created);
         await _db.SaveChangesAsync();     // 先落库拿到 CustomerId，再建订单
         return created;
@@ -428,37 +482,24 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
                 throw new Exception($"车辆 {vehicle.VehicleNo} 刚被他人租走，请重新选择车辆");
 
             // ② 占车成功后才写订单：订单号冲突等任何异常都会整体回滚，车辆自动退回「空闲」
-            var order = new RentalOrder
-            {
-                // 订单号：秒级时间戳 + 4 位进程内自增序列。
-                // 原实现用 3 位随机数，同一秒的并发请求只有 900 个取值，撞 uk_order_no 会让订单平白失败。
-                OrderNo = "ZL" + DateTime.Now.ToString("yyyyMMddHHmmss")
-                        + (Interlocked.Increment(ref _orderSeq) % 10_000).ToString("D4"),
-                CustomerId = customer.CustomerId,
-                VehicleId = vehicle.VehicleId,
-                LeaseStart = leaseStart,
-                LeaseEnd = leaseEnd,
-                TotalRent = totalRent,
-                Deposit = deposit,
-                OrderStatus = paidImmediately ? "已支付" : "待支付",
-                OperatorId = operatorId,
-                CreateTime = DateTime.Now
-            };
+            // 订单号：秒级时间戳 + 4 位进程内自增序列。
+            // 原实现用 3 位随机数，同一秒的并发请求只有 900 个取值，撞 uk_order_no 会让订单平白失败。
+            var order = RentalOrder.Create(
+                "ZL" + DateTime.Now.ToString("yyyyMMddHHmmss")
+                      + (Interlocked.Increment(ref _orderSeq) % 10_000).ToString("D4"),
+                customer.CustomerId, vehicle.VehicleId, leaseStart, leaseEnd, totalRent, deposit,
+                operatorId, paidImmediately ? "已支付" : "待支付");
             _db.RentalOrders.Add(order);
             await _db.SaveChangesAsync();
 
-            _db.PaymentRecords.Add(new PaymentRecord
-            {
-                OrderId = order.OrderId,
-                PayAmount = totalRent + deposit,
-                // 支付渠道占位：线上单下单时不选渠道，付款时由发起支付接口更新为实际所选；
-                // 入账时再以回调/查单数据最终覆盖。线下柜台单当场收款，始终携带真实渠道。
-                PayType = string.IsNullOrWhiteSpace(payType) ? paidImmediately ? "现金" : "待定" : payType.Trim(),
-                PayStatus = paidImmediately ? "已支付" : "待支付",
-                PayTime = paidImmediately ? DateTime.Now : null,
-                // 真实支付流水号在支付宝回调时写入；线下柜台收款的流水号由柜台凭据补充
-                TransactionNo = paidImmediately ? "TX" + DateTime.Now.ToString("yyyyMMddHHmmss") : null
-            });
+            // 支付渠道占位：线上单下单时不选渠道，付款时由发起支付接口更新为实际所选；
+            // 入账时再以回调/查单数据最终覆盖。线下柜台单当场收款，始终携带真实渠道。
+            var pay = PaymentRecord.Create(order.OrderId, totalRent + deposit,
+                string.IsNullOrWhiteSpace(payType) ? paidImmediately ? "现金" : "待定" : payType.Trim(),
+                "order", null, paidImmediately ? "已支付" : "待支付");
+            // 真实支付流水号在支付宝回调时写入；线下柜台收款的流水号由柜台凭据补充
+            if (paidImmediately) pay.MarkPaid("现金", DateTime.Now, "TX" + DateTime.Now.ToString("yyyyMMddHHmmss"));
+            _db.PaymentRecords.Add(pay);
             await _db.SaveChangesAsync();
 
             await tx.CommitAsync();
@@ -493,17 +534,15 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             if (!Validators.IsIdCard(idCard)) throw new Exception("身份证号格式不正确，应为 18 位");
             if (await _db.Customers.AnyAsync(c => c.IdCard == idCard && c.CustomerId != customer.CustomerId))
                 throw new Exception("该身份证号已被其他客户使用");
-            customer.IdCard = idCard;
         }
-        if (!string.IsNullOrWhiteSpace(dto.ContactPhone))
-        {
-            var phone = dto.ContactPhone.Trim();
-            if (!Validators.IsPhone(phone)) throw new Exception("手机号格式不正确，应为 11 位");
-            customer.ContactPhone = phone;
-        }
-        if (!string.IsNullOrWhiteSpace(dto.FullName)) customer.FullName = dto.FullName.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.ContactPhone)
+            && !Validators.IsPhone(dto.ContactPhone.Trim()))
+            throw new Exception("手机号格式不正确，应为 11 位");
+
+        // 补录同样走实体方法：传空即不修改该字段
+        customer.UpdateProfile(dto.FullName, dto.IdCard, dto.ContactPhone);
         // 下单补全资料也是档案写入，参与乐观并发（与员工编辑/注销互斥）
-        if (_db.Entry(customer).State == EntityState.Modified) customer.Version++;
+        if (_db.Entry(customer).State == EntityState.Modified) customer.BumpVersion();
     }
 
     public async Task Cancel(int id, string reason)
@@ -518,8 +557,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             if (order.OrderStatus is not ("待支付" or "已支付"))
                 throw new Exception("当前状态不可取消");
 
-            order.OrderStatus = "已取消";
-            order.CancelReason = reason;
+            order.Cancel(reason);
             await _db.SaveChangesAsync();
 
             // 先落「已取消」再判定，且只在「没有其它活跃订单占着这辆车」时才置空闲
@@ -549,7 +587,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             if (order.EarlyReturnStatus == "待审核")
                 throw new Exception("已提交还车申请，请等待门店审核");
 
-            order.EarlyReturnStatus = "待审核";
+            order.RequestEarlyReturn();
             await _db.SaveChangesAsync();
             await tx.CommitAsync();
         }
@@ -572,10 +610,17 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             await DbRowLock.PrepareAsync(_db);
             // 行锁防止「两个前台同时审核」：一个通过、一个驳回，后提交者会把前者的结论覆盖掉
             var order = await DbRowLock.LockOrderAsync(_db, orderId) ?? throw new Exception("订单不存在");
+
+            // 先看订单还在不在可审核的租期内：前台若跳过申请单、直接走「归还结算」，
+            // 订单已经「已完结」，此时审核一个已结束的还车申请毫无意义——
+            // 通过后提示「请完成归还结算」，但结算入口早已不可用，等于把前台引到死路。
+            // 这条判定同时兜住历史脏数据（早期版本结算时未清申请），不依赖数据修复是否跑过。
+            if (order.OrderStatus is not ("已支付" or "租赁中"))
+                throw new Exception($"订单当前状态为「{order.OrderStatus}」，还车申请已随订单结束，无需再审核");
+
             if (order.EarlyReturnStatus != "待审核") throw new Exception("该订单没有待审核的还车申请");
 
-            order.EarlyReturnStatus = approve ? "" : null;
-            if (!approve) order.CancelReason = rejectReason;
+            order.ReviewEarlyReturn(approve, rejectReason);
             await _db.SaveChangesAsync();
             await tx.CommitAsync();
         }

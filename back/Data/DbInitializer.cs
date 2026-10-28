@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using ERental.Models;
 using ERental.Services;
 using Microsoft.EntityFrameworkCore;
@@ -7,6 +7,12 @@ namespace ERental.Data;
 
 public static class DbInitializer
 {
+    /// <summary>
+    /// 建表：库不存在时按实体映射一次性建好全部表；库已存在则原样返回，不删表、不改已有结构。
+    /// 后续的结构演进交给 <see cref="EnsureSchemaUpgrades"/>，两者都不依赖数据库里是否已有数据。
+    /// </summary>
+    public static void EnsureDatabase(AppDbContext db) => db.Database.EnsureCreated();
+
     /// <summary>
     /// 幂等的结构升级：保证「老数据库」也能平滑支持新功能。
     ///
@@ -151,6 +157,14 @@ CREATE TABLE IF NOT EXISTS `check_report` (
                 "ALTER TABLE `rental_order` ADD COLUMN `early_return_status` VARCHAR(20) NULL COMMENT '提前还车申请状态（NULL=未申请，待审核=顾客已申请等前台处理）' AFTER `cancel_reason`;");
         }
 
+        // 存量修复：早期版本「归还结算」不会清还车申请，前台跳过申请单直接结算时会留下
+        // 「订单已完结 + 申请仍待审核」的幽灵单——汇总表里点「审核」只会得到「请完成归还结算」，
+        // 而单子早已结算过，永远关闭不掉。这里按已结束的订单一次性收口成「已处理」。
+        // 幂等：条件写死 order_status，跑第二遍影响 0 行。
+        db.Database.ExecuteSqlRaw(
+            "UPDATE `rental_order` SET `early_return_status` = '' " +
+            "WHERE `order_status` IN ('已完结', '已取消') AND `early_return_status` = '待审核';");
+
         // 车辆图片：只存相对路径（落盘见 Services/ImageStorage.cs），不建图片表
         if (!ColumnExists(db, "vehicle", "image_url"))
         {
@@ -196,11 +210,20 @@ CREATE TABLE IF NOT EXISTS `message` (
   `is_read` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已读（0未读 1已读）',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `read_at` DATETIME DEFAULT NULL COMMENT '已读时间',
+  `dismissed_at` DATETIME DEFAULT NULL COMMENT '忽略时间（员工侧删除通知=软删；预警失效随行硬删后标记清除）',
   PRIMARY KEY (`message_id`),
   UNIQUE KEY `uk_msg_biz` (`receiver_type`, `receiver_id`, `ref_type`, `ref_id`),
   KEY `idx_msg_receiver` (`receiver_type`, `receiver_id`, `is_read`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通用消息表（统一通知中心）';
 """);
+
+        // 员工「删除」通知 = 软删忽略：预警由实时状态推导、每次查询都幂等重建，
+        // 硬删会被下一次拉取复活（顾客消息是真实事件、不重建，仍走硬删）。
+        if (!ColumnExists(db, "message", "dismissed_at"))
+        {
+            db.Database.ExecuteSqlRaw(
+                "ALTER TABLE `message` ADD COLUMN `dismissed_at` DATETIME NULL COMMENT '忽略时间（员工侧删除通知=软删；预警失效随行硬删后标记清除）' AFTER `read_at`;");
+        }
 
         // 安全网：用 EF 模型反查数据库，补上任何遗漏的**可空列**（非空列只打印 ALTER 建议）。
         // 必须在第二阶段之前执行，否则回填查询又会撞上缺列
@@ -223,11 +246,11 @@ CREATE TABLE IF NOT EXISTS `message` (
             foreach (var c in legacy)
             {
                 if (string.IsNullOrWhiteSpace(c.LoginAccount))
-                    c.LoginAccount = !string.IsNullOrWhiteSpace(c.IdCard) ? c.IdCard : $"user{c.CustomerId}";
+                    c.AssignLoginAccount(!string.IsNullOrWhiteSpace(c.IdCard) ? c.IdCard : $"user{c.CustomerId}");
             }
             foreach (var c in needPwd)
             {
-                if (string.IsNullOrWhiteSpace(c.LoginPassword)) c.LoginPassword = hash;
+                if (string.IsNullOrWhiteSpace(c.LoginPassword)) c.SetPasswordHash(hash);
             }
             db.SaveChanges();
         }
@@ -583,14 +606,8 @@ CREATE TABLE IF NOT EXISTS `message` (
         if (!db.SystemUsers.Any(u => u.LoginAccount == "trq"))
         {
             var adminRole = db.Roles.First(r => r.RoleName == "管理员");
-            db.SystemUsers.Add(new AdminUser
-            {
-                LoginAccount = "trq",
-                LoginPwd = BCrypt.Net.BCrypt.HashPassword("123456"),
-                RoleId = adminRole.RoleId,
-                UserName = "唐荣强",
-                UserStatus = 1
-            });
+            db.SystemUsers.Add(SystemUser.CreateStaff<AdminUser>(
+                "trq", BCrypt.Net.BCrypt.HashPassword("123456"), adminRole.RoleId, "唐荣强"));
             db.SaveChanges();
         }
 
@@ -612,26 +629,41 @@ CREATE TABLE IF NOT EXISTS `message` (
             ("daily_rent", "30", "日租金（元/天）"),
             ("deposit", "500", "押金（元）"),
             ("overdue_multiplier", "1.5", "超时租金倍数（超出约定还车时间后，超出部分按小时租金的倍数计费）"),
-            ("max_login_fail", "5", "最大登录失败次数"),
-            ("lock_minutes", "10", "锁定时长（分钟）"),
+            ("max_login_fail", "5", "单IP最大登录失败次数（工作人员登录，达标后封锁该IP）"),
+            ("lock_minutes", "10", "IP锁定时长（分钟，登录失败达标后封锁来源IP）"),
             ("maintain_cycle_days", "90", "保养周期（天，0 表示关闭保养提醒）"),
             ("member_default_price", "99", "会员默认价格（元，新增会员类型时表单预填）"),
             // AI 生图：ComfyUI 服务地址。桌面版默认 127.0.0.1:8188；换端口/换机器后
             // 管理员在系统配置页的「ComfyUI 设置」卡片改这里即可，无需改代码重启
-            ("ai.comfyui_base_url", "http://127.0.0.1:8188", "AI 生图-ComfyUI 服务地址（桌面版默认 127.0.0.1:8188）")
+            ("ai.comfyui_base_url", "http://127.0.0.1:8188", "AI 生图-ComfyUI 服务地址（桌面版默认 127.0.0.1:8188）"),
+            // 登录页公开配置（系统操作 #2 openLoginPage → AuthController.Options →
+            // SystemConfigService.GetPublic 的匿名白名单，只有这三个键对外可读）：
+            // 键必须真实存在于库里，否则 GetPublic 永远返回代码兜底值，管理员在配置页也改不动
+            ("site.name", "途电驿站", "站点名称（登录页与侧边栏标题；留空则用系统默认）"),
+            ("login.modes", "staff,customer", "登录方式（逗号分隔：staff=员工入口，customer=顾客入口）"),
+            ("theme.options", "light,dark", "可用主题（逗号分隔，登录页主题切换在这些值之间轮换）")
             // 各会员类型的实际购买价存 member_rights.purchase_price，由管理员在会员管理中逐类型定价
         };
         var existKeys = db.SystemConfigs.Select(c => c.ConfigKey).ToList();
         var missing = defaultConfigs.Where(c => !existKeys.Contains(c.Key)).ToList();
         if (missing.Count > 0)
         {
-            db.SystemConfigs.AddRange(missing.Select(c => new SystemConfig
-            {
-                ConfigKey = c.Key,
-                ConfigValue = c.Value,
-                ConfigDesc = c.Desc,
-                UpdateTime = DateTime.Now
-            }));
+            db.SystemConfigs.AddRange(missing.Select(c => SystemConfig.Create(c.Key, c.Value, c.Desc)));
+            db.SaveChanges();
+        }
+
+        // 描述同步：键已存在但描述过期时更新（只改描述、绝不碰值——值可能被管理员改过）。
+        // 典型场景：登录锁定口径从「锁账号」改为「封 IP」后，老库里的描述仍写着
+        // 「账号锁定时长」，管理员照描述理解会以为改的是账号封锁，故需幂等刷新
+        var staleDesc = db.SystemConfigs
+            .Where(c => defaultConfigs.Select(d => d.Key).Contains(c.ConfigKey))
+            .ToList()
+            .Where(c => defaultConfigs.First(d => d.Key == c.ConfigKey).Desc != c.ConfigDesc)
+            .ToList();
+        if (staleDesc.Count > 0)
+        {
+            foreach (var row in staleDesc)
+                row.SetDescription(defaultConfigs.First(d => d.Key == row.ConfigKey).Desc);
             db.SaveChanges();
         }
 
@@ -671,7 +703,7 @@ CREATE TABLE IF NOT EXISTS `message` (
         {
             if (value.Length == 0) return;
             if (existing.Contains(key)) return;
-            toAdd.Add(new SystemConfig { ConfigKey = key, ConfigValue = value, ConfigDesc = desc, UpdateTime = DateTime.Now });
+            toAdd.Add(SystemConfig.Create(key, value, desc));
         }
 
         // appsettings 的 Alipay 节点按"沙箱"语义迁入（Sandbox=true 时），否则按生产迁入

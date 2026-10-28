@@ -32,11 +32,13 @@ namespace ERental.Services;
 /// 余额数字属业务数据（非密钥），可正常回显给管理员。
 /// </summary>
 public class BalanceService(
-    AppDbContext db, PayConfigService payConfig,
+    AppDbContext db, PayConfigService payConfig, WechatPayService wechat, BankPayService bank,
     ILogger<BalanceService> logger, IHttpClientFactory httpFactory)
 {
     private readonly AppDbContext _db = db;
     private readonly PayConfigService _payConfig = payConfig;
+    private readonly WechatPayService _wechat = wechat;
+    private readonly BankPayService _bank = bank;
     private readonly ILogger<BalanceService> _logger = logger;
     private readonly IHttpClientFactory _httpFactory = httpFactory;
 
@@ -84,16 +86,32 @@ public class BalanceService(
     }
 
     /// <summary>
-    /// 取两个渠道的余额 + 本地账目对照。
+    /// 取三个渠道（支付宝 / 微信 / 银行卡）的余额 + 本地账目对照。
     /// </summary>
+    /// <remarks>
+    /// ⚠️ 三个渠道必须**串行**查询，不能 Task.WhenAll：
+    /// 每个通道都要先经 <see cref="PayConfigService"/> 读 system_config，而它用的是同一个
+    /// scoped <see cref="AppDbContext"/>——EF Core 明确禁止同一 DbContext 上的并发操作，
+    /// 并行会抛「A second operation was started on this context instance」，
+    /// 整个余额接口随之落到兜底分支、返回空列表（管理员看到的是「暂时不可用」）。
+    /// 若将来要并行，必须用 IServiceScopeFactory 为每个通道开独立 scope，
+    /// 而不是把共享 DbContext 的服务直接丢进 WhenAll。
+    /// 串行的代价可接受：结果有 5 分钟缓存，正常响应在亚秒级，慢的是异常重试场景。
+    /// </remarks>
     /// <param name="force">true = 跳过缓存强制刷新（管理员点「刷新」时用）</param>
     public async Task<BalanceOverviewDto> GetOverviewAsync(bool force = false)
     {
-        var alipay = await GetAlipayBalanceAsync(force);
-        var wechat = await GetWechatBalanceAsync(force);
+        var items = new List<BalanceDto>
+        {
+            await GetAlipayBalanceAsync(force),
+            await GetWechatBalanceAsync(force),
+            await GetBankBalanceAsync(force)
+        };
 
+        // 本地实收 = 钱到过账的全部支付。结算退押金后记录变为「部分退款」，
+        // 只数「已支付」会把已完结订单整批漏掉，本地账与官方渠道余额必然对不上。
         var paid = await _db.PaymentRecords.AsNoTracking()
-            .Where(p => p.PayStatus == "已支付")
+            .Where(p => PayStatuses.MoneyArrived.Contains(p.PayStatus))
             .SumAsync(p => (decimal?)p.PayAmount) ?? 0m;
 
         var unpaid = await _db.RentalOrders.AsNoTracking()
@@ -102,7 +120,7 @@ public class BalanceService(
 
         return new BalanceOverviewDto
         {
-            Items = [alipay, wechat],
+            Items = [.. items],
             LocalPaidTotal = paid,
             LocalUnpaidTotal = unpaid,
             CacheMinutes = CacheMinutes,
@@ -116,8 +134,7 @@ public class BalanceService(
 
     private async Task<BalanceDto> GetAlipayBalanceAsync(bool force)
     {
-        const string channel = "alipay";
-        var dto = NewDto(channel, "企业支付宝");
+        var dto = NewDto("alipay", "企业支付宝");
 
         var rt = await _payConfig.ResolveAsync();
         if (rt.Mode == PayConfigService.ModeMock || !rt.CredentialsComplete)
@@ -137,44 +154,11 @@ public class BalanceService(
             return dto;
         }
 
-        if (!force && TryReadCache(channel, out var cached))
+        return await QueryWithRetryAsync(dto, force, async () =>
         {
-            return cached;
-        }
-
-        const string path = "alipay.fund.account.query";
-        string? lastError = null;
-        var retries = 0;
-
-        // 首次 + MaxRetries 次重试
-        for (var attempt = 0; attempt <= MaxRetries; attempt++)
-        {
-            if (attempt > 0)
-            {
-                retries = attempt;
-                // 指数退避：300ms → 600ms，给偶发抖动一点恢复时间，避免立刻再撞
-                await Task.Delay(RetryBaseDelayMs * (1 << (attempt - 1)));
-            }
-
-            var (ok, amount, total, frozen, err) = await TryAlipayOnceAsync(rt, path);
-            if (ok)
-            {
-                dto.Status = "ok";
-                dto.AvailableAmount = amount;
-                dto.TotalAmount = total;
-                dto.FrozenAmount = frozen;
-                dto.Source = "remote";
-                dto.FetchedAt = DateTime.Now;
-                dto.RetryCount = retries;
-                dto.Message = $"查询成功（本次重试 {retries} 次）";
-                WriteCache(channel, dto);
-                return dto;
-            }
-            lastError = err;
-        }
-
-        // 降级：重试耗尽后回退到缓存的旧值（哪怕已过期），比给管理员一个空白页有用
-        return Fallback(channel, dto, retries, lastError);
+            var (ok, amount, total, frozen, err) = await TryAlipayOnceAsync(rt, "alipay.fund.account.query");
+            return (ok, amount, total, frozen, err);
+        });
     }
 
     /// <summary>发一次支付宝余额查询。</summary>
@@ -249,18 +233,115 @@ public class BalanceService(
     //  微信支付：GET /v3/merchant/fund/balance/{account_type}
     // ══════════════════════════════════════════════════════
 
-    private static Task<BalanceDto> GetWechatBalanceAsync(bool force)
+    private async Task<BalanceDto> GetWechatBalanceAsync(bool force)
     {
-        _ = force;   // 占位通道暂不支持强制刷新；保留参数以对齐支付宝分支的签名
-        const string channel = "wechat";
-        var dto = NewDto(channel, "微信支付商户");
+        var dto = NewDto("wechat", "微信支付商户");
 
-        // 微信为占位通道：尚无 V3 签名实现，明确告知"未接入"而非"查询失败"，
-        // 避免管理员以为是自己填错了配置而反复排查。
-        dto.Status = "not_integrated";
-        dto.Message = "微信支付为占位通道（未接入真实 V3 接口），暂无商户余额。接入后此处显示商户可用余额。";
-        dto.Source = "none";
-        return Task.FromResult(dto);
+        // 预检放在重试之外：凭证缺失/开关未启用属于「配置问题」，
+        // 重试三次只会让管理员多等 1 秒，还把一个确定的事实说成「查询失败」。
+        // 判定口径与「账户绑定」弹窗一致：余额只要求商户号 + 证书序列号 + 私钥，
+        // 不要求下单才用到的 AppId 与回调解密才用到的 APIv3 密钥。
+        var (rt, _) = await _wechat.ResolveAsync();
+        if (!rt.Enabled)
+        {
+            dto.Status = "not_configured";
+            dto.Message = "微信支付开关未启用，无法查询商户余额。如需查看余额，请先在下方打开「启用微信支付」并保存凭证。";
+            return dto;
+        }
+        if (!rt.BalanceCredentialsComplete)
+        {
+            dto.Status = "not_configured";
+            dto.Message = "微信支付余额查询凭证不完整（商户号 / 证书序列号 / 商户私钥），无法查询商户余额。";
+            return dto;
+        }
+
+        return await QueryWithRetryAsync(dto, force, async () =>
+        {
+            var (ok, available, pending, err) = await _wechat.QueryBalanceAsync();
+            // 微信只有「可用余额」与「待结算金额」（pending_amount），没有支付宝那种总额字段
+            return (ok, available, available, pending, err);
+        });
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  银行卡：POST {gateway}/balance（通用收银网关，可配置覆盖）
+    // ══════════════════════════════════════════════════════
+
+    private async Task<BalanceDto> GetBankBalanceAsync(bool force)
+    {
+        var dto = NewDto("bank", "银行卡收单");
+
+        var (rt, real) = await _bank.ResolveAsync();
+        if (!rt.CredentialsComplete)
+        {
+            dto.Status = "not_configured";
+            dto.Message = "银行卡余额查询凭证不完整（商户号 / 收单网关 / 签名密钥），无法查询收单账户余额。";
+            return dto;
+        }
+        if (!real)
+        {
+            dto.Status = "not_configured";
+            dto.Message = "银行卡支付开关未启用，无法查询收单账户余额。";
+            return dto;
+        }
+
+        return await QueryWithRetryAsync(dto, force, async () =>
+        {
+            var (ok, available, total, err) = await _bank.QueryBalanceAsync();
+            return (ok, available, total, null, err);
+        });
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  通用：缓存 → 重试 → 降级（三通道共用同一套策略）
+    // ══════════════════════════════════════════════════════
+
+    /// <summary>
+    /// 三通道共用的「缓存 → 首次 + 2 次重试（指数退避）→ 降级兜底」流程。
+    /// <para>
+    /// 为什么抽出来：支付宝、微信、银行卡的**查询方式**完全不同（表单 + RSA2 / APIv3 头签名 / HMAC），
+    /// 但**可靠性策略**应该完全一致——三个渠道谁都不该在偶发网络抖动时给出「余额为 0」的错觉。
+    /// 渠道差异由 <paramref name="probe"/> 表达，策略只在这里写一遍。
+    /// </para>
+    /// </summary>
+    private async Task<BalanceDto> QueryWithRetryAsync(
+        BalanceDto dto, bool force,
+        Func<Task<(bool Ok, decimal? Available, decimal? Total, decimal? Frozen, string? Error)>> probe)
+    {
+        if (!force && TryReadCache(dto.Channel, out var cached))
+            return cached;
+
+        string? lastError = null;
+        var retries = 0;
+
+        for (var attempt = 0; attempt <= MaxRetries; attempt++)
+        {
+            if (attempt > 0)
+            {
+                retries = attempt;
+                // 指数退避：300ms → 600ms，给偶发抖动一点恢复时间，避免立刻再撞
+                await Task.Delay(RetryBaseDelayMs * (1 << (attempt - 1)));
+            }
+
+            var (ok, available, total, frozen, err) = await probe();
+            if (ok)
+            {
+                dto.Status = "ok";
+                dto.AvailableAmount = available;
+                dto.TotalAmount = total;
+                dto.FrozenAmount = frozen;
+                dto.Source = "remote";
+                dto.FetchedAt = DateTime.Now;
+                dto.RetryCount = retries;
+                dto.Message = $"查询成功（本次重试 {retries} 次）";
+                WriteCache(dto.Channel, dto);
+                return dto;
+            }
+            lastError = err;
+        }
+
+        // 降级：重试耗尽后回退到缓存的旧值（哪怕已过期），比给管理员一个空白页有用
+        return Fallback(dto.Channel, dto, retries, lastError);
     }
 
     // ══════════════════════════════════════════════════════

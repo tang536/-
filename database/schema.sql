@@ -273,6 +273,8 @@ CREATE TABLE IF NOT EXISTS `check_report` (
 --   · receiver_type='customer' 时 receiver_id=customer.customer_id（退款去向/线上补缴单/补缴成功回执）；
 --   · receiver_type='staff'    时 receiver_id=system_user.user_id（逾期/到期/待支付/维保/资料/保养预警）。
 -- 已读状态直接落在消息行（is_read/read_at），不再有独立的已读表。
+-- dismissed_at 为软删标记：员工删除预警只是「不再显示」，预警解除后由后端随行清理；
+-- 若不软删而硬删，实时预警会在下一次拉取时被幂等重建，删除就失了效。
 CREATE TABLE IF NOT EXISTS `message` (
   `message_id` INT NOT NULL AUTO_INCREMENT,
   `receiver_type` VARCHAR(10) NOT NULL COMMENT '接收人类型（customer=顾客 / staff=工作人员）',
@@ -286,6 +288,7 @@ CREATE TABLE IF NOT EXISTS `message` (
   `is_read` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已读（0未读 1已读）',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `read_at` DATETIME DEFAULT NULL COMMENT '已读时间',
+  `dismissed_at` DATETIME DEFAULT NULL COMMENT '软删时间（员工删除通知即置值，不为空即隐藏；预警解除后随行清理）',
   PRIMARY KEY (`message_id`),
   UNIQUE KEY `uk_msg_biz` (`receiver_type`, `receiver_id`, `ref_type`, `ref_id`),
   KEY `idx_msg_receiver` (`receiver_type`, `receiver_id`, `is_read`)
@@ -332,6 +335,13 @@ CREATE TABLE IF NOT EXISTS `message` (
 --   COMMENT '故障现场照片路径（多张逗号分隔，锁定维保位置）' AFTER `fault_description`;
 --
 -- 通用消息表（统一通知中心）：建表语句见上方第 17–18 张表，老库由后端启动时自动补建，无需手工执行。
+--
+-- 消息软删（图4-17 第 13 列）：员工删除工作人员预警只是「不再显示」。
+-- 实时预警每次拉取都会按 (receiver_type, receiver_id, ref_type, ref_id) 幂等重建，
+-- 硬删会被下一次拉取复活，删除就失了效——因此删除语义为软删：置 dismissed_at，查询时过滤。
+-- 后端启动时会自动补列，无需手工执行。
+-- ALTER TABLE `message` ADD COLUMN `dismissed_at` DATETIME NULL
+--   COMMENT '软删时间（员工删除通知即置值，不为空即隐藏；预警解除后随行清理）' AFTER `read_at`;
 --
 -- 车辆独立计价：每辆车有自己的日租金与押金（不同车型定价本就不同），
 -- 留 NULL 表示该车未单独定价，下单/试算/结算/续租统一回退 system_config 的

@@ -31,12 +31,15 @@ public class CustomerController(CustomerService svc) : ControllerBase
         {
             var (items, total) = await _svc.GetPaged(keyword, level, accountStatus, page, pageSize);
             var (p, size, _, _) = Paging.Normalize(page, pageSize);
-            return Ok(new ApiResponse<PagedResult<Customer>>
+            return Ok(new ApiResponse<PagedResult<CustomerDto>>
             {
-                Data = new PagedResult<Customer>(items, total, p, size)
+                Data = new PagedResult<CustomerDto>(items.Select(CustomerDto.From).ToList(), total, p, size)
             });
         }
-        return Ok(new ApiResponse<List<Customer>> { Data = await _svc.GetAll(keyword) });
+        return Ok(new ApiResponse<List<CustomerDto>>
+        {
+            Data = (await _svc.GetAll(keyword)).Select(CustomerDto.From).ToList()
+        });
     }
 
     /// <summary>客户详情：工作人员可查任意客户，顾客仅能查自己</summary>
@@ -45,23 +48,31 @@ public class CustomerController(CustomerService svc) : ControllerBase
     {
         if (IsCustomer && id != CurrentUserId)
             return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权查看其他客户的资料", Success = false });
-        try { return Ok(new ApiResponse<Customer> { Data = await _svc.GetById(id) }); }
+        try
+        {
+            var customer = await _svc.GetById(id);
+            return Ok(new ApiResponse<CustomerDto> { Data = CustomerDto.From(customer) });
+        }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPost]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> Create([FromBody] Customer c)
+    public async Task<IActionResult> Create([FromBody] CustomerCreateDto dto)
     {
-        try { return Ok(new ApiResponse<Customer> { Data = await _svc.Create(c) }); }
+        try
+        {
+            var created = await _svc.Create(dto);
+            return Ok(new ApiResponse<CustomerDto> { Data = CustomerDto.From(created) });
+        }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPut("{id:int}")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> Update(int id, [FromBody] Customer c)
+    public async Task<IActionResult> Update(int id, [FromBody] CustomerUpdateDto dto)
     {
-        try { await _svc.Update(id, c); return Ok(new ApiResponse<object> { Message = "更新成功" }); }
+        try { await _svc.Update(id, dto); return Ok(new ApiResponse<object> { Message = "更新成功" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 

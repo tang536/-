@@ -3,6 +3,7 @@ import {
   type ReactNode,
 } from 'react'
 import Icon, { type IconName } from './Icon'
+import { useGlobalEscClose } from '@/hooks/useGlobalEsc'
 
 /**
  * 全局交互反馈体系（Vue / Element Plus 风格的「消息提示 + 确认框 + 输入框」）
@@ -91,6 +92,9 @@ export function UIProvider({ children }: { children: ReactNode }) {
   const timers = useRef<Record<number, number>>({})
   /** 最近一次提示的时间戳，键为 `类型::文案`，用于 Toast 去重 */
   const recentToasts = useRef<Record<string, number>>({})
+
+  /** 全站弹窗统一支持 Esc 关闭（点遮罩语义），见 hooks/useGlobalEsc */
+  useGlobalEscClose()
 
   const closeToast = useCallback((id: number) => {
     if (timers.current[id]) {

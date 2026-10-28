@@ -21,11 +21,19 @@ import { useEffect } from 'react'
  */
 const TABLE_SELECTOR = 'table.data-table:not(.batch-table)'
 
-/** 取表头纯文本：剔除内嵌的交互控件（下拉/按钮/图标），并去掉所有空白 */
+/** 取表头纯文本：剔除内嵌的交互控件（下拉/输入框/图标），并去掉所有空白 */
 function headerTextOf(th: Element): string {
   const clone = th.cloneNode(true) as Element
-  clone.querySelectorAll('select, button, input, svg, .th-filter-clear').forEach(n => n.remove())
-  return (clone.textContent ?? '').replace(/\s+/g, '')
+  // 内嵌控件不是列名：下拉（DictThFilter）、输入框、排序箭头图标、清除按钮
+  clone.querySelectorAll('select, input, svg, .th-filter-clear, .th-sort-ico').forEach(n => n.remove())
+  /*
+   * ⚠️ 可排序表头（SortTh）把列名包在 <button> 里。
+   * 早期实现连 button 一起 remove，导致「订单号 / 起租时间 / 租金 / 押金」这些
+   * 可排序列在手机卡片里只剩值、没有列名（用户看到一个孤零零的 ¥24.96）。
+   * 正确做法是「拆壳不拆字」：把 button 换成它的文本节点。
+   */
+  clone.querySelectorAll('button').forEach(b => b.replaceWith(document.createTextNode(b.textContent ?? '')))
+  return (clone.textContent ?? '').replace(/\s+/g, '').replace(/[⇅↑↓]/g, '')
 }
 
 function labelize(): void {

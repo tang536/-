@@ -123,13 +123,8 @@ public sealed class SessionRegistry(AppDbContext db)
         var row = await _db.SystemConfigs.FirstOrDefaultAsync(c => c.ConfigKey == key);
         if (row == null)
         {
-            _db.SystemConfigs.Add(new SystemConfig
-            {
-                ConfigKey = key,
-                ConfigValue = json,
-                ConfigDesc = "在线会话（系统维护，请勿手工修改）",
-                UpdateTime = DateTime.Now
-            });
+            _db.SystemConfigs.Add(SystemConfig.Create(
+                key, json, "在线会话（系统维护，请勿手工修改）"));
             try
             {
                 await _db.SaveChangesAsync();

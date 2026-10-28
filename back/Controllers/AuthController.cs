@@ -11,9 +11,19 @@ namespace ERental.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class AuthController(AuthService auth) : ControllerBase
+public class AuthController(AuthService auth, SystemConfigService cfg) : ControllerBase
 {
     private readonly AuthService _auth = auth;
+    private readonly SystemConfigService _cfg = cfg;
+
+    /// <summary>
+    /// 登录页公开配置（系统操作 #2 openLoginPage）：站点名称、可用登录方式、主题选项。
+    /// 必须匿名：此时来访者还没有任何令牌；返回内容只有三个白名单键，不含任何密钥。
+    /// </summary>
+    [AllowAnonymous]
+    [HttpGet("options")]
+    public async Task<IActionResult> Options() =>
+        Ok(new ApiResponse<object> { Data = await _cfg.GetPublic() });
 
     /// <summary>
     /// 令牌续期：access token 临近过期时用它换一对新令牌，用户无需重新输入密码。
@@ -41,7 +51,10 @@ public class AuthController(AuthService auth) : ControllerBase
     [EnableRateLimiting(RateLimitPolicies.Auth)]
     public async Task<IActionResult> StaffLogin([FromBody] StaffLoginDto dto)
     {
-        try { return Ok(new ApiResponse<LoginResponseDto> { Data = await _auth.StaffLogin(dto) }); }
+        // 真实客户端 IP：ForwardedHeaders 中间件已按「仅信任本机反代」还原 X-Forwarded-For，
+        // 直连时就是对端地址。传给登录防护闸做「封 IP 不封账号」的失败累计
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+        try { return Ok(new ApiResponse<LoginResponseDto> { Data = await _auth.StaffLogin(dto, ip) }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 

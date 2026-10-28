@@ -127,13 +127,8 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
             ["old"] = c.MemberLevel,
             ["ts"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
         });
-        _db.SystemConfigs.Add(new SystemConfig
-        {
-            ConfigKey = PayPrefix + no,
-            ConfigValue = json,
-            ConfigDesc = "会员购买待支付意向（勿在参数页维护）",
-            UpdateTime = DateTime.Now
-        });
+        _db.SystemConfigs.Add(SystemConfig.Create(
+            PayPrefix + no, json, "会员购买待支付意向（勿在参数页维护）"));
         await _db.SaveChangesAsync();
 
         await _log.WriteLog(customerId,
@@ -222,8 +217,8 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
         }
 
         var oldLevel = c.MemberLevel;
-        c.MemberLevel = right.MemberLevel;
-        c.Version++;   // 与员工编辑/注销互斥的乐观并发
+        c.ChangeMemberLevel(right.MemberLevel);
+        c.BumpVersion();   // 与员工编辑/注销互斥的乐观并发
         try
         {
             MarkDone(cfg, price, alipayTradeNo);
@@ -244,14 +239,13 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
     /// <summary>意向原地标记完成（保留键供状态查询与幂等判断，24 小时后随下一次发起购买时清理）</summary>
     private static void MarkDone(SystemConfig cfg, decimal price, string alipayTradeNo)
     {
-        cfg.ConfigValue = JsonSerializer.Serialize(new Dictionary<string, string>
+        cfg.SetValue(JsonSerializer.Serialize(new Dictionary<string, string>
         {
             ["done"] = "1",
             ["p"] = price.ToString("0.00"),
             ["alipay"] = alipayTradeNo,
             ["ts"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
-        });
-        cfg.UpdateTime = DateTime.Now;
+        }));
     }
 
     /// <summary>读取购买意向/完成状态（供 {HY号}/status 轮询）：返回 (是否完成, 金额, 收款交易号, 创建时间, 是否存在)</summary>
@@ -307,14 +301,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
         if (await _db.MemberRights.AnyAsync(m => m.MemberLevel == level))
             throw new Exception($"会员等级「{level}」已存在");
 
-        var r = new MemberRights
-        {
-            MemberLevel = level,
-            Discount = dto.Discount,
-            MinRentCount = dto.MinRentCount,
-            PurchasePrice = dto.PurchasePrice,
-            RightsDesc = dto.RightsDesc?.Trim()
-        };
+        var r = MemberRights.Create(level, dto.Discount, dto.MinRentCount, dto.PurchasePrice, dto.RightsDesc);
         _db.MemberRights.Add(r);
         await _db.SaveChangesAsync();
 
@@ -345,10 +332,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
                 ?? throw new Exception("会员类型不存在");
         var oldDiscount = r.Discount;
         var oldPrice = r.PurchasePrice;
-        r.Discount = dto.Discount;
-        r.MinRentCount = dto.MinRentCount;
-        r.PurchasePrice = dto.PurchasePrice;
-        r.RightsDesc = dto.RightsDesc?.Trim();
+        r.UpdateRights(dto.Discount, dto.MinRentCount, dto.PurchasePrice, dto.RightsDesc);
 
         await _db.SaveChangesAsync();
 

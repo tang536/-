@@ -147,15 +147,43 @@ public static class DbRowLock
     /// <param name="db">数据库上下文（其当前事务即锁的作用域）</param>
     /// <param name="deadline">创建时间早于该值即视为超时</param>
     /// <param name="batch">单批上限，避免一次事务锁住过多行</param>
+    /// <param name="paidGraceDeadline">
+    /// 已发起支付的订单专用阈值（更早的时刻）。传 null 时所有超时单一视同仁。
+    /// 顾客在收银台输密码的那几十秒里，订单按创建时间算早就"超时"了；
+    /// 若此时被后台任务取消，回调到达只能走「需人工退款」分支——
+    /// 钱收了、单作废，柜台要手工退一次款。给「已经向通道下过单」的订单宽限一段时间，
+    /// 就能把这类两侧都麻烦的情况压到接近零。
+    /// </param>
     /// <param name="ct">取消令牌（不影响已获得的锁）</param>
     public static async Task<List<RentalOrder>> LockExpiredPendingAsync(
-        AppDbContext db, DateTime deadline, int batch, CancellationToken ct = default)
+        AppDbContext db, DateTime deadline, int batch,
+        DateTime? paidGraceDeadline = null, CancellationToken ct = default)
     {
-        var ids = await QueryScalarsAsync(db,
-            "SELECT `order_id` FROM `rental_order` " +
-            "WHERE `order_status` = @s AND `create_time` < @d " +
-            "ORDER BY `order_id` LIMIT @n FOR UPDATE SKIP LOCKED",
-            [("@s", PendingPayStatus), ("@d", deadline), ("@n", batch)], ct);
+        // 判定「已发起支付」的依据是 payment_record 上的渠道标记：
+        // 下单时该字段是占位值「待定」，顾客点「去支付」时由 PaymentController
+        // 更新为真实渠道（支付宝/微信/银行卡）。因此「pay_type <> '待定' 且仍待支付」
+        // 恰好等价于「已经在收银台上，但还没回来」。不需要新增列。
+        var sql = paidGraceDeadline is null
+            ? "SELECT `order_id` FROM `rental_order` " +
+              "WHERE `order_status` = @s AND `create_time` < @d " +
+              "ORDER BY `order_id` LIMIT @n FOR UPDATE SKIP LOCKED"
+            : "SELECT o.`order_id` FROM `rental_order` o " +
+              "WHERE o.`order_status` = @s AND o.`create_time` < @d " +
+              "  AND (o.`create_time` < @dg " +
+              "       OR NOT EXISTS (SELECT 1 FROM `payment_record` p " +
+              "                      WHERE p.`order_id` = o.`order_id` " +
+              "                        AND p.`pay_status` = '待支付' " +
+              "                        AND p.`pay_type` <> '待定')) " +
+              "ORDER BY o.`order_id` LIMIT @n FOR UPDATE SKIP LOCKED";
+
+        (string Name, object? Value)[] args;
+        if (paidGraceDeadline is null)
+            args = [("@s", PendingPayStatus), ("@d", deadline), ("@n", batch)];
+        else
+            args = [("@s", PendingPayStatus), ("@d", deadline),
+                    ("@dg", paidGraceDeadline.Value), ("@n", batch)];
+
+        var ids = await QueryScalarsAsync(db, sql, args, ct);
 
         if (ids.Count == 0) return [];
         var orders = await db.RentalOrders.Where(o => ids.Contains(o.OrderId)).ToListAsync(ct);

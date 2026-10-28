@@ -1,13 +1,15 @@
 ﻿import { useEffect, useRef, useState } from 'react'
 import { useUI } from '@/components/UIProvider'
 import { useSearchParams } from 'react-router-dom'
-import { vehicleApi, configApi } from '@/api'
+import { vehicleApi, configApi, checkApi } from '@/api'
 import type { Vehicle } from '@/types'
 import Icon from '@/components/Icon'
 import DictThFilter from '@/components/DictThFilter'
 import ImageLightbox from '@/components/ImageLightbox'
 import OverflowMenu from '@/components/OverflowMenu'
+import RowActions from '@/components/RowActions'
 import Pagination from '@/components/Pagination'
+import SortTh, { type SortDir } from '@/components/SortTh'
 import VehicleQrModal from './components/VehicleQrModal'
 import VehicleQrLookup from './components/VehicleQrLookup'
 import VehicleCheckPanel from './components/VehicleCheckPanel'
@@ -26,8 +28,8 @@ const statusMap: Record<string, string> = {
 }
 /** 展示与统计用的全部状态 */
 const STATUSES = ['空闲', '在租', '维保', '报废']
-/** 车辆档案列表每页行数：同类车数量可能很多，分页展示，避免一屏拉不动 */
-const PAGE_SIZE = 10
+/** 车辆档案列表默认每页行数；用户可在分页条上改（盘点时想一屏看全） */
+const DEFAULT_PAGE_SIZE = 10
 /**
  * 建档/编辑下拉里**可选**的状态：不含「在租」。
  * 在租是开单时自动占用车辆产生的，人工选出来会造出一辆「没有订单却租不出去」的车，
@@ -126,6 +128,10 @@ export default function Vehicles() {
   const [page, setPage] = useState(1)
   /** 服务端分页返回的总条数与各状态角标 */
   const [total, setTotal] = useState(0)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  /** 表头排序：空串 = 车牌升序（台账自然顺序） */
+  const [sortBy, setSortBy] = useState('')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [counts, setCounts] = useState<Record<string, number>>({})
   /**
    * 页面级页签：list=车辆档案，check=车辆盘点，maintenance=维保管理（后两者原为独立页并入）。
@@ -146,8 +152,10 @@ export default function Vehicles() {
         status: status || undefined,
         keyword: keyword || undefined,
         brand: brandFilter || undefined,
+        sortBy: sortBy || undefined,
+        sortDesc: sortDir === 'desc',
         page,
-        pageSize: PAGE_SIZE,
+        pageSize,
       })
       setList(res.data?.items || [])
       setTotal(res.data?.total || 0)
@@ -158,7 +166,7 @@ export default function Vehicles() {
     }
   }
 
-  useEffect(() => { load() }, [status, keyword, brandFilter, page])
+  useEffect(() => { load() }, [status, keyword, brandFilter, sortBy, sortDir, page, pageSize])
 
   // 状态角标单独统计：分页后前端拿不到全集，角标不能靠当前页算
   useEffect(() => {
@@ -398,6 +406,12 @@ export default function Vehicles() {
   /** 更改车辆状态（用况4 步骤4）：先弹管理员密码校验，通过后才提交，取消则状态不变 */
   const handleStatus = async (v: Vehicle, next: string) => {
     if (next === v.vehicleStatus) return
+    // 即时拦截：把「在租 / 已报废」的车再次置为「报废」既无业务意义（报废不可逆、在租须先结算归还），
+    // 也不该让管理员先输完密码、提交后才被后端拦下——在弹密码框之前就拦住。
+    if (next === '报废' && (v.vehicleStatus === '在租' || v.vehicleStatus === '报废')) {
+      toast(`车辆 ${v.vehicleNo} 当前为「${v.vehicleStatus}」，不可报废`, 'warning')
+      return
+    }
     const pwd = await askAdminPassword(
       `将车辆「${v.vehicleNo}」的状态由「${v.vehicleStatus}」改为「${next}」，需管理员密码确认。`)
     if (pwd == null) return
@@ -418,7 +432,7 @@ export default function Vehicles() {
   // 服务端分页后前端只有当前页数据，因此"全选"作用于**当前页**；
   // 已勾选项跨页保留，批量改价/批量状态仍可先逐页勾选再一次性提交。
   const paged = list
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const visibleIds = list.map(v => v.vehicleId)
   const allSelected = visibleIds.length > 0 && visibleIds.every(id => selected.includes(id))
   const toggleSelect = (id: number) =>
@@ -429,20 +443,54 @@ export default function Vehicles() {
       : Array.from(new Set([...prev, ...visibleIds])))
   const clearSelection = () => setSelected([])
 
+  /** 点表头：同列翻转方向，换列则默认从大到小（先看最贵/最近）；再点一次可回到车牌顺序之外的最优默认值 */
+  const toggleSort = (key: string) => {
+    if (key === sortBy) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortBy(key); setSortDir('desc') }
+  }
+
   // 筛选条件一变就回到第 1 页（页码越界时也夹回最后一页，应对删车导致总数变少）
   useEffect(() => { setPage(p => Math.min(p, pageCount)) }, [pageCount])
-  useEffect(() => { setPage(1) }, [status, keyword, brandFilter])
+  useEffect(() => { setPage(1) }, [status, keyword, brandFilter, sortBy, sortDir, pageSize])
 
   /** 弹窗里展示的图片：编辑态 = 已落库那张；新增态 = 待保存列表（第一张为主图） */
   const shownImages = editId
     ? (imageUrl ? [{ key: 'server', preview: imageUrl, primary: true, pending: false }] : [])
     : pendingImages.map((p, i) => ({ key: p.key, preview: p.preview, primary: i === 0, pending: true }))
 
+  /** 盘点报表：按钮在页面标题行（与「车辆盘点」同一行靠右）。
+   *  生成成功后把 refreshToken +1，盘点面板重拉数据，报表页签立刻可见。 */
+  const [checkRefresh, setCheckRefresh] = useState(0)
+  const [checkReporting, setCheckReporting] = useState(false)
+  const genCheckReport = async () => {
+    const ok = await confirm({
+      title: '生成盘点报表',
+      message: '将基于今日全部盘点记录生成盘点报表，是否继续？',
+      type: 'question',
+      confirmText: '生成报表',
+    })
+    if (!ok) return
+    setCheckReporting(true)
+    try {
+      const res: any = await checkApi.generateReport(new Date().toISOString())
+      toast(`盘点报表已生成：${res.data?.reportNo || ''}`, 'success')
+      setCheckRefresh(n => n + 1)
+    } catch (e: any) {
+      toast(e?.message || '生成失败', 'error')
+    } finally {
+      setCheckReporting(false)
+    }
+  }
+
   return (
     <div className="card">
-      <div className="card-title">
-        <Icon name="vehicles" size={18} chip />车辆管理
-        {view === 'list' && <span className="card-title-count">共 {list.length} 台</span>}
+      <div className="card-title veh-card-title">
+        <Icon name="vehicles" size={18} chip />
+        {view === 'check' ? '车辆盘点' : view === 'maintenance' ? '维保管理' : '车辆台账'}
+        {/* 计数用服务端的 total（全量命中），不能用 list.length：
+            分页后 list 只有当前页 10 条，卡片上写「共 10 台」而右侧状态角标合计 26 台，
+            两个数并排打架。 */}
+        {view === 'list' && <span className="card-title-count">共 {total} 台</span>}
         <div className="toolbar-actions" style={{ marginLeft: 'auto' }}>
           {/* 车辆档案页签按钮 */}
           {view === 'list' && (
@@ -465,16 +513,18 @@ export default function Vehicles() {
               />
             </>
           )}
-          {/* 车辆盘点页签按钮 */}
+          {/* 车辆盘点页签：动作与页面标题同一行、靠右；标题行变窄时退化为图标
+              （见 .veh-card-title 的容器查询），不会把「车辆盘点」标题挤走。 */}
           {view === 'check' && (
-            <>
-              <button className="btn-sm btn-sm-default btn-icon-sm" onClick={() => setShowLookup(true)}>
-                <Icon name="qrcode" size={15} /><span className="btn-label">扫码盘点</span>
-              </button>
-              <button className="btn-sm btn-sm-primary btn-icon-sm" onClick={() => window.dispatchEvent(new CustomEvent('vehicle-check-gen-report'))}>
-                <Icon name="reports" size={15} color="#fff" /><span className="btn-label">导出记录</span>
-              </button>
-            </>
+            <button
+              className="btn-sm btn-sm-primary btn-icon-sm"
+              onClick={genCheckReport}
+              disabled={checkReporting}
+              title="生成盘点报表"
+            >
+              <Icon name="reports" size={15} color="#fff" />
+              <span className="btn-label">{checkReporting ? '生成中…' : '生成报表'}</span>
+            </button>
           )}
           {/* 维保管理页签按钮 */}
           {view === 'maintenance' && (
@@ -521,8 +571,9 @@ export default function Vehicles() {
             {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           {(keyword || status) && (
-            <button className="btn-sm btn-sm-default" onClick={() => { setKeyword(''); setStatus('') }}>
-              <Icon name="refresh" size={14} />重置
+            <button className="btn-sm btn-sm-default" title="重置筛选条件"
+              onClick={() => { setKeyword(''); setStatus('') }}>
+              <Icon name="refresh" size={14} /><span className="btn-label">重置</span>
             </button>
           )}
         </div>
@@ -532,7 +583,7 @@ export default function Vehicles() {
 
       {/* 盘点页签：原「车辆盘点」独立页整体并入，档案相关工具栏与表格仅在档案页签显示 */}
       {view === 'check' ? (
-        <VehicleCheckPanel />
+        <VehicleCheckPanel refreshToken={checkRefresh} />
       ) : view === 'maintenance' ? (
         <MaintenancePanel />
       ) : (
@@ -560,9 +611,15 @@ export default function Vehicles() {
                 <span className="th-with-filter">品牌</span>
                 <DictThFilter options={brandOptions} value={brandFilter} onChange={setBrandFilter} />
               </th>
-              <th className="col-hide-lg">车架号</th><th className="col-hide-lg">采购时间</th>
-              <th className="num col-hide-md">购入价</th>
-              <th className="num">日租金</th><th className="num">押金</th>
+              <th className="col-hide-lg">车架号</th>
+              <SortTh label="采购时间" active={sortBy === 'buyTime'} dir={sortDir}
+                      onClick={() => toggleSort('buyTime')} className="col-hide-lg" />
+              <SortTh label="购入价" active={sortBy === 'buyPrice'} dir={sortDir}
+                      onClick={() => toggleSort('buyPrice')} className="num col-hide-md" />
+              <SortTh label="日租金" active={sortBy === 'dailyRent'} dir={sortDir}
+                      onClick={() => toggleSort('dailyRent')} className="num" />
+              <SortTh label="押金" active={sortBy === 'deposit'} dir={sortDir}
+                      onClick={() => toggleSort('deposit')} className="num" />
               <th>状态</th><th>操作</th>
             </tr>
           </thead>
@@ -597,14 +654,12 @@ export default function Vehicles() {
                   </select>
                 </td>
                 <td>
-                  <div className="btn-group">
-                    {/* 二维码是低频操作，收成图标按钮（title 说明用途），把宽度让给数据列 */}
-                    <button className="btn-sm btn-sm-default" onClick={() => setQrVehicle(v)} title="查看该车专属二维码（扫码调取档案与租赁记录）">
-                      <Icon name="qrcode" size={14} />
-                    </button>
-                    <button className="btn-sm btn-sm-default" onClick={() => handleEdit(v)}>编辑</button>
-                    <button className="btn-sm btn-sm-danger" onClick={() => handleDelete(v)}>删除</button>
-                  </div>
+                  {/* 三个操作收进「…」菜单：单操作直显、多操作省略号（全站表格改造统一规则） */}
+                  <RowActions items={[
+                    { key: 'qr', label: '二维码', icon: 'qrcode', tone: 'default', onClick: () => setQrVehicle(v) },
+                    { key: 'edit', label: '编辑', icon: 'replace', tone: 'default', onClick: () => handleEdit(v) },
+                    { key: 'delete', label: '删除', icon: 'trash', tone: 'danger', onClick: () => handleDelete(v) },
+                  ]} />
                 </td>
               </tr>
             ))}
@@ -614,7 +669,10 @@ export default function Vehicles() {
 
       {/* 分页：同类车再多也一页一页看；仅一页时不显示分页条 */}
       {!loading && total > 0 && (
-        <Pagination total={total} page={page} pageSize={PAGE_SIZE} onChange={setPage} />
+        <Pagination
+          total={total} page={page} pageSize={pageSize} onChange={setPage}
+          onPageSizeChange={n => { setPageSize(n); setPage(1) }}
+        />
       )}
 
       {loading && <div className="loading-line"><Icon name="refresh" size={18} />数据加载中…</div>}

@@ -5,7 +5,13 @@ import { useAsyncAction, errMessage } from '@/hooks/useAsyncAction'
 import Icon from '@/components/Icon'
 import type { MemberRights } from '@/types'
 
-const emptyForm = () => ({ memberLevel: '', discount: 0.9, minRentCount: '' as string, purchasePrice: '' as string, rightsDesc: '' })
+/**
+ * 折扣用**字符串**存中间态，不要存 number。
+ * 原因：输入框清空时 `parseFloat('')` 得 NaN，受控 `value={NaN}` 会让 React 报
+ * 「Received NaN for the value attribute」，而且清空后无法再输入（值恒为 NaN）。
+ * 字符串原样保存草稿，提交时再 Number() 转换（见 validate / handleSave）。
+ */
+const emptyForm = () => ({ memberLevel: '', discount: '0.9', minRentCount: '' as string, purchasePrice: '' as string, rightsDesc: '' })
 
 /**
  * 会员管理（管理员）：只做一件事——维护「会员类型」（权益表 member_rights）。
@@ -71,7 +77,7 @@ export default function Members() {
   const openEdit = (row: MemberRights) => {
     setForm({
       memberLevel: row.memberLevel,
-      discount: row.discount,
+      discount: String(row.discount),
       minRentCount: row.minRentCount != null ? String(row.minRentCount) : '',
       purchasePrice: row.purchasePrice != null ? String(row.purchasePrice) : '',
       rightsDesc: row.rightsDesc || '',
@@ -124,7 +130,7 @@ export default function Members() {
   return (
     <div className="card">
       <div className="card-title">
-        <Icon name="settlements" size={18} chip />会员类型管理
+        <Icon name="settlements" size={18} chip />会员等级与权益
         <span className="card-title-count">{list.length} 个类型</span>
         <div className="card-title-actions">
           <button className="btn-sm btn-sm-primary btn-icon-sm" onClick={openCreate}>
@@ -177,7 +183,7 @@ export default function Members() {
       {!loading && loadError && (
         <div className="empty">
           <Icon name="error" size={38} chip />
-          <span style={{ color: '#dc2626', fontWeight: 600 }}>{loadError}</span>
+          <span style={{ color: 'var(--danger-text)', fontWeight: 600 }}>{loadError}</span>
           <button className="btn-sm btn-sm-default" style={{ marginTop: 10 }} onClick={handleRefresh} disabled={refreshAct.pending}>
             <Icon name="refresh" size={14} />{refreshAct.pending ? '重试中…' : '重新加载'}
           </button>
@@ -232,7 +238,7 @@ export default function Members() {
                   <input
                     type="number" step="0.05" min="0.5" max="1"
                     value={form.discount}
-                    onChange={e => setForm({ ...form, discount: parseFloat(e.target.value) })}
+                    onChange={e => setForm({ ...form, discount: e.target.value })}
                   />
                 </div>
                 <div className="form-group">

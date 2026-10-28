@@ -27,14 +27,19 @@ function pageNumbers(current: number, total: number): (number | '…')[] {
  * 分页条：同类车辆（或订单/客户）数量很多时，列表不可能一次全展示，
  * 用分页把「信息量」切成可消化的页。受控组件：page/pageSize 由父级持有，
  * 父级据此切片数据；这里只负责翻页交互与页码展示。
+ *
+ * 每页条数可选（onPageSizeChange 存在时才显示）：对账时要一眼扫完几十行，
+ * 固定 10 条得翻三四页，给个 20/50/100 的出口。
  */
 export default function Pagination({
-  total, page, pageSize, onChange,
+  total, page, pageSize, onChange, onPageSizeChange, pageSizes = [10, 20, 50, 100],
 }: {
   total: number
   page: number
   pageSize: number
   onChange: (page: number) => void
+  onPageSizeChange?: (pageSize: number) => void
+  pageSizes?: number[]
 }) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   if (total === 0) return null
@@ -44,7 +49,9 @@ export default function Pagination({
 
   return (
     <div className="pagination">
-      <span className="pagination-total">共 {total} 条 · 第 {from}–{to} 条</span>
+      <span className="pagination-total">
+        共 {total} 条 · 第 {from}–{to} 条
+      </span>
       <div className="pagination-pages">
         <button
           className="pagination-btn"
@@ -76,6 +83,17 @@ export default function Pagination({
         >
           <Icon name="chevron-right" size={14} />
         </button>
+        {onPageSizeChange && (
+          <label className="pagination-size">
+            <select
+              value={pageSize}
+              onChange={e => onPageSizeChange(Number(e.target.value))}
+              aria-label="每页条数"
+            >
+              {pageSizes.map(n => <option key={n} value={n}>{n} 条/页</option>)}
+            </select>
+          </label>
+        )}
       </div>
     </div>
   )

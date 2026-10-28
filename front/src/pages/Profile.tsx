@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, type CSSProperties } from 'react'
 import { authApi, customerApi } from '@/api'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
@@ -105,6 +105,10 @@ export default function Profile() {
   const [pwdForm, setPwdForm] = useState({ oldPassword: '', newPassword: '', confirmPassword: '' })
   const [pwdErrors, setPwdErrors] = useState<Record<string, string>>({})
   const [pwdSaving, setPwdSaving] = useState(false)
+  /** 三个密码框各自的「小眼睛」：分别记，避免点一个把另外两个也点亮 */
+  const [pwdShow, setPwdShow] = useState({ oldPassword: false, newPassword: false, confirmPassword: false })
+  /** 身份证号的明文/遮字开关：顾客改自己的证件号时默认可见（自己核对方便），点眼睛转成圆点 */
+  const [idShow, setIdShow] = useState(true)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
   /** 头像版本号：上传成功后自增，用来破浏览器缓存并清除组件内的失败标记 */
   const [avatarVer, setAvatarVer] = useState(0)
@@ -266,12 +270,26 @@ export default function Profile() {
               </div>
               <div className="form-group">
                 <label>身份证号 <span className="req">*</span></label>
-                <input
-                  className={errors.idCard ? 'has-error' : ''}
-                  value={form.idCard}
-                  onChange={e => { setForm({ ...form, idCard: e.target.value }); setErrors({ ...errors, idCard: '' }) }}
-                  placeholder="18 位身份证号"
-                />
+                {/* 身份证号带「小眼睛」：默认可见便于核对，点一下转成圆点遮字（店员在旁时不泄露） */}
+                <div className={`input-affix ${errors.idCard ? 'has-error' : ''}`}>
+                  <input
+                    value={form.idCard}
+                    onChange={e => { setForm({ ...form, idCard: e.target.value }); setErrors({ ...errors, idCard: '' }) }}
+                    placeholder="18 位身份证号"
+                    spellCheck={false}
+                    style={!idShow ? { WebkitTextSecurity: 'disc' } as CSSProperties : undefined}
+                  />
+                  <button
+                    type="button"
+                    className="input-affix-btn"
+                    onClick={() => setIdShow(v => !v)}
+                    tabIndex={-1}
+                    title={idShow ? '隐藏身份证号' : '显示身份证号'}
+                    aria-label={idShow ? '隐藏身份证号' : '显示身份证号'}
+                  >
+                    <Icon name={idShow ? 'eye-off' : 'eye'} size={16} />
+                  </button>
+                </div>
                 {errors.idCard && <div className="field-error">{errors.idCard}</div>}
               </div>
               <div className="form-group">
@@ -304,38 +322,59 @@ export default function Profile() {
             <div className="modal-body">
               <div className="form-group">
                 <label>原密码 <span className="req">*</span></label>
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  className={pwdErrors.oldPassword ? 'has-error' : ''}
-                  value={pwdForm.oldPassword}
-                  onChange={e => { setPwdForm({ ...pwdForm, oldPassword: e.target.value }); setPwdErrors({ ...pwdErrors, oldPassword: '' }) }}
-                  placeholder="请输入当前登录密码"
-                />
+                <div className={`input-affix ${pwdErrors.oldPassword ? 'has-error' : ''}`}>
+                  <input
+                    type={pwdShow.oldPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={pwdForm.oldPassword}
+                    onChange={e => { setPwdForm({ ...pwdForm, oldPassword: e.target.value }); setPwdErrors({ ...pwdErrors, oldPassword: '' }) }}
+                    placeholder="请输入当前登录密码"
+                  />
+                  <button type="button" className="input-affix-btn" tabIndex={-1}
+                    onClick={() => setPwdShow(s => ({ ...s, oldPassword: !s.oldPassword }))}
+                    title={pwdShow.oldPassword ? '隐藏密码' : '显示密码'}
+                    aria-label={pwdShow.oldPassword ? '隐藏密码' : '显示密码'}>
+                    <Icon name={pwdShow.oldPassword ? 'eye-off' : 'eye'} size={16} />
+                  </button>
+                </div>
                 {pwdErrors.oldPassword && <div className="field-error">{pwdErrors.oldPassword}</div>}
               </div>
               <div className="form-group">
                 <label>新密码 <span className="req">*</span></label>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  className={pwdErrors.newPassword ? 'has-error' : ''}
-                  value={pwdForm.newPassword}
-                  onChange={e => { setPwdForm({ ...pwdForm, newPassword: e.target.value }); setPwdErrors({ ...pwdErrors, newPassword: '' }) }}
-                  placeholder="至少 8 位，同时包含字母和数字"
-                />
+                <div className={`input-affix ${pwdErrors.newPassword ? 'has-error' : ''}`}>
+                  <input
+                    type={pwdShow.newPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    value={pwdForm.newPassword}
+                    onChange={e => { setPwdForm({ ...pwdForm, newPassword: e.target.value }); setPwdErrors({ ...pwdErrors, newPassword: '' }) }}
+                    placeholder="至少 8 位，同时包含字母和数字"
+                  />
+                  <button type="button" className="input-affix-btn" tabIndex={-1}
+                    onClick={() => setPwdShow(s => ({ ...s, newPassword: !s.newPassword }))}
+                    title={pwdShow.newPassword ? '隐藏密码' : '显示密码'}
+                    aria-label={pwdShow.newPassword ? '隐藏密码' : '显示密码'}>
+                    <Icon name={pwdShow.newPassword ? 'eye-off' : 'eye'} size={16} />
+                  </button>
+                </div>
                 {pwdErrors.newPassword && <div className="field-error">{pwdErrors.newPassword}</div>}
               </div>
               <div className="form-group">
                 <label>确认新密码 <span className="req">*</span></label>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  className={pwdErrors.confirmPassword ? 'has-error' : ''}
-                  value={pwdForm.confirmPassword}
-                  onChange={e => { setPwdForm({ ...pwdForm, confirmPassword: e.target.value }); setPwdErrors({ ...pwdErrors, confirmPassword: '' }) }}
-                  placeholder="再次输入新密码"
-                />
+                <div className={`input-affix ${pwdErrors.confirmPassword ? 'has-error' : ''}`}>
+                  <input
+                    type={pwdShow.confirmPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    value={pwdForm.confirmPassword}
+                    onChange={e => { setPwdForm({ ...pwdForm, confirmPassword: e.target.value }); setPwdErrors({ ...pwdErrors, confirmPassword: '' }) }}
+                    placeholder="再次输入新密码"
+                  />
+                  <button type="button" className="input-affix-btn" tabIndex={-1}
+                    onClick={() => setPwdShow(s => ({ ...s, confirmPassword: !s.confirmPassword }))}
+                    title={pwdShow.confirmPassword ? '隐藏密码' : '显示密码'}
+                    aria-label={pwdShow.confirmPassword ? '隐藏密码' : '显示密码'}>
+                    <Icon name={pwdShow.confirmPassword ? 'eye-off' : 'eye'} size={16} />
+                  </button>
+                </div>
                 {pwdErrors.confirmPassword && <div className="field-error">{pwdErrors.confirmPassword}</div>}
               </div>
             </div>

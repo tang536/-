@@ -81,6 +81,10 @@ interface FormState {
   bankNotifyUrl: string
   /** 退款地址：非必填，留空时由支付网关推导（/pay → /refund） */
   bankRefundUrl: string
+  /** 查单地址：非必填，留空时由支付网关推导（/pay → /query） */
+  bankQueryUrl: string
+  /** 余额查询地址：非必填，留空时由支付网关推导（/pay → /balance） */
+  bankBalanceUrl: string
 
   notifyUrl: string
   returnUrl: string
@@ -95,13 +99,23 @@ const EMPTY_FORM: FormState = {
   wechatPlatformKey: '', wechatPayMode: 'h5',
   bankEnabled: false,
   bankMerchantNo: '', bankGateway: '', bankSignKey: '', bankNotifyUrl: '', bankRefundUrl: '',
+  bankQueryUrl: '', bankBalanceUrl: '',
   notifyUrl: '', returnUrl: '',
 }
 
-/** 折叠卡展开状态：支付宝卡片默认展开（它是唯一已接入的通道），其余折叠 */
+/** 折叠卡展开状态：三张通道卡一律默认折叠，进页面先看到三条摘要，要用哪条再展开 */
 type SectionKey = 'prod' | 'wechat' | 'bank'
 type OpenMap = Record<SectionKey, boolean>
-const ALL_CLOSED: OpenMap = { prod: true, wechat: false, bank: false }
+const ALL_CLOSED: OpenMap = { prod: false, wechat: false, bank: false }
+
+/** 外部渠道标识（BalanceDto.Channel）→ 本面板的卡片键 */
+const FOCUS_TO_SECTION: Record<string, SectionKey> = { alipay: 'prod', wechat: 'wechat', bank: 'bank' }
+
+/** 只展开指定的一张卡，其余收起：「去绑定」跳进来时指哪打哪，不让无关表单占屏 */
+function onlyOpen(key?: SectionKey): OpenMap {
+  if (!key) return ALL_CLOSED
+  return { prod: key === 'prod', wechat: key === 'wechat', bank: key === 'bank' }
+}
 
 /** 弹窗类型：null = 未打开；其余对应各通道的配置弹窗 */
 type ConfigModal = 'alipay' | 'wechat' | 'bank' | null
@@ -132,40 +146,113 @@ function CopyBtn({ text, label = '复制' }: { text: string; label?: string }) {
       setTimeout(() => setDone(false), 2000)
     } catch { /* 复制失败时保留选中态，用户可手动复制 */ }
   }
+  // 改成密码框/工具栏那种「方形图标按钮」：默认显示复制图标，点完变成功勾，
+  // 不再带「复制应用公钥」长文字——具体动作靠 title/aria-label 提示。
   return (
-    <button type="button" className="link-btn" onClick={doCopy}>
-      <Icon name={done ? 'success' : 'copy'} size={13} />{done ? '已复制' : label}
+    <button
+      type="button"
+      className="icon-btn"
+      onClick={doCopy}
+      title={done ? '已复制' : label}
+      aria-label={done ? '已复制' : label}
+    >
+      <Icon name={done ? 'success' : 'copy'} size={15} />
     </button>
   )
 }
 
-/** 密钥输入框：textarea 默认以圆点遮字，点「显示」才明文，避免一大串私钥糊在屏幕上 */
+/**
+ * 密钥输入框：默认圆点遮字，点「显示」才明文。
+ *
+ * 两个容易踩的坑，这版都处理了：
+ *  ① 已保存的密钥后端只回脱敏串，输入框里本来是空的——此时点「显示」什么都不会出现，
+ *     看起来就像按钮坏了。所以第一次点「显示」会按 field 去后端取**这一项**的明文填进来，
+ *     管理员才能真正「看着已有配置改」，而不是只能整段重贴。
+ *  ② 光能填不能删等于配置改不回去。加「清空此项」，把值置为后端约定的 CLEAR，
+ *     保存时后端会把该项抹掉（留空仍然表示「保持不变」，两者语义不能混）。
+ */
 function SecretInput({
-  value, onChange, placeholder, isSet, rows = 3,
+  value, onChange, placeholder, isSet, rows = 3, field,
 }: {
   value: string
   onChange: (v: string) => void
   placeholder?: string
   isSet?: boolean
   rows?: number
+  /** 后端白名单字段名：prodPrivateKey / sandboxAlipayPublicKey / wechatPrivateKey ... */
+  field?: string
 }) {
   const [show, setShow] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [hint, setHint] = useState('')
+  const cleared = value === 'CLEAR'
+
+  const reveal = async () => {
+    if (show) { setShow(false); return }
+    // 故意只在「输入框为空 + 且确实存过」时才去拉明文：
+    // 已经手动输入了新值时，点显示只是切换遮字，不该拿服务端的旧值覆盖用户正在编辑的内容。
+    if (!value && isSet && field) {
+      setLoading(true)
+      setHint('')
+      try {
+        const res: any = await paymentApi.secret(field)
+        const plain = res?.data?.value ?? ''
+        if (plain) {
+          onChange(plain)
+          setHint('已载入服务端保存的明文，可直接修改后保存')
+        } else {
+          setHint('服务端没有保存这一项')
+        }
+        setShow(true)
+      } catch (e: any) {
+        setHint(e?.message || '读取失败，请检查权限或稍后重试')
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+    setShow(true)
+  }
+
   return (
     <div className="secret-input">
       <textarea
         className="field-textarea mono"
         rows={rows}
-        value={value}
+        value={cleared ? '' : value}
         spellCheck={false}
-        style={!show ? { WebkitTextSecurity: 'disc' } as React.CSSProperties : undefined}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
+        style={!show && !cleared ? { WebkitTextSecurity: 'disc' } as React.CSSProperties : undefined}
+        onChange={e => { setHint(''); onChange(e.target.value) }}
+        placeholder={cleared ? '已标记清空，保存后生效' : placeholder}
       />
       <div className="secret-input-foot">
-        <button type="button" className="link-btn" onClick={() => setShow(s => !s)}>
-          <Icon name={show ? 'close' : 'search'} size={13} />{show ? '隐藏' : '显示'}
+        {/* 显示/隐藏：改用密码框那种「小眼睛」图标切换——睁眼=明文、闭眼=遮字 */}
+        <button
+          type="button"
+          className="eye-toggle"
+          onClick={reveal}
+          disabled={loading}
+          title={show ? '隐藏' : '显示'}
+          aria-label={show ? '隐藏' : '显示'}
+        >
+          {loading
+            ? <Icon name="refresh" size={15} className="spin" />
+            : <Icon name={show ? 'eye-off' : 'eye'} size={16} />}
         </button>
-        {isSet && <span className="secret-set-tag"><Icon name="shield" size={13} />已保存（留空不修改）</span>}
+        {isSet && !cleared && (
+          <button type="button" className="icon-btn is-danger" onClick={() => { setShow(false); setHint(''); onChange('CLEAR') }}
+            title="清空此项" aria-label="清空此项">
+            <Icon name="trash" size={15} />
+          </button>
+        )}
+        {cleared && (
+          <button type="button" className="icon-btn" onClick={() => { setHint(''); onChange('') }}
+            title="撤销清空" aria-label="撤销清空">
+            <Icon name="refresh" size={15} />
+          </button>
+        )}
+        {isSet && !cleared && !hint && <span className="secret-set-tag"><Icon name="shield" size={13} />已保存（留空不修改）</span>}
+        {hint && <span className="secret-hint">{hint}</span>}
       </div>
     </div>
   )
@@ -177,7 +264,7 @@ function SecretInput({
  * 「卡片间距、对齐方式与层级一致」——否则各写一遍迟早会漂移。
  */
 function PaySection({
-  icon, title, note, badge, open, onToggle, children,
+  icon, title, note, badge, open, onToggle, action, children,
 }: {
   icon: 'vehicles' | 'shield' | 'config' | 'lock' | 'orders' | 'settlements'
   title: string
@@ -185,30 +272,168 @@ function PaySection({
   badge?: ReactNode
   open: boolean
   onToggle: () => void
+  /** 卡片头右侧的动作（如「一键自检」）：独立按钮，折叠时也可点，不触发展开/折叠 */
+  action?: ReactNode
   children: ReactNode
 }) {
   return (
     <div className={`pay-section${open ? ' is-open' : ''}`}>
-      <button
-        type="button"
-        className="pay-section-head"
-        onClick={onToggle}
-        aria-expanded={open}
-        title={open ? '折叠' : '展开'}
-      >
-        <span className={`pay-section-chevron${open ? ' is-open' : ''}`}>
-          <Icon name="chevron-right" size={15} />
-        </span>
-        <span className="pay-section-title"><Icon name={icon} size={16} chip />{title}</span>
-        {note && <span className="pay-section-note">{note}</span>}
-        {badge && <span className="pay-section-badge">{badge}</span>}
-      </button>
+      <div className="pay-section-head">
+        {/* 整行可点仍保留：折叠箭头 + 标题 + 说明 + 徽标放进一个占满剩余宽度的按钮里 */}
+        <button
+          type="button"
+          className="pay-section-toggle"
+          onClick={onToggle}
+          aria-expanded={open}
+          title={open ? '折叠' : '展开'}
+        >
+          <span className={`pay-section-chevron${open ? ' is-open' : ''}`}>
+            <Icon name="chevron-right" size={15} />
+          </span>
+          <span className="pay-section-title"><Icon name={icon} size={16} chip />{title}</span>
+          {note && <span className="pay-section-note">{note}</span>}
+          {badge && <span className="pay-section-badge">{badge}</span>}
+        </button>
+        {/* 自检等动作放在头部并独立成按钮：不展开也能操作，且不误触折叠 */}
+        {action && <div className="pay-section-action">{action}</div>}
+      </div>
       {open && <div className="pay-section-body">{children}</div>}
     </div>
   )
 }
 
-export default function PayConfigPanel() {
+/** 自检标题映射（按通道） */
+const CHECK_TITLE: Record<string, string> = {
+  alipay: '支付宝接线自检',
+  wechat: '微信支付接线自检',
+  bank: '银行卡支付接线自检',
+}
+
+/**
+ * 接线自检结果弹窗。三个通道共用同一外壳，按 check 的字段差异渲染各自内容：
+ *   · 支付宝——额外给出「本地私钥推导出的应用公钥」诊断表与重新上传步骤；
+ *   · 微信/银行卡——给出结论说明 + 脱敏后的原始响应。
+ * 之所以收进弹窗而非铺在页面上：自检是一次性排查动作，结果信息密度高，
+ * 常驻页面会把「现状摘要」挤乱；按需弹出更贴合「先答问题、再填表单」的结构。
+ */
+function CheckModal({ channel, check, onClose }: { channel: string; check: any; onClose: () => void }) {
+  const accepted = !!check.signatureAccepted
+  const isMock = check.mode === '模拟'
+  const skipped = check.enabled === false && !!check.channelName
+  const ok = accepted || isMock || skipped
+  const verdict = accepted ? '接线正常' : skipped ? '未启用 / 未配置' : isMock ? '模拟模式' : '签名未通过'
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-lg" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span>{CHECK_TITLE[channel] || '接线自检'}</span>
+          <button className="close-btn" onClick={onClose}><Icon name="close" size={15} /></button>
+        </div>
+        <div className="modal-body">
+          <div className={`callout ${ok ? 'callout-info' : 'callout-warning'}`}>
+            <Icon name={ok ? 'info' : 'warning'} size={18} chip />
+            <div className="callout-body">
+              <div className="check-head">
+                <strong>{verdict}</strong>
+                {check.mode && <><span className="check-head-sep">·</span><span>{check.mode}模式</span></>}
+                {check.channelName && <><span className="check-head-sep">·</span><span>{check.channelName}</span></>}
+                {check.appId && <><span className="check-head-sep">·</span><span className="mono small">AppId {check.appId}</span></>}
+                {check.merchantId && <><span className="check-head-sep">·</span><span className="mono small">{check.merchantId}</span></>}
+                {!accepted && channel === 'alipay' && check.mode && check.mode !== '模拟' && (
+                  <><span className="check-head-sep">·</span><span className="check-verdict">沙箱后台登记的应用公钥 ≠ 本地私钥</span></>
+                )}
+                {!accepted && channel === 'wechat' && check.enabled && check.configured && (
+                  <><span className="check-head-sep">·</span><span className="check-verdict">签名或证书序列号不配对</span></>
+                )}
+                {!accepted && channel === 'bank' && check.enabled && check.configured && (
+                  <><span className="check-head-sep">·</span><span className="check-verdict">签名密钥不配对或报文构造不符</span></>
+                )}
+                {!isMock && channel === 'alipay' && check.configured === false && (
+                  <><span className="check-head-sep">·</span><span className="check-verdict">凭证不可用：私钥无法解析，实际支付会失败</span></>
+                )}
+              </div>
+
+              {/* 微信/银行卡：签名算法/私钥格式（支付宝走下面的诊断表，不重复） */}
+              {check.keyFormat && (
+                <div className="check-diag">
+                  <div className="check-diag-row">
+                    <span className="check-diag-key">签名格式</span>
+                    <span className="check-diag-val mono">{check.keyFormat}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* 支付宝失败时的诊断对比表：把「本地私钥推导出的公钥」摆出来核对 */}
+              {check.expectedAppPublicKey && !accepted && check.mode !== '模拟' && (
+                <div className="check-diag">
+                  <div className="check-diag-row">
+                    <span className="check-diag-key">本地私钥格式</span>
+                    <span className="check-diag-val mono">{check.privateKeyFormat || '—'}</span>
+                  </div>
+                  <div className="check-diag-row">
+                    <span className="check-diag-key">本地公钥指纹</span>
+                    <span className="check-diag-val mono strong-val">{check.expectedAppPublicKeyFingerprint || '—'}</span>
+                  </div>
+                  <div className="check-diag-row">
+                    <span className="check-diag-key">需要去后台登记</span>
+                    <span className="check-diag-val">下方这串「应用公钥」（不是「支付宝公钥」）</span>
+                  </div>
+                </div>
+              )}
+
+              {check.message && <div className="check-msg">{check.message}</div>}
+
+              {/* 应用公钥：无论成败都展示，成功时也可复制留档；这是排查不配对的第一手依据 */}
+              {check.expectedAppPublicKey && (
+                <div className="check-key-box">
+                  <div className="check-key-title">
+                    <Icon name={accepted ? 'success' : 'warning'} size={14} />
+                    {accepted ? '当前私钥对应的应用公钥（已配对成功，可复制留档）' : '沙箱后台登记的应用公钥，应等于这一把'}
+                  </div>
+                  <div className="check-key-bar">
+                    <span className="mono small">
+                      {check.expectedAppPublicKey.length} 字符
+                      {check.expectedAppPublicKeyFingerprint && ` · 指纹 ${check.expectedAppPublicKeyFingerprint}`}
+                    </span>
+                    <CopyBtn text={check.expectedAppPublicKey} label="复制应用公钥" />
+                  </div>
+                  <textarea
+                    className="field-textarea mono check-key-text"
+                    rows={4}
+                    readOnly
+                    value={check.expectedAppPublicKey}
+                    onFocus={e => e.currentTarget.select()}
+                  />
+                  {!accepted && (
+                    <ol className="check-steps">
+                      <li>点上方「复制应用公钥」（<strong>别手工选中</strong>，392 字符极易漏字）</li>
+                      <li>沙箱后台 →「接口加签方式」→ 选<strong>「自定义密钥」</strong></li>
+                      <li>只粘进 <strong>「应用公钥」</strong>那一栏（<strong>不要</strong>动「支付宝公钥」）→ 保存</li>
+                      <li>回本页重新点「一键连接自检」，直到显示「接线正常」</li>
+                    </ol>
+                  )}
+                </div>
+              )}
+
+              {check.rawResponse && (
+                <details className="check-raw-details">
+                  <summary>查看原始响应</summary>
+                  <code>{check.rawResponse}</code>
+                </details>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn-sm btn-sm-default" onClick={onClose}>关闭</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function PayConfigPanel({ focusChannel }: { focusChannel?: string }) {
   const { toast, confirm } = useUI()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -217,9 +442,22 @@ export default function PayConfigPanel() {
   const [view, setView] = useState<any>(null)
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [check, setCheck] = useState<any>(null)
-  const [open, setOpen] = useState<OpenMap>(ALL_CLOSED)
+  /** 微信 / 银行卡自检结果（各自独立，避免互相覆盖） */
+  const [wechatCheck, setWechatCheck] = useState<any>(null)
+  const [bankCheck, setBankCheck] = useState<any>(null)
+  const [checkingWechat, setCheckingWechat] = useState(false)
+  const [checkingBank, setCheckingBank] = useState(false)
+  /** 当前弹出的自检结果属于哪个通道（null = 都没弹） */
+  const [checkChannel, setCheckChannel] = useState<'alipay' | 'wechat' | 'bank' | null>(null)
+  const [open, setOpen] = useState<OpenMap>(() => onlyOpen(FOCUS_TO_SECTION[focusChannel || '']))
   /** 当前打开哪个配置弹窗（null = 都关着） */
   const [modal, setModal] = useState<ConfigModal>(null)
+
+  // 从余额卡「去绑定」带 channel 跳进来（或页内改了渠道）时，只展开目标渠道
+  useEffect(() => {
+    const key = FOCUS_TO_SECTION[focusChannel || '']
+    if (key) setOpen(onlyOpen(key))
+  }, [focusChannel])
 
   const toggle = (key: SectionKey) => setOpen(prev => ({ ...prev, [key]: !prev[key] }))
 
@@ -260,8 +498,13 @@ export default function PayConfigPanel() {
         bankSignKey: '',
         bankNotifyUrl: d.bankNotifyUrl || '',
         bankRefundUrl: d.bankRefundUrl || '',
-        notifyUrl: d.notifyUrl || '',
-        returnUrl: d.returnUrl || '',
+        bankQueryUrl: d.bankQueryUrl || '',
+        bankBalanceUrl: d.bankBalanceUrl || '',
+        // 回调地址留空 = 自动跟随当前访问源（推荐）。后端会带 auto 标记：
+        // 库里没显式配置时不能把兜底出来的临时 IP 回填进输入框，否则管理员一点保存
+        // 就把它固化成真实配置，换网络后回跳/通知全指错地方。
+        notifyUrl: d.notifyUrlAuto ? '' : (d.notifyUrl || ''),
+        returnUrl: d.returnUrlAuto ? '' : (d.returnUrl || ''),
       })
     } catch (e: any) {
       toast(e?.message || '支付配置加载失败', 'error')
@@ -275,10 +518,15 @@ export default function PayConfigPanel() {
   const handleSave = async () => {
     // 生产开关打开但三件套没齐 → 提前说清会降级，避免管理员以为已经生效
     if (form.prodEnabled) {
+      // 已标记清空（CLEAR）等于没有，不能因为「库里原来有」就当作齐全
+      const usable = (raw: string, isSet?: boolean) => {
+        const v = raw.trim()
+        return v === 'CLEAR' ? false : !!v || !!isSet
+      }
       const prodReady =
         !!form.prodAppId.trim() &&
-        (!!form.prodPrivateKey.trim() || !!view?.prodPrivateKeySet) &&
-        (!!form.prodAlipayPublicKey.trim() || !!view?.prodAlipayPublicKeySet)
+        usable(form.prodPrivateKey, view?.prodPrivateKeySet) &&
+        usable(form.prodAlipayPublicKey, view?.prodAlipayPublicKeySet)
       if (!prodReady) {
         const go = await confirm({
           title: '生产凭证不完整',
@@ -312,22 +560,30 @@ export default function PayConfigPanel() {
         bankGateway: form.bankGateway.trim(),
         bankNotifyUrl: form.bankNotifyUrl.trim(),
         bankRefundUrl: form.bankRefundUrl.trim(),
+        bankQueryUrl: form.bankQueryUrl.trim(),
+        bankBalanceUrl: form.bankBalanceUrl.trim(),
         notifyUrl: form.notifyUrl.trim(),
         returnUrl: form.returnUrl.trim(),
       }
-      if (form.prodPrivateKey.trim()) payload.prodPrivateKey = form.prodPrivateKey.trim()
-      if (form.prodAlipayPublicKey.trim()) payload.prodAlipayPublicKey = form.prodAlipayPublicKey.trim()
-      if (form.sandboxPrivateKey.trim()) payload.sandboxPrivateKey = form.sandboxPrivateKey.trim()
-      if (form.sandboxAlipayPublicKey.trim()) payload.sandboxAlipayPublicKey = form.sandboxAlipayPublicKey.trim()
-      if (form.wechatApiV3Key.trim()) payload.wechatApiV3Key = form.wechatApiV3Key.trim()
-      if (form.wechatPrivateKey.trim()) payload.wechatPrivateKey = form.wechatPrivateKey.trim()
-      if (form.wechatPlatformKey.trim()) payload.wechatPlatformKey = form.wechatPlatformKey.trim()
-      if (form.bankSignKey.trim()) payload.bankSignKey = form.bankSignKey.trim()
+      // 密钥项：有值就提交（新内容，或 "CLEAR" 清空指令）；留空 = 后端保持原值
+      const secretFields = [
+        'prodPrivateKey', 'prodAlipayPublicKey',
+        'sandboxPrivateKey', 'sandboxAlipayPublicKey',
+        'wechatApiV3Key', 'wechatPrivateKey', 'wechatPlatformKey',
+        'bankSignKey',
+      ] as const
+      for (const f of secretFields) {
+        const v = (form[f] || '').trim()
+        if (v) payload[f] = v
+      }
 
       const res: any = await paymentApi.saveConfig(payload)
       toast(res?.message || '支付凭证已保存', 'success')
       await load()
       setCheck(null)
+      setWechatCheck(null)
+      setBankCheck(null)
+      setCheckChannel(null)
       setModal(null)
     } catch (e: any) {
       toast(e?.message || '保存失败', 'error')
@@ -341,6 +597,7 @@ export default function PayConfigPanel() {
     try {
       const res: any = await paymentApi.selfCheck()
       setCheck(res?.data || null)
+      setCheckChannel('alipay')
       if (res?.data?.mode) await load()
     } catch (e: any) {
       toast(e?.message || '自检失败', 'error')
@@ -349,8 +606,33 @@ export default function PayConfigPanel() {
     }
   }
 
+  const handleWechatCheck = async () => {
+    setCheckingWechat(true)
+    try {
+      const res: any = await paymentApi.selfCheckWechat()
+      setWechatCheck(res?.data || null)
+      setCheckChannel('wechat')
+    } catch (e: any) {
+      toast(e?.message || '微信自检失败', 'error')
+    } finally {
+      setCheckingWechat(false)
+    }
+  }
+
+  const handleBankCheck = async () => {
+    setCheckingBank(true)
+    try {
+      const res: any = await paymentApi.selfCheckBank()
+      setBankCheck(res?.data || null)
+      setCheckChannel('bank')
+    } catch (e: any) {
+      toast(e?.message || '银行卡自检失败', 'error')
+    } finally {
+      setCheckingBank(false)
+    }
+  }
+
   const mode = view?.mode || '模拟'
-  const meta = MODE_META[mode] || MODE_META['模拟']
 
   if (loading) {
     return <div className="loading-line"><Icon name="refresh" size={18} />支付配置加载中…</div>
@@ -376,98 +658,19 @@ export default function PayConfigPanel() {
 
   return (
     <>
-      {/* ── ① 当前生效模式 ── */}
-      <div className="mode-banner">
-        <div className="mode-banner-left">
-          <span className={`mode-badge ${meta.tone}`}><Icon name={meta.icon} size={15} chip />{meta.label}</span>
-          <div className="mode-reason">{view?.modeReason || '—'}</div>
-        </div>
-        <div className="mode-banner-right">
-          <button className="btn-sm btn-sm-primary" onClick={handleSelfCheck} disabled={checking}>
-            <Icon name={checking ? 'refresh' : 'shield'} size={14} />{checking ? '检测中…' : '一键连接自检'}
-          </button>
-        </div>
-      </div>
+      {/* 顶部原有的「当前生效模式」横幅（沙箱支付 / 支付宝测试环境 等标签 + 原因说明）
+          已移除：模式状态改由每张卡片头部的徽标（生产已启用 / 待上线 …）与自检结果表达，
+          不必再在页首重复一块横幅。 */}
 
-      {/* ── 自检结果 ── */}
-      {check && (
-        <div className={`callout ${check.signatureAccepted || check.mode === '模拟' ? 'callout-info' : 'callout-warning'}`}>
-          <Icon name={check.signatureAccepted || check.mode === '模拟' ? 'info' : 'warning'} size={18} chip />
-          <div className="callout-body">
-            <div className="check-head">
-              <strong>{check.signatureAccepted || check.mode === '模拟' ? '接线正常' : '签名未通过'}</strong>
-              <span className="check-head-sep">·</span>
-              <span>{check.mode}模式</span>
-              {check.appId && <><span className="check-head-sep">·</span><span className="mono small">AppId {check.appId}</span></>}
-              {!check.signatureAccepted && check.mode !== '模拟' && (
-                <><span className="check-head-sep">·</span>
-                <span className="check-verdict">沙箱后台登记的应用公钥 ≠ 本地私钥</span></>
-              )}
-            </div>
-
-            {/*
-              诊断对比表：把「本地私钥推导出的公钥」摆出来，让管理员一眼比对上/下两行。
-              失败时只提示"不配对"是不够的——管理员需要知道「到底该把哪一串填到哪里」。
-            */}
-            {check.expectedAppPublicKey && !check.signatureAccepted && check.mode !== '模拟' && (
-              <div className="check-diag">
-                <div className="check-diag-row">
-                  <span className="check-diag-key">本地私钥格式</span>
-                  <span className="check-diag-val mono">{check.privateKeyFormat || '—'}</span>
-                </div>
-                <div className="check-diag-row">
-                  <span className="check-diag-key">本地公钥指纹</span>
-                  <span className="check-diag-val mono strong-val">{check.expectedAppPublicKeyFingerprint || '—'}</span>
-                </div>
-                <div className="check-diag-row">
-                  <span className="check-diag-key">需要去后台登记</span>
-                  <span className="check-diag-val">下方这串「应用公钥」（不是「支付宝公钥」）</span>
-                </div>
-              </div>
-            )}
-
-            {check.signatureAccepted && <div className="check-msg">{check.message}</div>}
-
-            {/* 应用公钥：无论成败都展示，成功时也可复制留档；这是排查不配对的第一手依据 */}
-            {check.expectedAppPublicKey && (
-              <div className="check-key-box">
-                <div className="check-key-title">
-                  <Icon name={check.signatureAccepted ? 'success' : 'warning'} size={14} />
-                  {check.signatureAccepted ? '当前私钥对应的应用公钥（已配对成功，可复制留档）' : '沙箱后台登记的应用公钥，应等于这一把'}
-                </div>
-                <div className="check-key-bar">
-                  <span className="mono small">
-                    {check.expectedAppPublicKey.length} 字符
-                    {check.expectedAppPublicKeyFingerprint && ` · 指纹 ${check.expectedAppPublicKeyFingerprint}`}
-                  </span>
-                  <CopyBtn text={check.expectedAppPublicKey} label="复制应用公钥" />
-                </div>
-                <textarea
-                  className="field-textarea mono check-key-text"
-                  rows={4}
-                  readOnly
-                  value={check.expectedAppPublicKey}
-                  onFocus={e => e.currentTarget.select()}
-                />
-                {!check.signatureAccepted && (
-                  <ol className="check-steps">
-                    <li>点上方「复制应用公钥」（<strong>别手工选中</strong>，392 字符极易漏字）</li>
-                    <li>沙箱后台 →「接口加签方式」→ 选<strong>「自定义密钥」</strong></li>
-                    <li>只粘进 <strong>「应用公钥」</strong>那一栏（<strong>不要</strong>动「支付宝公钥」）→ 保存</li>
-                    <li>回本页重新点「一键连接自检」，直到显示「接线正常」</li>
-                  </ol>
-                )}
-              </div>
-            )}
-
-            {check.rawResponse && (
-              <details className="check-raw-details">
-                <summary>查看支付宝原始响应</summary>
-                <code>{check.rawResponse}</code>
-              </details>
-            )}
-          </div>
-        </div>
+      {/* ── 自检结果（弹窗形式，不常驻页面） ── */}
+      {checkChannel === 'alipay' && check && (
+        <CheckModal channel="alipay" check={check} onClose={() => setCheckChannel(null)} />
+      )}
+      {checkChannel === 'wechat' && wechatCheck && (
+        <CheckModal channel="wechat" check={wechatCheck} onClose={() => setCheckChannel(null)} />
+      )}
+      {checkChannel === 'bank' && bankCheck && (
+        <CheckModal channel="bank" check={bankCheck} onClose={() => setCheckChannel(null)} />
       )}
 
       <div className="callout callout-info">
@@ -479,15 +682,25 @@ export default function PayConfigPanel() {
       </div>
 
       {/* ── ② 支付宝（生产 / 沙箱 / 回调 三类参数收在同一张卡） ── */}
+      {/* 状态标签必须与「一键自检」同源（都用后端返回的 mode），
+          否则会出现「卡片按表单开关说生产、自检按实际凭证说降级」的自相矛盾 */}
       <PaySection
         icon="vehicles"
         title="支付宝"
         note="已接入真实通道"
-        badge={form.prodEnabled
+        badge={mode === '生产'
           ? <span className="status-tag status-success">生产已启用</span>
-          : <span className="status-tag status-default">生产未启用</span>}
+          : form.prodEnabled
+            ? <span className="status-tag status-warning">开关已开 · 已降级</span>
+            : <span className="status-tag status-default">生产未启用</span>}
         open={open.prod}
         onToggle={() => toggle('prod')}
+        action={
+          <button className="btn-sm btn-sm-primary btn-icon-sm" onClick={handleSelfCheck} disabled={checking} title="一键连接自检">
+            <Icon name={checking ? 'refresh' : 'shield'} size={14} />
+            <span className="btn-label">{checking ? '检测中…' : '一键自检'}</span>
+          </button>
+        }
       >
         <div className="pay-sub-head">
           <span className="pay-sub-title"><Icon name="config" size={14} />生产环境参数</span>
@@ -518,8 +731,9 @@ export default function PayConfigPanel() {
           <span className="pay-sub-title"><Icon name="orders" size={14} />回调地址</span>
         </div>
         <div className="pay-read-grid">
-          <ReadRow label="异步通知 notify_url" value={form.notifyUrl} />
-          <ReadRow label="同步跳转 return_url" value={form.returnUrl} />
+          {/* 未显式配置时展示后端推算的自动值，并标注来源，避免误以为"已配置" */}
+          <ReadRow label="异步通知 notify_url" value={form.notifyUrl || (view?.notifyUrlAuto ? `自动 · ${view?.notifyUrl || '跟随当前访问地址'}` : '')} />
+          <ReadRow label="同步跳转 return_url" value={form.returnUrl || (view?.returnUrlAuto ? `自动 · ${view?.returnUrl || '跟随当前访问地址'}` : '')} />
         </div>
       </PaySection>
 
@@ -531,6 +745,12 @@ export default function PayConfigPanel() {
         badge={<span className="status-tag status-default">待上线</span>}
         open={open.wechat}
         onToggle={() => toggle('wechat')}
+        action={
+          <button className="btn-sm btn-sm-primary btn-icon-sm" onClick={handleWechatCheck} disabled={checkingWechat} title="微信支付一键自检">
+            <Icon name={checkingWechat ? 'refresh' : 'shield'} size={14} />
+            <span className="btn-label">{checkingWechat ? '检测中…' : '一键自检'}</span>
+          </button>
+        }
       >
         <div className="pay-sub-head">
           <span className="pay-sub-title"><Icon name="orders" size={14} />商户参数</span>
@@ -558,6 +778,12 @@ export default function PayConfigPanel() {
         badge={<span className="status-tag status-default">待上线</span>}
         open={open.bank}
         onToggle={() => toggle('bank')}
+        action={
+          <button className="btn-sm btn-sm-primary btn-icon-sm" onClick={handleBankCheck} disabled={checkingBank} title="银行卡支付一键自检">
+            <Icon name={checkingBank ? 'refresh' : 'shield'} size={14} />
+            <span className="btn-label">{checkingBank ? '检测中…' : '一键自检'}</span>
+          </button>
+        }
       >
         <div className="pay-sub-head">
           <span className="pay-sub-title"><Icon name="lock" size={14} />收单参数</span>
@@ -569,6 +795,8 @@ export default function PayConfigPanel() {
           <ReadRow label="商户号" value={form.bankMerchantNo} />
           <ReadRow label="收单网关地址" value={form.bankGateway} />
           <ReadRow label="退款地址" value={form.bankRefundUrl || '（留空：按网关自动推导）'} />
+          <ReadRow label="查单地址" value={form.bankQueryUrl || '（留空：按网关自动推导）'} />
+          <ReadRow label="余额地址" value={form.bankBalanceUrl || '（留空：按网关自动推导）'} />
           <ReadRow label="通知地址 notify_url" value={form.bankNotifyUrl} />
           <SecretRow label="签名密钥" isSet={view?.bankSignKeySet} />
         </div>
@@ -606,12 +834,12 @@ export default function PayConfigPanel() {
                 </div>
                 <div className="field field-full">
                   <label className="field-label">应用私钥（PKCS#8 或 PKCS#1 均可）</label>
-                  <SecretInput value={form.prodPrivateKey} onChange={v => set('prodPrivateKey', v)} isSet={!!view?.prodPrivateKeySet}
+                  <SecretInput value={form.prodPrivateKey} onChange={v => set('prodPrivateKey', v)} isSet={!!view?.prodPrivateKeySet} field="prodPrivateKey"
                     placeholder={view?.prodPrivateKeyMasked ? `已保存：${view.prodPrivateKeyMasked}（留空保持不变）` : '-----BEGIN PRIVATE KEY----- 开头的整段私钥'} />
                 </div>
                 <div className="field field-full">
                   <label className="field-label">支付宝公钥</label>
-                  <SecretInput value={form.prodAlipayPublicKey} onChange={v => set('prodAlipayPublicKey', v)} isSet={!!view?.prodAlipayPublicKeySet}
+                  <SecretInput value={form.prodAlipayPublicKey} onChange={v => set('prodAlipayPublicKey', v)} isSet={!!view?.prodAlipayPublicKeySet} field="prodAlipayPublicKey"
                     placeholder={view?.prodAlipayPublicKeyMasked ? `已保存：${view.prodAlipayPublicKeyMasked}（留空保持不变）` : '支付宝后台「接口加签方式 → 支付宝公钥」的整段公钥'} />
                 </div>
               </div>
@@ -633,26 +861,33 @@ export default function PayConfigPanel() {
                 </div>
                 <div className="field field-full">
                   <label className="field-label">沙箱应用私钥<span className="field-label-hint">你方持有，用于签名；填错会导致 invalid-signature</span></label>
-                  <SecretInput value={form.sandboxPrivateKey} onChange={v => set('sandboxPrivateKey', v)} isSet={!!view?.sandboxPrivateKeySet}
+                  <SecretInput value={form.sandboxPrivateKey} onChange={v => set('sandboxPrivateKey', v)} isSet={!!view?.sandboxPrivateKeySet} field="sandboxPrivateKey"
                     placeholder={view?.sandboxPrivateKeyMasked ? `已保存：${view.sandboxPrivateKeyMasked}（留空保持不变）` : '-----BEGIN PRIVATE KEY----- 开头的整段私钥'} />
                 </div>
                 <div className="field field-full">
                   <label className="field-label">沙箱支付宝公钥<span className="field-label-hint">平台生成，用于回调验签；<strong>不是</strong>你的应用公钥</span></label>
-                  <SecretInput value={form.sandboxAlipayPublicKey} onChange={v => set('sandboxAlipayPublicKey', v)} isSet={!!view?.sandboxAlipayPublicKeySet}
+                  <SecretInput value={form.sandboxAlipayPublicKey} onChange={v => set('sandboxAlipayPublicKey', v)} isSet={!!view?.sandboxAlipayPublicKeySet} field="sandboxAlipayPublicKey"
                     placeholder={view?.sandboxAlipayPublicKeyMasked ? `已保存：${view.sandboxAlipayPublicKeyMasked}（留空保持不变）` : '沙箱后台「接口加签方式 → 支付宝公钥」的整段公钥'} />
                 </div>
               </div>
 
               {/* 回调地址 */}
               <div className="pay-group-title"><Icon name="orders" size={14} />回调地址</div>
+              <p className="field-hint" style={{ margin: '0 0 10px' }}>
+                留空即自动跟随用户当前访问的地址（推荐）：从哪个地址打开系统，付完款就回哪个地址，
+                通知也推到同一个入口。手工写死 IP 后换网络、换设备或走公网反代时会失效——
+                典型症状是「付完款跳到另一个 IP」或「钱付了订单迟迟不变已支付」。
+              </p>
               <div className="form-grid">
                 <div className="field">
-                  <label className="field-label">异步通知地址 notify_url（须公网可达）</label>
-                  <input className="field-input mono" value={form.notifyUrl} onChange={e => set('notifyUrl', e.target.value)} placeholder="https://你的域名/api/payment/alipay/notify" />
+                  <label className="field-label">异步通知地址 notify_url<span className="field-label-hint">留空自动生成</span></label>
+                  <input className="field-input mono" value={form.notifyUrl} onChange={e => set('notifyUrl', e.target.value)}
+                    placeholder={view?.notifyUrlAuto ? `自动：${view?.notifyUrl || '跟随当前访问地址'}` : 'https://你的域名/api/payment/alipay/notify'} />
                 </div>
                 <div className="field">
-                  <label className="field-label">同步跳转地址 return_url</label>
-                  <input className="field-input mono" value={form.returnUrl} onChange={e => set('returnUrl', e.target.value)} placeholder="支付完成后的回跳页面" />
+                  <label className="field-label">同步跳转地址 return_url<span className="field-label-hint">留空自动生成</span></label>
+                  <input className="field-input mono" value={form.returnUrl} onChange={e => set('returnUrl', e.target.value)}
+                    placeholder={view?.returnUrlAuto ? `自动：${view?.returnUrl || '跟随当前访问地址'}` : '支付完成后的回跳页面'} />
                 </div>
               </div>
             </div>
@@ -708,17 +943,17 @@ export default function PayConfigPanel() {
                 </div>
                 <div className="field field-full">
                   <label className="field-label">APIv3 密钥<span className="field-label-hint">32 位，回调解密 resource 用</span></label>
-                  <SecretInput value={form.wechatApiV3Key} onChange={v => set('wechatApiV3Key', v)} isSet={!!view?.wechatApiV3KeySet} rows={2}
+                  <SecretInput value={form.wechatApiV3Key} onChange={v => set('wechatApiV3Key', v)} isSet={!!view?.wechatApiV3KeySet} field="wechatApiV3Key" rows={2}
                     placeholder={view?.wechatApiV3KeyMasked ? `已保存：${view.wechatApiV3KeyMasked}（留空保持不变）` : '32 位 APIv3 密钥'} />
                 </div>
                 <div className="field field-full">
                   <label className="field-label">商户 API 私钥<span className="field-label-hint">apiclient_key.pem 内容，用于 V3 请求签名</span></label>
-                  <SecretInput value={form.wechatPrivateKey} onChange={v => set('wechatPrivateKey', v)} isSet={!!view?.wechatPrivateKeySet}
+                  <SecretInput value={form.wechatPrivateKey} onChange={v => set('wechatPrivateKey', v)} isSet={!!view?.wechatPrivateKeySet} field="wechatPrivateKey"
                     placeholder={view?.wechatPrivateKeyMasked ? `已保存：${view.wechatPrivateKeyMasked}（留空保持不变）` : '-----BEGIN PRIVATE KEY----- 开头的整段私钥'} />
                 </div>
                 <div className="field field-full">
                   <label className="field-label">微信支付公钥<span className="field-label-hint">仅用于回调验签，漏填会「能付款、不入账」</span></label>
-                  <SecretInput value={form.wechatPlatformKey} onChange={v => set('wechatPlatformKey', v)} isSet={!!view?.wechatPlatformKeyMasked}
+                  <SecretInput value={form.wechatPlatformKey} onChange={v => set('wechatPlatformKey', v)} isSet={!!view?.wechatPlatformKeyMasked} field="wechatPlatformKey"
                     placeholder={view?.wechatPlatformKeyMasked ? `已保存：${view.wechatPlatformKeyMasked}（留空保持不变）` : '-----BEGIN PUBLIC KEY----- 开头的整段公钥'} />
                 </div>
               </div>
@@ -758,12 +993,20 @@ export default function PayConfigPanel() {
                 </div>
                 <div className="field field-full">
                   <label className="field-label">签名密钥<span className="field-label-hint">机构下发的密钥 / 证书</span></label>
-                  <SecretInput value={form.bankSignKey} onChange={v => set('bankSignKey', v)} isSet={!!view?.bankSignKeySet} rows={2}
+                  <SecretInput value={form.bankSignKey} onChange={v => set('bankSignKey', v)} isSet={!!view?.bankSignKeySet} field="bankSignKey" rows={2}
                     placeholder={view?.bankSignKeyMasked ? `已保存：${view.bankSignKeyMasked}（留空保持不变）` : '机构下发的签名密钥'} />
                 </div>
                 <div className="field field-full">
                   <label className="field-label">退款地址<span className="field-label-hint">非必填，留空按网关推导（/pay → /refund）</span></label>
                   <input className="field-input mono" value={form.bankRefundUrl} onChange={e => set('bankRefundUrl', e.target.value)} placeholder="https://（机构退款接口地址，留空自动推导）" />
+                </div>
+                <div className="field">
+                  <label className="field-label">查单地址<span className="field-label-hint">留空按网关推导（/pay → /query）</span></label>
+                  <input className="field-input mono" value={form.bankQueryUrl} onChange={e => set('bankQueryUrl', e.target.value)} placeholder="https://（机构订单查询地址）" />
+                </div>
+                <div className="field">
+                  <label className="field-label">余额地址<span className="field-label-hint">留空按网关推导（/pay → /balance）</span></label>
+                  <input className="field-input mono" value={form.bankBalanceUrl} onChange={e => set('bankBalanceUrl', e.target.value)} placeholder="https://（机构账户余额地址）" />
                 </div>
                 <div className="field field-full">
                   <label className="field-label">异步通知地址 notify_url</label>

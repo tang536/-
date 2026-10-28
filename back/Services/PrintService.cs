@@ -4,9 +4,45 @@ using System.Text;
 
 namespace ERental.Services;
 
-public class PrintService(AppDbContext db)
+public class PrintService(AppDbContext db, ReportService reports)
 {
     private readonly AppDbContext _db = db;
+    private readonly ReportService _reports = reports;
+
+    /// <summary>
+    /// 报表打印视图（系统操作 #25 printReport）：把统计看板的结果渲染成一张带打印样式的 HTML。
+    /// 浏览器只需要一个「按了就能打印」的页面，数字直接复用 GetDashboard 的口径，
+    /// 避免屏幕上看到的和打印出来的变成两套数。
+    /// </summary>
+    public async Task<string> ReportHtml(DateTime? from = null, DateTime? to = null)
+    {
+        var r = await _reports.GetDashboard(from, to);
+        var range = from.HasValue || to.HasValue
+            ? $"{from?.ToString("yyyy-MM-dd") ?? "—"} 至 {to?.ToString("yyyy-MM-dd") ?? "—"}"
+            : "全部数据";
+        var sb = new StringBuilder();
+        sb.Append("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>经营报表</title>");
+        sb.Append("<style>body{font-family:'Microsoft YaHei',Arial,sans-serif;margin:24px;color:#1F2328}");
+        sb.Append("h1{font-size:18px;color:#C0392B;border-bottom:2px solid #C0392B;padding-bottom:8px}");
+        sb.Append("p.meta{font-size:12px;color:#666}");
+        sb.Append("table{border-collapse:collapse;width:100%;margin-top:12px}");
+        sb.Append("th,td{border:1px solid #C0392B;padding:6px 10px;font-size:13px;text-align:left}");
+        sb.Append("th{background:#FAECE9;width:220px}");
+        // 打印时去掉页边距，否则 A4 会把右列切掉
+        sb.Append("@media print{body{margin:0}}</style></head><body>");
+        sb.Append("<h1>途电驿站租赁系统 · 经营报表</h1>");
+        sb.Append($"<p class=\"meta\">统计区间：{range}　生成时间：{DateTime.Now:yyyy-MM-dd HH:mm}</p>");
+        sb.Append("<table>");
+        void Row(string k, string v) => sb.Append($"<tr><th>{k}</th><td>{v}</td></tr>");
+        Row("累计营收（元）", r.TotalRevenue.ToString("N2"));
+        Row("累计订单数", r.TotalOrders.ToString());
+        Row("客户总数", r.TotalCustomers.ToString());
+        Row("维保费用合计（元）", r.TotalMaintenanceFee.ToString("N2"));
+        Row("车辆使用率", $"{r.VehicleUsageRate:N1}%");
+        Row("平均单笔租期（小时）", r.AvgRentHours.ToString("N1"));
+        sb.Append("</table></body></html>");
+        return sb.ToString();
+    }
 
     public async Task<string> OrderReceipt(int orderId)
     {
@@ -76,13 +112,16 @@ public class PrintService(AppDbContext db)
     }
 
     /// <summary>订单明细导出（需求 4.2.4：订单查询支持订单明细导出）</summary>
-    public async Task<string> OrderListCsv(string? status, string? keyword)
+    public async Task<string> OrderListCsv(string? status, string? keyword, DateTime? dateFrom = null, DateTime? dateTo = null)
     {
         var q = _db.RentalOrders.AsNoTracking()
             .Include(o => o.Customer).Include(o => o.Vehicle).AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(status))
             q = q.Where(o => o.OrderStatus == status);
+        // 导出与界面同口径：界面按起租日期圈了范围，导出的明细也必须只含这些单
+        if (dateFrom.HasValue) q = q.Where(o => o.LeaseStart >= dateFrom.Value.Date);
+        if (dateTo.HasValue) q = q.Where(o => o.LeaseStart < dateTo.Value.Date.AddDays(1));
         if (!string.IsNullOrWhiteSpace(keyword))
         {
             var k = keyword.Trim();

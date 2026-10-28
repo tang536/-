@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using ERental.Data;
 using ERental.DTOs;
 using ERental.Models;
@@ -75,19 +75,10 @@ public class MaintenanceService(AppDbContext db, ImageStorage images)
                 throw new Exception($"车辆 {v.VehicleNo} {why}，请重新选择");
             }
 
-            var m = new MaintenanceOrder
-            {
-                WorkOrderNo = await NextWorkOrderNoAsync(),
-                VehicleId = req.VehicleId,
-                FaultType = string.IsNullOrWhiteSpace(req.FaultType) ? "其他" : req.FaultType.Trim(),
-                FaultDescription = req.FaultDescription.Trim(),
-                // 现场照片随工单一次性落库，用于锁定维保位置；工单没有修改接口，故照片不可被篡改
-                FaultImage = string.IsNullOrWhiteSpace(req.FaultImage) ? null : req.FaultImage.Trim(),
-                MaintainFee = 0,
-                Status = "待处理",
-                CreateTime = DateTime.Now,
-                OperatorId = operatorId
-            };
+            // 现场照片随工单一次性落库，用于锁定维保位置；工单没有修改接口，故照片不可被篡改
+            var m = MaintenanceOrder.Report(
+                await NextWorkOrderNoAsync(), req.VehicleId, req.FaultType,
+                req.FaultDescription, req.FaultImage, operatorId);
 
             _db.MaintenanceOrders.Add(m);
             await _db.SaveChangesAsync();
@@ -141,6 +132,68 @@ public class MaintenanceService(AppDbContext db, ImageStorage images)
             // 先落「已完成」再放行：放行判定要读工单状态，顺序颠倒会把自己算成未完成工单。
             // 只在「这辆车没有其它未完成工单」时才置「空闲」，
             // 否则先修好的那张工单会把还在维修的车标成可租（详见 VehicleStateGuard）。
+            await VehicleStateGuard.TryReleaseAfterMaintenanceAsync(_db, m.VehicleId, id);
+
+            await tx.CommitAsync();
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 编辑维保工单内容（故障类型 / 描述 / 现场照片）。
+    /// 已完成的工单不可再编辑——维修费与完工时间已在结算凭据里固化为追溯依据。
+    /// 用一条带条件 UPDATE 保证「已完结」工单即便被并发点中也不会被改掉。
+    /// </summary>
+    public async Task Update(int id, UpdateMaintenanceRequest req)
+    {
+        var m = await _db.MaintenanceOrders.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.WorkOrderId == id)
+                ?? throw new Exception("工单不存在");
+        if (m.Status == "已完成") throw new Exception("已完成的工单不可编辑");
+
+        var faultDesc = (req.FaultDescription ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(faultDesc)) throw new Exception("故障描述不能为空");
+        var faultType = string.IsNullOrWhiteSpace(req.FaultType) ? "其他" : req.FaultType.Trim();
+        var faultImage = string.IsNullOrWhiteSpace(req.FaultImage) ? null : req.FaultImage.Trim();
+
+        var changed = await _db.Database.ExecuteSqlAsync($@"
+            UPDATE maintenance_order
+               SET fault_type = {faultType},
+                   fault_description = {faultDesc},
+                   fault_image = {faultImage}
+             WHERE work_order_id = {id} AND status <> '已完成'");
+        if (changed == 0) throw new Exception("该工单已不可编辑");
+    }
+
+    /// <summary>
+    /// 撤回维保工单：把工单置为「已撤回」终态，并在「该车辆没有其它未完成工单」时把车从「维保」释放回「空闲」。
+    /// 与完工放行共用同一套并发闸门（TryReleaseAfterMaintenanceAsync 会排除当前工单自身），
+    /// 避免「撤回一张、却把同车另一张在修工单的车也误放回可租」。
+    /// </summary>
+    public async Task Withdraw(int id)
+    {
+        var m = await _db.MaintenanceOrders.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.WorkOrderId == id)
+                ?? throw new Exception("工单不存在");
+        if (m.Status == "已完成") throw new Exception("已完成的工单不可撤回");
+        if (m.Status == "已撤回") throw new Exception("该工单已撤回");
+
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        try
+        {
+            await DbRowLock.PrepareAsync(_db);
+
+            var changed = await _db.Database.ExecuteSqlAsync($@"
+                UPDATE maintenance_order
+                   SET status = {"已撤回"}
+                 WHERE work_order_id = {id} AND status NOT IN ('已完成', '已撤回')");
+            if (changed == 0) throw new Exception("该工单已不可撤回");
+
+            // 只在「没有其它未完成工单」时才把车置回空闲；否则车辆仍在维保，交由其它工单决定。
             await VehicleStateGuard.TryReleaseAfterMaintenanceAsync(_db, m.VehicleId, id);
 
             await tx.CommitAsync();

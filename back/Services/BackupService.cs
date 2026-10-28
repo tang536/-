@@ -470,6 +470,17 @@ public class BackupSchedulerService(
                 var result = await backup.CreateAsync();
                 logger.LogInformation("自动备份完成：{File}（{Size} KB，耗时 {Elapsed} ms）",
                     result.FileName, result.SizeBytes / 1024, result.ElapsedMs);
+
+                // 备份是分钟级长任务，是最容易撞上「连接被 wait_timeout 掐掉、锁静默消失」的场景。
+                // 完成后确认锁还在自己手里：不在了说明期间可能有另一实例也跑了一次，
+                // 需要人去 backups 目录核对（重复文件不算损坏，但会挤占保留份数额度）。
+                if (!await handle.IsHeldAsync())
+                {
+                    logger.LogError(
+                        "命名锁 erental_backup 在备份期间丢失（连接可能已失效）：本次备份可能与另一实例重叠，" +
+                        "请核对备份目录 {Dir} 是否出现同一时刻的重复文件",
+                        backup.Directory);
+                }
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)

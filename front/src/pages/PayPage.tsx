@@ -12,6 +12,15 @@ import { qrSvg } from '../utils/qrcode'
 const POLL_INTERVAL = 3000
 const POLL_MAX = 30
 
+/**
+ * 「页面重新可见」的查单节流窗口。
+ *
+ * 切标签页回来会同时触发 visibilitychange 与 focus，浏览器后退还会再补一个 pageshow，
+ * 三个事件挤在几十毫秒内，不节流就是一次操作打三次查单请求
+ * （后端每次还要向支付渠道发一次远程查询）。1.5s 足以合并，又不影响体感。
+ */
+const RECHECK_THROTTLE = 1500
+
 export default function PayPage() {
   const { orderNo = '' } = useParams()
   const { toast, confirm } = useUI()
@@ -34,6 +43,63 @@ export default function PayPage() {
 
   const timerRef = useRef<number>(0)
   const paidRef = useRef(false)
+  // 订单本体镜像：查单回调可能在 setOrder 之后才跑完，读 state 会拿到旧值
+  const orderRef = useRef<any>(null)
+  // 最近一次主动查单时间（节流用）与「超时取消」提示的一次性标记
+  const lastCheckRef = useRef(0)
+  const cancelNotifiedRef = useRef(false)
+
+  useEffect(() => { orderRef.current = order }, [order])
+
+  /**
+   * 支付成功的统一收口：置状态、停轮询、提示、拉小票。
+   *
+   * 抽出来是因为有三条路径都会走到这里——页面内的轮询、进页时的主动查单、
+   * 以及「从支付页返回后」的可见性触发。原本只有轮询一条路径带提示与小票，
+   * 另两条会静默把 paid 置真，用户看不到任何明确反馈。
+   */
+  const applyPaid = useCallback(async (data: any) => {
+    if (paidRef.current) return
+    paidRef.current = true
+    setPaid(true)
+    window.clearInterval(timerRef.current)
+    toast('支付成功，祝您用车愉快', 'success')
+    setOrder((o: any) => (o ? { ...o, orderStatus: data.orderStatus } : o))
+    // 订单主键优先取查单返回值：回跳/返回场景下前端可能还没加载过订单详情
+    const orderId = data.orderId ?? orderRef.current?.orderId
+    if (orderId) {
+      try {
+        const r: any = await printApi.orderReceipt(orderId)
+        setReceipt(r.content)
+      } catch { /* 小票可在我的订单里重打，不阻塞 */ }
+    }
+  }, [toast])
+
+  /**
+   * 主动查一次支付结果。
+   *
+   * 与「读订单列表」的区别：列表只反映本地库的状态，而服务端查单接口会在本地仍是
+   * 待支付时向支付宝/微信/银行再问一次，确认已付就当场幂等入账（沙箱环境异步回调
+   * 打不进本机，这条兜底是唯一的到账途径）。所以只要用户可能刚付完款，就该调它。
+   */
+  const checkPayment = useCallback(async () => {
+    // 本地详情已显示已支付（loadOrder 读到的），就不必再去渠道问一遍
+    if (paidRef.current) return
+    // 记下查询时刻：可见性探针据此节流，避免「刚查过又被 pageshow 追加一次」
+    lastCheckRef.current = Date.now()
+    try {
+      const res: any = await paymentApi.status(orderNo)
+      const d = res.data || {}
+      if (d.paid) { await applyPaid(d); return }
+      // 订单已被超时清理：从支付页切回来才发现的话，必须给一句明确交代，
+      // 否则页面还停在「待支付 + 倒计时 0:00」，用户会当成页面坏了。
+      if (d.orderStatus === '已取消' && !cancelNotifiedRef.current) {
+        cancelNotifiedRef.current = true
+        setOrder((o: any) => (o ? { ...o, orderStatus: '已取消' } : o))
+        toast('订单已超时取消，车辆已释放，如需租车请重新下单', 'warning')
+      }
+    } catch { /* 单次查询失败不打断任何流程 */ }
+  }, [orderNo, applyPaid, toast])
 
   // 拉取订单详情：列表接口按关键字查回本体（订单号唯一）
   const loadOrder = useCallback(async () => {
@@ -44,7 +110,8 @@ export default function PayPage() {
       setOrder(found)
       // 兼容旧数据：仅当下单时带过合法渠道才预选；「待定」等占位值回退默认支付宝
       if (PAY_CHANNELS.includes(found.payType)) setPayType(found.payType)
-      if (found.orderStatus === '已支付' || found.orderStatus === '租赁中') {
+      // 已完结也视为支付成功：订单走完「租赁中 → 已完结」后回看本页，不该再显示待支付
+      if (found.orderStatus === '已支付' || found.orderStatus === '租赁中' || found.orderStatus === '已完结') {
         paidRef.current = true
         setPaid(true)
       }
@@ -55,7 +122,9 @@ export default function PayPage() {
     }
   }, [orderNo, toast, navigate])
 
-  useEffect(() => { loadOrder() }, [loadOrder])
+  // 进页先渲染订单详情，再主动查一次渠道：用户从支付宝跳回来时，
+  // 异步回调很可能还没到（沙箱几乎必然不到），只读本地库会一直显示待支付。
+  useEffect(() => { loadOrder().then(() => checkPayment()) }, [loadOrder, checkPayment])
 
   // 待支付时才跑倒计时
   useEffect(() => {
@@ -78,21 +147,38 @@ export default function PayPage() {
       setPollCount(c => c + 1)
       try {
         const res: any = await paymentApi.status(orderNo)
-        if (res.data?.paid) {
-          paidRef.current = true
-          setPaid(true)
-          window.clearInterval(timerRef.current)
-          toast('支付成功，祝您用车愉快', 'success')
-          setOrder((o: any) => ({ ...o, orderStatus: res.data.orderStatus }))
-          // 支付成功即拉小票，顾客可打印后到店取车
-          try {
-            const r: any = await printApi.orderReceipt(res.data.orderId ?? order?.orderId)
-            setReceipt(r.content)
-          } catch { /* 小票可在我的订单里重打，不阻塞 */ }
-        }
+        if (res.data?.paid) await applyPaid(res.data)
       } catch { /* 单次查询失败不打断轮询 */ }
     }, POLL_INTERVAL)
-  }, [orderNo, toast, order?.orderId])
+  }, [orderNo, applyPaid])
+
+  /**
+   * 从支付页面返回系统时主动查单。
+   *
+   * 真实支付（支付宝网关）是 window.location.href 整页跳转——本页组件被卸载、轮询
+   * 随之销毁。用户付完款回来有三种方式，而三种都不会让上面的轮询「自动活过来」：
+   *   ① 切回标签页  → 页面没重载，只是重新可见
+   *   ② 浏览器后退  → 可能命中 bfcache，连 useEffect 都不会重跑
+   *   ③ 多窗口/外部浏览器付完再切回 → 触发窗口 focus
+   * 三种情况都不查的话，钱已经付了页面却仍停在「待支付」，顾客极可能再点一次支付 ——
+   * 重复付款。所以这里三个事件都挂上，统一走一次主动查单。
+   */
+  useEffect(() => {
+    const probe = () => {
+      if (document.visibilityState !== 'visible') return
+      if (paidRef.current) return
+      if (Date.now() - lastCheckRef.current < RECHECK_THROTTLE) return
+      checkPayment()
+    }
+    document.addEventListener('visibilitychange', probe)
+    window.addEventListener('focus', probe)
+    window.addEventListener('pageshow', probe)
+    return () => {
+      document.removeEventListener('visibilitychange', probe)
+      window.removeEventListener('focus', probe)
+      window.removeEventListener('pageshow', probe)
+    }
+  }, [checkPayment])
 
   useEffect(() => () => window.clearInterval(timerRef.current), [])
 

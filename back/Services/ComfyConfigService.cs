@@ -84,18 +84,12 @@ public class ComfyConfigService(AppDbContext db, IOptions<AiImageOptions> opt)
         var row = await _db.SystemConfigs.FirstOrDefaultAsync(c => c.ConfigKey == Key, ct);
         if (row == null)
         {
-            _db.SystemConfigs.Add(new SystemConfig
-            {
-                ConfigKey = Key,
-                ConfigValue = normalized,
-                ConfigDesc = "AI 生图-ComfyUI 服务地址（桌面版默认 127.0.0.1:8188）",
-                UpdateTime = DateTime.Now
-            });
+            _db.SystemConfigs.Add(SystemConfig.Create(
+                Key, normalized, "AI 生图-ComfyUI 服务地址（桌面版默认 127.0.0.1:8188）"));
         }
         else
         {
-            row.ConfigValue = normalized;
-            row.UpdateTime = DateTime.Now;
+            row.SetValue(normalized);
         }
         await _db.SaveChangesAsync(ct);
         Invalidate();

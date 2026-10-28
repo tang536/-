@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useUI } from '@/components/UIProvider'
 import { useSearchParams } from 'react-router-dom'
 import { customerApi, memberApi } from '@/api'
 import type { Customer, MemberRights } from '@/types'
 import Icon from '@/components/Icon'
 import DictThFilter from '@/components/DictThFilter'
-import { fmtD, fmtDT } from '@/utils/datetime'
+import { fmtD, fmtDT, recentDateRange } from '@/utils/datetime'
 
 const EMPTY = { idCard: '', fullName: '', contactPhone: '', memberLevel: '普通会员', memberDiscount: 1 }
 
@@ -35,6 +35,8 @@ export default function Customers() {
   const [editVersion, setEditVersion] = useState(0)
   const [form, setForm] = useState({ ...EMPTY })
   const [errors, setErrors] = useState<Record<string, string>>({})
+  /** 身份证号的遮字开关：新增/查看客户时默认遮字（门店人多眼杂），点眼睛看全 */
+  const [idShow, setIdShow] = useState(false)
   // 会员类型（折扣唯一真源，取自会员管理页维护的权益表）
   const [rights, setRights] = useState<MemberRights[]>([])
   // 客户记录弹窗：一个入口两个页签（消费记录 / 会员记录），避免操作列按钮过密
@@ -45,6 +47,16 @@ export default function Customers() {
   const [recordsError, setRecordsError] = useState('')
   const [recordDraft, setRecordDraft] = useState({ from: '', to: '', status: '' })
   const [recordFilter, setRecordFilter] = useState({ from: '', to: '', status: '' })
+  /**
+   * 消费记录默认筛选：**近 30 天**（含今天），与报表页、操作日志、结算记录同一口径。
+   * 打开弹窗时刷新一次并固定，「重置」回的也是用户打开时看到的区间（跨午夜不漂移）。
+   * 日期框可改、可清空，清空即查该客户全部历史订单。
+   */
+  const defaultRecordRangeRef = useRef(recentDateRange(30))
+  const makeRecordFilter = () => {
+    const r = defaultRecordRangeRef.current
+    return { from: r.from, to: r.to, status: '' }
+  }
   // 会员记录（购买 / 调整）
   const [memberRows, setMemberRows] = useState<{ action: string; logTime: string }[]>([])
   const [memberLoading, setMemberLoading] = useState(false)
@@ -79,6 +91,7 @@ export default function Customers() {
     setEditId(null)
     setForm({ ...EMPTY, memberLevel: rights[0]?.memberLevel || '普通会员', memberDiscount: rights[0]?.discount ?? 1 })
     setErrors({})
+    setIdShow(false)
     setShowModal(true)
   }
 
@@ -94,6 +107,7 @@ export default function Customers() {
       memberDiscount: c.memberDiscount,
     })
     setErrors({})
+    setIdShow(false)
     setShowModal(true)
   }
 
@@ -176,14 +190,15 @@ export default function Customers() {
 
   /** 打开客户记录弹窗；默认停在「消费记录」，切页签按需懒加载 */
   const openRecord = (c: Customer, tab: 'consume' | 'member' = 'consume') => {
-    const empty = { from: '', to: '', status: '' }
-    setRecordDraft(empty)
-    setRecordFilter(empty)
+    defaultRecordRangeRef.current = recentDateRange(30)
+    const initial = makeRecordFilter()
+    setRecordDraft(initial)
+    setRecordFilter(initial)
     setRecordsData(null)
     setRecordsError('')
     setMemberRows([])
     setRecordOf({ customer: c, tab })
-    if (tab === 'consume') fetchRecords(c, empty)
+    if (tab === 'consume') fetchRecords(c, initial)
     else fetchMemberHistory(c)
   }
 
@@ -211,7 +226,7 @@ export default function Customers() {
   return (
     <div className="card">
       <div className="card-title">
-        <Icon name="customers" size={18} chip />客户管理
+        <Icon name="customers" size={18} chip />客户档案
         <span className="card-title-count">共 {list.length} 位</span>
         {deactivated > 0 && (
           <span className="status-tag status-danger" title="顾客自主注销为逻辑注销，档案与历史订单保留，仅停用账号">
@@ -242,8 +257,9 @@ export default function Customers() {
             <option value="deactivated">已注销</option>
           </select>
           {(keyword || statusFilter) && (
-            <button className="btn-sm btn-sm-default" onClick={() => { setKeyword(''); setStatusFilter('') }}>
-              <Icon name="refresh" size={14} />重置
+            <button className="btn-sm btn-sm-default" title="重置筛选条件"
+              onClick={() => { setKeyword(''); setStatusFilter('') }}>
+              <Icon name="refresh" size={14} /><span className="btn-label">重置</span>
             </button>
           )}
         </div>
@@ -343,12 +359,27 @@ export default function Customers() {
               </div>
               <div className="form-group">
                 <label>身份证号 {!editId && <span className="req">*</span>}</label>
-                <input
-                  className={errors.idCard ? 'has-error' : ''}
-                  value={form.idCard}
-                  onChange={e => setForm({ ...form, idCard: e.target.value })}
-                  placeholder="租车环节必需，18 位"
-                />
+                {/* 默认遮字：顾客站在柜台前报名字时，屏幕上不该直接摊出完整证件号；
+                    需要核对时点小眼睛看全，读卡器刷证写入不受影响 */}
+                <div className={`input-affix ${errors.idCard ? 'has-error' : ''}`}>
+                  <input
+                    value={form.idCard}
+                    onChange={e => setForm({ ...form, idCard: e.target.value })}
+                    placeholder="租车环节必需，18 位"
+                    spellCheck={false}
+                    style={!idShow ? { WebkitTextSecurity: 'disc' } as CSSProperties : undefined}
+                  />
+                  <button
+                    type="button"
+                    className="input-affix-btn"
+                    tabIndex={-1}
+                    onClick={() => setIdShow(v => !v)}
+                    title={idShow ? '隐藏身份证号' : '显示身份证号'}
+                    aria-label={idShow ? '隐藏身份证号' : '显示身份证号'}
+                  >
+                    <Icon name={idShow ? 'eye-off' : 'eye'} size={16} />
+                  </button>
+                </div>
                 {errors.idCard && <div className="field-error">{errors.idCard}</div>}
                 <div className="field-hint">支持二代身份证读卡器（USB 键盘仿真、即插即用）直接刷证录入，也可手工输入。</div>
               </div>
@@ -442,12 +473,15 @@ export default function Customers() {
                     <button className="btn-sm btn-sm-primary" onClick={applyRecordFilter}>
                       <Icon name="search" size={14} />查询
                     </button>
-                    <button className="btn-sm" onClick={() => {
-                      const empty = { from: '', to: '', status: '' }
-                      setRecordDraft(empty)
-                      setRecordFilter(empty)
-                      fetchRecords(recordOf.customer, empty)
-                    }}>重置</button>
+                    <button className="btn-sm btn-sm-default" title="重置为默认筛选（近 30 天）"
+                      onClick={() => {
+                        const initial = makeRecordFilter()
+                        setRecordDraft(initial)
+                        setRecordFilter(initial)
+                        fetchRecords(recordOf.customer, initial)
+                      }}>
+                      <Icon name="refresh" size={14} /><span className="btn-label">重置</span>
+                    </button>
                   </div>
 
                   {recordsError ? (

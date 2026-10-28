@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useUI } from '@/components/UIProvider'
 import { customerApi, vehicleApi, orderApi, printApi } from '@/api'
 import Icon from '@/components/Icon'
@@ -33,6 +33,9 @@ export default function CreateOrderPanel({ onBack }: { onBack: () => void }) {
   // 线下新客户资料（系统里不存在 → 后端自动建档）
   const [newCustomer, setNewCustomer] = useState({ name: '', idCard: '', phone: '' })
   const [errors, setErrors] = useState<Record<string, string>>({})
+  // 两处身份证输入各自的小眼睛：新客户建档 / 老客户资料补录，默认遮字
+  const [newIdShow, setNewIdShow] = useState(false)
+  const [profileIdShow, setProfileIdShow] = useState(false)
   const [loading, setLoading] = useState(false)
   const [receipt, setReceipt] = useState<string | null>(null)
   /** 扫码选车弹窗（前台用扫码枪扫车身二维码直接选中车辆） */
@@ -279,12 +282,21 @@ export default function CreateOrderPanel({ onBack }: { onBack: () => void }) {
           </div>
           <div className="form-group">
             <label>身份证号 <span className="req">*</span></label>
-            <input
-              className={errors.newIdCard ? 'has-error' : ''}
-              value={newCustomer.idCard}
-              onChange={e => setNewCustomer({ ...newCustomer, idCard: e.target.value })}
-              placeholder="18 位身份证号"
-            />
+            <div className={`input-affix ${errors.newIdCard ? 'has-error' : ''}`}>
+              <input
+                value={newCustomer.idCard}
+                onChange={e => setNewCustomer({ ...newCustomer, idCard: e.target.value })}
+                placeholder="18 位身份证号"
+                spellCheck={false}
+                style={!newIdShow ? { WebkitTextSecurity: 'disc' } as CSSProperties : undefined}
+              />
+              <button type="button" className="input-affix-btn" tabIndex={-1}
+                onClick={() => setNewIdShow(v => !v)}
+                title={newIdShow ? '隐藏身份证号' : '显示身份证号'}
+                aria-label={newIdShow ? '隐藏身份证号' : '显示身份证号'}>
+                <Icon name={newIdShow ? 'eye-off' : 'eye'} size={16} />
+              </button>
+            </div>
             {errors.newIdCard && <div className="field-error">{errors.newIdCard}</div>}
           </div>
           <div className="form-group">
@@ -378,12 +390,21 @@ export default function CreateOrderPanel({ onBack }: { onBack: () => void }) {
             </div>
             <div className="form-group">
               <label>身份证号 <span className="req">*</span></label>
-              <input
-                className={errors.idCard ? 'has-error' : ''}
-                value={profile.idCard}
-                onChange={e => setProfile({ ...profile, idCard: e.target.value })}
-                placeholder="18 位身份证号"
-              />
+              <div className={`input-affix ${errors.idCard ? 'has-error' : ''}`}>
+                <input
+                  value={profile.idCard}
+                  onChange={e => setProfile({ ...profile, idCard: e.target.value })}
+                  placeholder="18 位身份证号"
+                  spellCheck={false}
+                  style={!profileIdShow ? { WebkitTextSecurity: 'disc' } as CSSProperties : undefined}
+                />
+                <button type="button" className="input-affix-btn" tabIndex={-1}
+                  onClick={() => setProfileIdShow(v => !v)}
+                  title={profileIdShow ? '隐藏身份证号' : '显示身份证号'}
+                  aria-label={profileIdShow ? '隐藏身份证号' : '显示身份证号'}>
+                  <Icon name={profileIdShow ? 'eye-off' : 'eye'} size={16} />
+                </button>
+              </div>
               {errors.idCard && <div className="field-error">{errors.idCard}</div>}
             </div>
             <div className="form-group">

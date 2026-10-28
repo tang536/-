@@ -17,7 +17,7 @@ export type IconName =
   | 'download' | 'upload' | 'image' | 'print' | 'qrcode' | 'refund' | 'save'
   | 'zoom-in' | 'zoom-out' | 'replace'
   | 'menu' | 'camera'
-  | 'sun' | 'moon' | 'github'
+  | 'sun' | 'moon' | 'github' | 'trash'
 
 /** 每枚图标的主色（红白主题：以红为主，配少量暖色/青色点缀，不使用紫色系） */
 const ACCENT: Record<IconName, string> = {
@@ -71,6 +71,7 @@ const ACCENT: Record<IconName, string> = {
   sun: '#f59e0b',
   moon: '#475569',
   github: '#24292f',
+  trash: '#dc2626',
 }
 
 /** 线条型图形，统一在 4~20 的绘图区内，保证 chip 留有内边距 */
@@ -397,6 +398,15 @@ const GLYPHS: Record<IconName, ReactNode> = {
   moon: (
     <>
       <path d="M20.2 14.2A8.4 8.4 0 0 1 9.8 3.8a8.4 8.4 0 1 0 10.4 10.4z" />
+    </>
+  ),
+  // 垃圾桶：用于「删除单条 / 清空消息」这类破坏性小动作
+  trash: (
+    <>
+      <path d="M4.6 7h14.8" />
+      <path d="M9.6 7V5.5a1.5 1.5 0 0 1 1.5-1.5h1.8a1.5 1.5 0 0 1 1.5 1.5V7" />
+      <path d="M6.5 7l.9 11.3A1.9 1.9 0 0 0 9.3 20.1h5.4a1.9 1.9 0 0 0 1.9-1.8L17.5 7" />
+      <path d="M10.4 10.8v5.4M13.6 10.8v5.4" />
     </>
   ),
   // GitHub 官方标志（实心剪影，故在 FILLED 里声明为填充型；描边调细见调用处）

@@ -37,6 +37,15 @@ public class CreatePayResultDto
 public class PayStatusDto
 {
     public string OrderNo { get; init; } = string.Empty;
+
+    /// <summary>
+    /// 订单主键；会员购买（HY 交易号）无租赁订单，取 0。
+    /// 前端支付成功时要立刻拉小票（print/order-receipt 按 orderId 取），
+    /// 而回跳页 / 从支付页返回时前端可能还没加载过订单详情，
+    /// 没有这个字段就只能靠「碰巧本地有 order 对象」侥幸成功。
+    /// </summary>
+    public int OrderId { get; init; }
+
     public string OrderStatus { get; init; } = string.Empty;
     public bool Paid { get; init; }
     public decimal Amount { get; init; }
@@ -52,8 +61,12 @@ public class AlipaySelfCheckDto
     /// <summary>是否已启用真实支付宝（生产或沙箱）</summary>
     public bool Enabled { get; init; }
 
-    /// <summary>AppId / 私钥 / 支付宝公钥是否齐全</summary>
-    public bool Configured { get; init; }
+    /// <summary>
+    /// AppId / 私钥 / 支付宝公钥是否**真正可用**（不只是非空）。
+    /// 私钥解析不出公钥时这里会是 false —— 那种状态下模式虽仍判定为生产/沙箱，
+    /// 但任何签名请求都会失败，界面必须把"模式"和"能不能用"分开说。
+    /// </summary>
+    public bool Configured { get; set; }
 
     public string AppId { get; init; } = string.Empty;
     public string Gateway { get; init; } = string.Empty;
@@ -81,6 +94,45 @@ public class AlipaySelfCheckDto
     public string Message { get; set; } = string.Empty;
 
     /// <summary>沙箱原始响应（截断），便于进一步排查</summary>
+    public string RawResponse { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 微信 / 银行卡通道的**接线自检**结果：复用同一份结构，便于前端三通道统一渲染。
+/// 与 <see cref="AlipaySelfCheckDto"/> 的区别：微信/银行卡没有「应用公钥指纹比对」这一步
+/// （微信靠网关返回的 SIGN_ERROR 判定，银行卡靠网关回显的签名错误关键字判定），
+/// 故去掉 ExpectedAppPublicKey 系列字段，改为更通用的 KeyFormat / MerchantId。
+/// </summary>
+public class ChannelSelfCheckDto
+{
+    /// <summary>通道标识：wechat / bank</summary>
+    public string Channel { get; set; } = string.Empty;
+
+    /// <summary>通道显示名：微信支付 / 银行卡支付</summary>
+    public string ChannelName { get; set; } = string.Empty;
+
+    /// <summary>管理员是否已打开该通道开关</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>凭证是否填写齐全（按各通道自己的必填项判定）</summary>
+    public bool Configured { get; set; }
+
+    /// <summary>网关是否接受了本次签名（true = 密钥配对正确）</summary>
+    public bool SignatureAccepted { get; set; }
+
+    /// <summary>商户标识：微信 = MchId，银行卡 = 商户号（便于管理员核对填的是不是同一家）</summary>
+    public string MerchantId { get; set; } = string.Empty;
+
+    /// <summary>网关地址</summary>
+    public string Gateway { get; set; } = string.Empty;
+
+    /// <summary>密钥/签名格式说明：微信 = 私钥格式（PKCS#8/PKCS#1），银行卡 = 签名算法（HMAC-SHA256）</summary>
+    public string KeyFormat { get; set; } = string.Empty;
+
+    /// <summary>可读的结论说明</summary>
+    public string Message { get; set; } = string.Empty;
+
+    /// <summary>网关原始响应（脱敏 + 截断），便于进一步排查</summary>
     public string RawResponse { get; set; } = string.Empty;
 }
 
@@ -131,8 +183,7 @@ public class BalanceDto
     /// <summary>
     /// 查询状态：
     ///   ok        —— 拿到真实余额
-    ///   not_configured —— 凭证不全，无法查询
-    ///   not_integrated —— 该渠道尚未接入真实通道（微信占位）
+    ///   not_configured —— 凭证不全或该渠道未启用，无法查询
     ///   timeout   —— 官方接口超时（已重试完）
     ///   error     —— 官方接口报错或返回失败
     /// </summary>
@@ -141,10 +192,10 @@ public class BalanceDto
     /// <summary>可用余额（元）。仅 status=ok 时有意义</summary>
     public decimal? AvailableAmount { get; set; }
 
-    /// <summary>账户总余额（元）。支付宝会区分可用与总额；微信只有可用余额</summary>
+    /// <summary>账户总余额（元）。支付宝区分可用与总额；微信只回可用余额，总额同可用</summary>
     public decimal? TotalAmount { get; set; }
 
-    /// <summary>账面余额（支付宝冻结中的金额会体现在这里）</summary>
+    /// <summary>待结算/冻结金额（元）。支付宝的冻结额、微信的 pending_amount 都落这里</summary>
     public decimal? FrozenAmount { get; set; }
 
     /// <summary>币种，统一 CNY</summary>
@@ -241,11 +292,25 @@ public class PayConfigViewDto
     public string BankNotifyUrl { get; init; } = string.Empty;
     /// <summary>退款地址（非必填，留空时按支付网关推导）</summary>
     public string BankRefundUrl { get; init; } = string.Empty;
+    /// <summary>查单地址（非必填，留空时按支付网关推导：/pay → /query）</summary>
+    public string BankQueryUrl { get; init; } = string.Empty;
+    /// <summary>余额查询地址（非必填，留空时按支付网关推导：/pay → /balance）</summary>
+    public string BankBalanceUrl { get; init; } = string.Empty;
     public bool BankSignKeySet { get; init; }
 
     // ── 公共 ──
     public string NotifyUrl { get; init; } = string.Empty;
     public string ReturnUrl { get; init; } = string.Empty;
+
+    /// <summary>
+    /// 库里**没有**显式配置回调地址，当前展示的是自动兜底值（按本机网卡/当前访问源推算）。
+    /// 前端据此把输入框留空并只做提示——否则管理员看到"有值"一点保存，
+    /// 就把某个临时 IP 固化进 system_config，换网络后再也回不来。
+    /// </summary>
+    public bool NotifyUrlAuto { get; init; }
+
+    /// <summary>同步跳转地址是否为自动兜底值（语义同上）。</summary>
+    public bool ReturnUrlAuto { get; init; }
 
     /// <summary>
     /// 各密钥项的**来源**（键 → env / secrets / db / none），**只回来源不回值**。
@@ -296,6 +361,8 @@ public class SavePayConfigDto
     public string? BankSignKey { get; init; }
     public string? BankNotifyUrl { get; init; }
     public string? BankRefundUrl { get; init; }
+    public string? BankQueryUrl { get; init; }
+    public string? BankBalanceUrl { get; init; }
 
     public string? NotifyUrl { get; init; }
     public string? ReturnUrl { get; init; }
