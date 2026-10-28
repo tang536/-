@@ -53,6 +53,10 @@ public static class DbInitializer
         db.Database.ExecuteSqlRaw(
             "ALTER TABLE `system_config` MODIFY COLUMN `config_value` TEXT NULL COMMENT '配置值（TEXT：容纳支付密钥等长文本）';");
 
+        // 消息正文由 TEXT 收窄为 VARCHAR(500)：TEXT 走行外存储，列表查询每行多一次页跳，
+        // 且无法建普通索引。收窄是收缩型 DDL，存量数据可能扛不住，故先量再改（见方法注释）。
+        EnsureMessageContentWidth(db);
+
         // 账号状态（正常/已注销）：注销不物理删除，保留历史订单可追溯（需求 7.1）
         if (!ColumnExists(db, "customer", "account_status"))
         {
@@ -341,6 +345,48 @@ CREATE TABLE IF NOT EXISTS `message` (
         // 维保完工放行同理：WHERE vehicle_id=? AND work_order_id<>? AND status<>'已完成'
         EnsureCompositeIndex(db, "maintenance_order", "idx_vehicle_status",
             "`vehicle_id`, `status`", "维保放行判定：按车 + 按工单状态");
+
+        // ③ 通知中心首屏：WHERE receiver_type=? AND receiver_id=? AND dismissed_at IS NULL
+        //    ORDER BY created_at DESC。既有 idx_msg_receiver 覆盖的是前两列 + is_read，
+        //    过滤 dismissed_at 与排序 created_at 都落在回表之后，每次都 filesort。
+        //    这条把「过滤 + 排序」一起吃掉；未读计数（WHERE is_read=0）仍走 idx_msg_receiver。
+        EnsureCompositeIndex(db, "message", "idx_msg_inbox",
+            "`receiver_type`, `receiver_id`, `dismissed_at`, `created_at`",
+            "通知中心：按接收人过滤已忽略 + 按时间倒序");
+
+        // ④ 操作日志：按模块筛选 + 按时间倒序分页是最高频的查法。
+        //    关键字是 LIKE '%kw%'，内置索引一概帮不上，那种查询只能靠限制时间范围。
+        EnsureCompositeIndex(db, "system_log", "idx_log_module_time",
+            "`operate_module`, `operate_time`", "操作日志：按模块 + 时间倒序");
+    }
+
+    /// <summary>
+    /// 把 message.content 从 TEXT 收窄到 VARCHAR(500)（幂等）。
+    ///
+    /// 为什么不是无脑 MODIFY：TEXT → VARCHAR 是**收缩**，一旦存量里有超过 500 字的正文，
+    /// 严格模式下整条 ALTER 直接失败、非严格模式下静默截断且不告诉任何人。
+    /// 这里先量一遍最长值：超了就只打印、跳过，由人决定是清洗数据还是放宽列宽——
+    /// 与「唯一索引遇到重复数据时跳过并打印」是同一套原则：程序不替用户决定删哪些数据。
+    /// </summary>
+    private static void EnsureMessageContentWidth(AppDbContext db)
+    {
+        if (!TableExists(db, "message")) return;
+        var current = ColumnType(db, "message", "content");
+        // 已是目标类型就什么都不做。同类型 MODIFY 虽是空操作，但每次启动发一条 ALTER
+        // 仍要拿一次元数据锁，多实例同时重启时会互相排队。
+        if (current.StartsWith("varchar(500)", StringComparison.OrdinalIgnoreCase)) return;
+
+        var longest = ScalarLong(db, "SELECT IFNULL(MAX(CHAR_LENGTH(`content`)), 0) FROM `message`");
+        if (longest > 500)
+        {
+            Console.WriteLine(
+                $"[schema] message.content 现有最长 {longest} 字，超过 VARCHAR(500)，本次跳过收窄（当前类型 {current}）");
+            return;
+        }
+
+        db.Database.ExecuteSqlRaw(
+            "ALTER TABLE `message` MODIFY COLUMN `content` VARCHAR(500) NOT NULL COMMENT '消息正文';");
+        Console.WriteLine($"[schema] message.content 已由 {current} 收窄为 varchar(500)（现有最长 {longest} 字）");
     }
 
     /// <summary>
@@ -561,6 +607,17 @@ CREATE TABLE IF NOT EXISTS `message` (
         var p2 = cmd.CreateParameter(); p2.ParameterName = "@i"; p2.Value = index; cmd.Parameters.Add(p2);
         if (cmd.Connection!.State != ConnectionState.Open) cmd.Connection.Open();
         return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+    }
+
+    /// <summary>读某列的 COLUMN_TYPE（如 varchar(500) / text）；列不存在时返回空串。</summary>
+    private static string ColumnType(AppDbContext db, string table, string column)
+    {
+        using var cmd = db.Database.GetDbConnection().CreateCommand();
+        cmd.CommandText = "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @t AND COLUMN_NAME = @c";
+        var p1 = cmd.CreateParameter(); p1.ParameterName = "@t"; p1.Value = table; cmd.Parameters.Add(p1);
+        var p2 = cmd.CreateParameter(); p2.ParameterName = "@c"; p2.Value = column; cmd.Parameters.Add(p2);
+        if (cmd.Connection!.State != ConnectionState.Open) cmd.Connection.Open();
+        return cmd.ExecuteScalar()?.ToString() ?? string.Empty;
     }
 
     public static void Seed(AppDbContext db, IConfiguration? config = null)

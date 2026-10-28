@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, Suspense, lazy } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useAuth, homePathOf, ROLE } from '@/hooks/useAuth'
 import { ROUTE_ROLES, canAccess, isRegisteredPath } from '@/permissions'
@@ -7,33 +7,63 @@ import Icon from '@/components/Icon'
 import NotFound from '@/components/Forbidden'
 import Layout from '@/components/Layout'
 
-// 统一登录 / 落地页 / 注册
+// 统一登录 / 落地页 / 注册：首屏必经路径，保持同步引入
 import Login from './components/Login'
 import Register from './components/Register'
 import Landing from './pages/Landing'
 
-// 顾客端页面
-import MyOrders from './pages/MyOrders'
-import RentBike from './pages/RentBike'
-import VehiclesCatalog from './pages/Vehicles'
-import Profile from './pages/Profile'
-import Membership from './pages/Membership'
-import PayPage from './pages/PayPage'
-import SupplementPayPage from './pages/SupplementPayPage'
-import MockPay from './pages/MockPay'
-import PayResult from './pages/PayResult'
+/*
+ * 其余页面全部改为路由级懒加载。
+ *
+ * 原来 24 个页面同步引入，vite 只能打出单个 chunk，顾客在手机上打开落地页
+ * 也要先下载员工端才用到的 echarts 报表代码（单 chunk 1.37 MB）。
+ * 拆开之后首屏只拿落地页与公共依赖，员工报表那一坨只有管理员点进「报表」才加载。
+ * 只是加载时机变了，路由路径、权限判定、组件本身都没有改。
+ */
+const MyOrders = lazy(() => import('./pages/MyOrders'))
+const RentBike = lazy(() => import('./pages/RentBike'))
+const VehiclesCatalog = lazy(() => import('./pages/Vehicles'))
+const Profile = lazy(() => import('./pages/Profile'))
+const Membership = lazy(() => import('./pages/Membership'))
+const PayPage = lazy(() => import('./pages/PayPage'))
+const SupplementPayPage = lazy(() => import('./pages/SupplementPayPage'))
+const MockPay = lazy(() => import('./pages/MockPay'))
+const PayResult = lazy(() => import('./pages/PayResult'))
 
 // 工作人员端页面（从 staff 工程合并而来）
-import Dashboard from './pages/staff/Dashboard'
-import StaffVehicles from './pages/staff/Vehicles'
-import Customers from './pages/staff/Customers'
-import Members from './pages/staff/Members'
-import Orders from './pages/staff/Orders'
-import Settlements from './pages/staff/Settlements'
-import Reports from './pages/staff/Reports'
-import Users from './pages/staff/Users'
-import SystemConfig from './pages/staff/SystemConfig'
-import DataDict from './pages/staff/DataDict'
+const Dashboard = lazy(() => import('./pages/staff/Dashboard'))
+const StaffVehicles = lazy(() => import('./pages/staff/Vehicles'))
+const Customers = lazy(() => import('./pages/staff/Customers'))
+const Members = lazy(() => import('./pages/staff/Members'))
+const Orders = lazy(() => import('./pages/staff/Orders'))
+const Settlements = lazy(() => import('./pages/staff/Settlements'))
+const Reports = lazy(() => import('./pages/staff/Reports'))
+const Users = lazy(() => import('./pages/staff/Users'))
+const SystemConfig = lazy(() => import('./pages/staff/SystemConfig'))
+const DataDict = lazy(() => import('./pages/staff/DataDict'))
+
+/** 懒加载路由的占位。只在首次点进某个页面、chunk 还没下载完的瞬间出现。 */
+function PageLoading() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '40vh',
+        fontSize: 14,
+        opacity: 0.7,
+      }}
+    >
+      正在加载…
+    </div>
+  )
+}
+
+/** 给单个路由套一个 Suspense 边界（顶层独立页用；嵌套路由的边界在 Layout 的 Outlet 外） */
+const L = (node: JSX.Element) => <Suspense fallback={<PageLoading />}>{node}</Suspense>
 
 const R = (path: string) => ROUTE_ROLES[path]
 const notified = new Set<string>()
@@ -111,8 +141,8 @@ export default function App() {
       <Route path="/register" element={<Register />} />
 
       {/* 模拟收银台 / 支付回跳：独立全屏、无需登录 */}
-      <Route path="/mock-pay" element={<MockPay />} />
-      <Route path="/pay-result" element={<PayResult />} />
+      <Route path="/mock-pay" element={L(<MockPay />)} />
+      <Route path="/pay-result" element={L(<PayResult />)} />
 
       <Route
         path="/"

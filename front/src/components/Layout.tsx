@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth, homePathOf, ROLE } from '../hooks/useAuth'
@@ -968,7 +968,31 @@ export default function Layout() {
         </header>
 
         <main className="content">
-          <Outlet />
+          {/*
+            Suspense 边界放在 Outlet 外层而不是整个 App 外面：
+            页面改成路由级懒加载后，如果边界在更外层，切页的瞬间连侧边栏和顶栏
+            都会被 fallback 顶掉、闪一下白；包在这里就只有内容区在等 chunk。
+          */}
+          <Suspense
+            fallback={
+              <div
+                role="status"
+                aria-live="polite"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minHeight: '40vh',
+                  fontSize: 14,
+                  opacity: 0.7,
+                }}
+              >
+                正在加载…
+              </div>
+            }
+          >
+            <Outlet />
+          </Suspense>
         </main>
 
         {/* 手机端搜索浮层：与桌面搜索共用 keyword / hits / 防抖逻辑，

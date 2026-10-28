@@ -378,24 +378,49 @@ public class ReportService(AppDbContext db, MessageService messages)
         //    这里只动 staff 的实时预警类型，顾客的退款/补缴消息一律不碰。
         var liveKeys = await AlertLiveKeysAsync(liveGlobal);
 
-        var realtimeRows = await _db.Messages
+        //    只取主键与业务键两列：清理只需要判定「哪些行已经没有对应预警」，
+        //    把整行（含 content 正文）读进来再丢掉是白搬一趟。
+        var realtimeRows = await _db.Messages.AsNoTracking()
             .Where(m => m.ReceiverType == "staff" && m.ReceiverId == userId
                         && RealtimeAlertTypes.Contains(m.RefType!))
+            .Select(m => new { m.MessageId, m.RefType, m.RefId })
             .ToListAsync();
 
-        var dead = realtimeRows.Where(m => !liveKeys.Contains(AlertKey(m.RefType, m.RefId))).ToList();
+        var deadIds = realtimeRows
+            .Where(m => !liveKeys.Contains(AlertKey(m.RefType, m.RefId)))
+            .Select(m => m.MessageId)
+            .ToList();
 
-        if (dead.Count > 0)
+        if (deadIds.Count > 0)
         {
-            _db.Messages.RemoveRange(dead);
-            await _db.SaveChangesAsync();
+            // 一条 DELETE ... IN (...) 结束，不再逐条挂到跟踪器上再 SaveChanges
+            await _db.Messages.Where(m => deadIds.Contains(m.MessageId)).ExecuteDeleteAsync();
         }
 
         // ③ 从 message 表读取（含历史已读状态），按时间倒序。
         //    已忽略（软删）的行不返回——员工「删除」通知走 dismissed_at，原因见 MessageService.DismissAsync。
+        //
+        //    Take 上限：通知面板每 60 秒被轮询一次，而这张表只增不减（已读行留着、软删行留着），
+        //    没有上限的话单次响应会随经营时间线性变胖。200 条已远超一个员工需要回看的范围，
+        //    真要找更早的走关键词检索，而不是把整表铺在首屏。
+        //    Category 由本地方法推导，无法进 SQL，所以先投影列、再在内存里组装 DTO。
         var rows = await _db.Messages.AsNoTracking()
             .Where(m => m.ReceiverType == "staff" && m.ReceiverId == userId && m.DismissedAt == null)
             .OrderByDescending(m => m.CreatedAt)
+            .Take(MaxNotifications)
+            .Select(m => new
+            {
+                m.MessageId,
+                m.RefType,
+                m.RefId,
+                m.Level,
+                m.Title,
+                m.Content,
+                m.CreatedAt,
+                m.Link,
+                m.IsRead,
+                m.ReadAt
+            })
             .ToListAsync();
 
         return rows.Select(m => new NotificationDto
@@ -415,6 +440,9 @@ public class ReportService(AppDbContext db, MessageService messages)
 
     /// <summary>全局聚合类预警的 ref_id 固定值（不能为空：唯一索引里 NULL 互不相等，会反复插新行）。</summary>
     private const string GlobalRefId = "global";
+
+    /// <summary>通知面板单次最多返回的条数，理由见 <see cref="GetNotifications"/> 第 ③ 步。</summary>
+    private const int MaxNotifications = 200;
 
     /// <summary>message 行业务键：与前端拿到的 Id（ref_type-ref_id）保持同一套拼法。</summary>
     private static string AlertKey(string? refType, string? refId) => $"{refType}-{refId ?? string.Empty}";
@@ -466,13 +494,11 @@ public class ReportService(AppDbContext db, MessageService messages)
         if (ids != null && ids.Count > 0)
             q = q.Where(m => ids.Contains(m.MessageId));
 
+        // 与 MessageService.MarkReadAsync 同一条路径：单条 UPDATE，不把行（含正文）读进内存
         var now = DateTime.Now;
-        var targets = await q.ToListAsync();
-        foreach (var m in targets)
-        {
-            m.MarkRead(now);
-        }
-        if (targets.Count > 0) await _db.SaveChangesAsync();
+        await q.ExecuteUpdateAsync(s => s
+            .SetProperty(m => m.IsRead, true)
+            .SetProperty(m => m.ReadAt, now));
     }
 
     /// <summary>

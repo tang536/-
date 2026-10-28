@@ -22,13 +22,18 @@ public class MessageController(MessageService messages, ILogger<MessageControlle
 
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
-    /// <summary>顾客查询自己的消息列表（倒序）与未读计数。</summary>
+    /// <summary>
+    /// 顾客查询自己的消息列表（倒序分页）与未读计数。
+    /// pageSize 由 <see cref="MessageService"/> 压到上限，前端传再大也不会把整表拉出来。
+    /// </summary>
     [HttpGet("customer")]
-    public async Task<IActionResult> List()
+    public async Task<IActionResult> List(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = MessageService.DefaultPageSize)
     {
         try
         {
-            var result = await _messages.ListAsync("customer", CurrentUserId);
+            var result = await _messages.ListAsync("customer", CurrentUserId, page, pageSize);
             return Ok(new ApiResponse<object> { Data = result });
         }
         catch (Exception ex)

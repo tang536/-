@@ -50,7 +50,17 @@ public class AppMessage
     [Column("title")]
     public string Title { get; init; } = string.Empty;
 
-    [Column("content", TypeName = "TEXT")]
+    /// <summary>
+    /// 消息正文。列类型是 VARCHAR(500)，不是 TEXT。
+    ///
+    /// 选 VARCHAR 的理由：TEXT 在 InnoDB 里走行外存储，列表查询每命中一行就多一次页跳，
+    /// 而且建不了普通索引（只能前缀索引，等于「按正文搜」这条路彻底走不通）；
+    /// 而本字段的实际内容就是一两句提示，实测最长的一条也只有 74 个字符，
+    /// 500 已经留了近十倍余量。列仍是 NOT NULL，与原来的 TEXT NOT NULL 语义一致。
+    /// 超过 500 字的内容由 MessageService.SendAsync 截断，不让它去撞 MySQL 的 1406。
+    /// </summary>
+    [MaxLength(500)]
+    [Column("content")]
     public string Content { get; init; } = string.Empty;
 
     /// <summary>预警级别（员工侧预警用）：danger / warning / info / success；顾客事件消息可为空</summary>

@@ -52,6 +52,38 @@ export default defineConfig({
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') }
   },
+  build: {
+    /*
+     * echarts 本身压缩后就 567 KB，是「拆出去按需加载」能到的最小单元，
+     * 再切碎只会多几个并发请求。默认 500 KB 的提示在这里已无改进空间，
+     * 提到 600 KB 让构建输出保持干净——真正的体积问题（首屏 1.37 MB）已经解决。
+     */
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        /*
+         * 手动分包：把「很少变、体积大」的依赖从业务代码里摘出来。
+         *
+         * 之前全部页面同步引入，vite 只能打出单个 1.37 MB 的 chunk——顾客在手机上
+         * 打开落地页，也要先下载只有管理员看报表才会用到的 echarts。
+         * 拆开之后：
+         *   vendor-echarts —— 只有点进「报表」才下载，顾客端永远不碰；
+         *   vendor-react    —— 所有页面共用，哈希长期不变，命中浏览器缓存；
+         *   vendor          —— 其余第三方（axios 等）。
+         * 路径分隔符统一换成 / 再匹配，否则 Windows 下的反斜杠会让判断全部落空、
+         * 分包配置静默失效（仍然是单 chunk，只是没人发现）。
+         */
+        manualChunks: (id: string) => {
+          const p = id.replace(/\\/g, '/')
+          if (!p.includes('/node_modules/')) return
+          if (p.includes('/echarts/') || p.includes('/zrender/')) return 'vendor-echarts'
+          if (p.includes('/react/') || p.includes('/react-dom/')
+              || p.includes('/react-router') || p.includes('/scheduler/')) return 'vendor-react'
+          return 'vendor'
+        }
+      }
+    }
+  },
   server: {
     // 默认只绑 localhost，局域网模式由 start.bat 注入 LAN_HOST=1 才绑 0.0.0.0。
     host: process.env.LAN_HOST === '1' ? true : 'localhost',

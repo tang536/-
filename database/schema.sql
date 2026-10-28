@@ -218,7 +218,8 @@ CREATE TABLE IF NOT EXISTS `system_log` (
   `operate_module` VARCHAR(30) DEFAULT NULL,
   `ip_address` VARCHAR(50) DEFAULT NULL,
   PRIMARY KEY (`log_id`),
-  KEY `idx_operate_time` (`operate_time`)
+  KEY `idx_operate_time` (`operate_time`),
+  KEY `idx_log_module_time` (`operate_module`, `operate_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统日志表';
 
 -- 14. 续租记录表（对应《唐荣强.docx》图4-14）
@@ -282,7 +283,7 @@ CREATE TABLE IF NOT EXISTS `message` (
   `ref_type` VARCHAR(20) NOT NULL COMMENT '业务类型（refund/supplement/supplement_paid/overdue/expiring/pending/maintenance/profile_incomplete/maintain_due）',
   `ref_id` VARCHAR(60) DEFAULT NULL COMMENT '业务实体ID（订单号/车辆ID等），用于幂等去重与跳转定位',
   `title` VARCHAR(120) NOT NULL COMMENT '消息标题',
-  `content` TEXT NOT NULL COMMENT '消息正文',
+  `content` VARCHAR(500) NOT NULL COMMENT '消息正文（VARCHAR 而非 TEXT：可建索引、无行外存储页跳）',
   `level` VARCHAR(10) DEFAULT NULL COMMENT '预警级别（danger/warning/info/success），顾客事件消息可为空',
   `link` VARCHAR(120) DEFAULT NULL COMMENT '点击跳转的前端路由',
   `is_read` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已读（0未读 1已读）',
@@ -291,7 +292,8 @@ CREATE TABLE IF NOT EXISTS `message` (
   `dismissed_at` DATETIME DEFAULT NULL COMMENT '软删时间（员工删除通知即置值，不为空即隐藏；预警解除后随行清理）',
   PRIMARY KEY (`message_id`),
   UNIQUE KEY `uk_msg_biz` (`receiver_type`, `receiver_id`, `ref_type`, `ref_id`),
-  KEY `idx_msg_receiver` (`receiver_type`, `receiver_id`, `is_read`)
+  KEY `idx_msg_receiver` (`receiver_type`, `receiver_id`, `is_read`),
+  KEY `idx_msg_inbox` (`receiver_type`, `receiver_id`, `dismissed_at`, `created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通用消息表（统一通知中心）';
 
 -- ============================================

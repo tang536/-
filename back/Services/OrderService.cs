@@ -55,6 +55,12 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
     /// </summary>
     private static int _orderSeq = Random.Shared.Next(0, 10_000);
 
+    /// <summary>惰性回收的最小间隔（秒）：列表页高频访问时不必每次都扫一遍超时单。</summary>
+    private const int LazyReleaseIntervalSeconds = 30;
+
+    /// <summary>上次惰性回收的时间点（UTC Ticks），供 <see cref="ThrottledRelease"/> 节流。</summary>
+    private static long _lastLazyReleaseTicks;
+
     /// <summary>
     /// 【兜底回收】把所有超时未支付的订单批量取消并释放车辆。
     /// 采用「惰性回收」策略：在订单列表 / 发起支付 / 状态查询等入口调用，
@@ -156,6 +162,27 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         }
     }
 
+    /// <summary>
+    /// 惰性回收的节流版本：30 秒内只真正扫一次库。
+    ///
+    /// 为什么需要节流：列表页每次刷新、每次翻页、每次改筛选条件都会走到 QueryAsync，
+    /// 而 <see cref="PendingOrderCleanupService"/> 本来就每分钟带命名锁跑同一段回收逻辑。
+    /// 两者叠在一起时，一个人连点几次筛选就能触发十几次「扫待支付单 + 可能开事务锁行」，
+    /// 换来的只是把回收时刻从「最迟 1 分钟后」提到「立即」——而超时判定本身的刻度是
+    /// 15 分钟，这点提前量对用户没有任何可感知差别。
+    ///
+    /// 用 CompareExchange 占位而不是「先读时间戳、再赋值」：并发进来的几个请求里只有一个
+    /// 真正去扫，其余直接按「刚扫过」返回，不会同时开好几个事务抢同一批订单。
+    /// </summary>
+    private async Task ThrottledRelease()
+    {
+        var now = DateTime.UtcNow.Ticks;
+        var last = Interlocked.Read(ref _lastLazyReleaseTicks);
+        if (now - last < TimeSpan.TicksPerSecond * LazyReleaseIntervalSeconds) return;
+        if (Interlocked.CompareExchange(ref _lastLazyReleaseTicks, now, last) != last) return;
+        await ReleaseExpiredPendingOrders();
+    }
+
     /// <summary>顾客自助取消自己的待支付订单（已支付的单不允许自助取消，须走门店流程）</summary>
     public async Task CancelByCustomer(int orderId, int customerId)
     {
@@ -219,8 +246,9 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         DateTime? dateFrom, DateTime? dateTo, string? sortBy, bool sortDesc,
         int page, int pageSize)
     {
-        // 进列表前先回收超时单，保证用户看到的状态与车辆可用性都是最新的
-        await ReleaseExpiredPendingOrders();
+        // 进列表前先回收超时单，保证用户看到的状态与车辆可用性都是最新的。
+        // 走节流版本：列表页每刷新一次就扫一遍待支付单并不划算，详见 ThrottledRelease。
+        await ThrottledRelease();
 
         var q = _db.RentalOrders.Include(o => o.Customer).Include(o => o.Vehicle).AsQueryable();
         if (customerId.HasValue) q = q.Where(o => o.CustomerId == customerId.Value);

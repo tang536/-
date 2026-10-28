@@ -31,6 +31,12 @@ public class MessageService(AppDbContext db, ILogger<MessageService> logger)
         string title, string content, string? level = null, string? link = null,
         bool keepReadStateOnChange = false)
     {
+        // 正文列是 VARCHAR(500)（见 AppMessage.Content 的注释）。超长内容会被 MySQL 以 1406
+        // 拒绝（严格模式）或静默截断（非严格模式），两种都比「先裁剪」更糟：
+        // 通知是旁路，不该让一条过长的预警文案把整笔业务动作带崩。
+        title = Clip(title, 120);
+        content = Clip(content, 500);
+
         try
         {
             /*
@@ -84,12 +90,45 @@ public class MessageService(AppDbContext db, ILogger<MessageService> logger)
         }
     }
 
-    /// <summary>查询某接收人的消息（按时间倒序），并附未读计数</summary>
-    public async Task<object> ListAsync(string receiverType, int receiverId)
+    /// <summary>
+    /// 按列宽截断字符串。切开前先看是不是代理对（emoji 占两个 char），
+    /// 半个代理对写进 utf8mb4 列会变成乱码方块，比少一个字更难解释。
+    /// </summary>
+    private static string Clip(string? text, int max)
     {
-        var items = await _db.Messages
-            .Where(m => m.ReceiverType == receiverType && m.ReceiverId == receiverId)
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        if (text.Length <= max) return text;
+        var cut = max;
+        if (char.IsHighSurrogate(text[cut - 1])) cut--;
+        return text[..cut];
+    }
+
+    /// <summary>单次返回的消息条数上限。前端需要更多可以翻页，但不允许一次把整张表拉进内存。</summary>
+    public const int MaxPageSize = 200;
+
+    /// <summary>默认每页条数。</summary>
+    public const int DefaultPageSize = 50;
+
+    /// <summary>
+    /// 查询某接收人的消息（按时间倒序分页），并附未读计数。
+    ///
+    /// 未读数单独走一次 COUNT，不能拿本页结果去数：分页之后 items 只是当前页，
+    /// 「未读 37 条」会被显示成「未读 3 条」，角标就此失真。
+    /// </summary>
+    public async Task<object> ListAsync(string receiverType, int receiverId,
+        int page = 1, int pageSize = DefaultPageSize)
+    {
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize <= 0 ? DefaultPageSize : Math.Min(pageSize, MaxPageSize);
+
+        // AsNoTracking：列表只读，不需要变更跟踪器，省掉每行一份的快照
+        var scope = _db.Messages.AsNoTracking()
+            .Where(m => m.ReceiverType == receiverType && m.ReceiverId == receiverId);
+
+        var items = await scope
             .OrderByDescending(m => m.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .Select(m => new
             {
                 m.MessageId,
@@ -105,8 +144,9 @@ public class MessageService(AppDbContext db, ILogger<MessageService> logger)
             })
             .ToListAsync();
 
-        var unread = items.Count(i => !i.IsRead);
-        return new { Items = items, Unread = unread };
+        var unread = await scope.CountAsync(m => !m.IsRead);
+        var total = await scope.CountAsync();
+        return new { Items = items, Unread = unread, Total = total, Page = page, PageSize = pageSize };
     }
 
     /// <summary>标记已读：ids 为空表示「全部标记已读」，只影响该接收人自己的消息</summary>
@@ -118,13 +158,14 @@ public class MessageService(AppDbContext db, ILogger<MessageService> logger)
         if (ids != null && ids.Count > 0)
             q = q.Where(m => ids.Contains(m.MessageId));
 
+        // 一条 UPDATE ... WHERE 取代「查出实体 → 逐行赋值 → SaveChanges」：
+        // 后者会把每行的正文（content）一并读进内存再按行发 UPDATE，「全部已读」时
+        // 往返次数与消息条数成正比。两列必须由同一条语句写入，与 MarkRead 的语义一致
+        // （否则会出现「已读但没有阅读时间」）。
         var now = DateTime.Now;
-        var targets = await q.ToListAsync();
-        foreach (var m in targets)
-        {
-            m.MarkRead(now);
-        }
-        if (targets.Count > 0) await _db.SaveChangesAsync();
+        await q.ExecuteUpdateAsync(s => s
+            .SetProperty(m => m.IsRead, true)
+            .SetProperty(m => m.ReadAt, now));
     }
 
     /// <summary>
@@ -138,12 +179,9 @@ public class MessageService(AppDbContext db, ILogger<MessageService> logger)
         if (ids != null && ids.Count > 0)
             q = q.Where(m => ids.Contains(m.MessageId));
 
-        var targets = await q.ToListAsync();
-        if (targets.Count == 0) return 0;
-
-        _db.Messages.RemoveRange(targets);
-        await _db.SaveChangesAsync();
-        return targets.Count;
+        // 直接 DELETE ... WHERE：返回值就是受影响行数，即原来的「删除条数」；
+        // 不再先 ToListAsync 把所有行（含 content）读进内存再 RemoveRange 逐条删。
+        return await q.ExecuteDeleteAsync();
     }
 
     /// <summary>
@@ -164,9 +202,8 @@ public class MessageService(AppDbContext db, ILogger<MessageService> logger)
             q = q.Where(m => ids.Contains(m.MessageId));
 
         var now = DateTime.Now;
-        var targets = await q.ToListAsync();
-        foreach (var m in targets) m.Dismiss(now);
-        if (targets.Count > 0) await _db.SaveChangesAsync();
-        return targets.Count;
+        // 同样是单条 UPDATE：受影响行数即「实际忽略条数」，
+        // 过滤条件里的 dismissed_at IS NULL 保证重复忽略不会被计数两次。
+        return await q.ExecuteUpdateAsync(s => s.SetProperty(m => m.DismissedAt, now));
     }
 }
