@@ -16,10 +16,7 @@ namespace ERental.Controllers;
 // 支付记录查询：管理员 / 财务（对账）；退款由前台在归还结算环节发起；
 // 发起支付 / 查支付状态：顾客为自己的订单付款，故对顾客开放（方法内校验归属）。
 [Authorize(Policy = Policies.AnyRole)]
-public class PaymentController(
-    PaymentService svc, AlipayService alipay, WechatPayService wechat, BankPayService bank,
-    PayConfigService payConfig, BalanceService balance, OrderService orders,
-    LogService logs, MemberService member, AppDbContext db, ILogger<PaymentController> logger) : ControllerBase
+public class PaymentController(PaymentService svc, AlipayService alipay, WechatPayService wechat, BankPayService bank, PayConfigService payConfig, BalanceService balance, OrderService orders, LogService logs, MemberService member, AppDbContext db, ILogger<PaymentController> logger) : ControllerBase
 {
     private readonly PaymentService _svc = svc;
     private readonly AlipayService _alipay = alipay;
@@ -42,8 +39,7 @@ public class PaymentController(
     /// NullReferenceException（新增 mock/notify 端点时踩过）。
     /// system_log.user_id 本就可空，故安全返回 null 即可。
     /// </summary>
-    private int? CurrentUserIdOrNull =>
-        int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
+    private int? CurrentUserIdOrNull => int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
 
     private string? ClientIp => HttpContext.Connection.RemoteIpAddress?.ToString();
 
@@ -53,10 +49,7 @@ public class PaymentController(
     /// 用于生成支付回跳地址：从哪个地址来就回哪个地址，而不是让服务端猜网卡 IP。
     /// 取值合法性由 <see cref="PayConfigService.BuildReturnUrlAsync"/> 统一校验。
     /// </summary>
-    private string? ClientOrigin =>
-        PayConfigService.ResolveClientOrigin(
-            Request.Headers["X-Client-Origin"].ToString(),
-            Request.Headers.Referer.ToString());
+    private string? ClientOrigin => PayConfigService.ResolveClientOrigin(Request.Headers["X-Client-Origin"].ToString(), Request.Headers.Referer.ToString());
 
     /// <summary>
     /// 支付完成后引导用户返回的前端地址（微信 H5 的 redirect_url、支付宝 return_url 等）。
@@ -99,8 +92,7 @@ public class PaymentController(
         try
         {
             var dto = await _alipay.SelfCheckAsync();
-            await AuditAsync("支付宝接线自检", dto.SignatureAccepted || dto.Mode == PayConfigService.ModeMock,
-                $"模式 {dto.Mode}，签名{(dto.SignatureAccepted ? "通过" : "未通过")}");
+            await AuditAsync("支付宝接线自检", dto.SignatureAccepted || dto.Mode == PayConfigService.ModeMock, $"模式 {dto.Mode}，签名{(dto.SignatureAccepted ? "通过" : "未通过")}");
             return Ok(new ApiResponse<AlipaySelfCheckDto> { Data = dto });
         }
         catch (Exception ex)
@@ -125,8 +117,7 @@ public class PaymentController(
         {
             var dto = await _wechat.SelfCheckAsync();
             var ok = dto.SignatureAccepted || !dto.Enabled;
-            await AuditAsync("微信支付接线自检", ok,
-                dto.SignatureAccepted ? "签名通过" : (dto.Enabled ? "签名未通过" : "未启用/未配置"));
+            await AuditAsync("微信支付接线自检", ok, dto.SignatureAccepted ? "签名通过" : (dto.Enabled ? "签名未通过" : "未启用/未配置"));
             return Ok(new ApiResponse<ChannelSelfCheckDto> { Data = dto });
         }
         catch (Exception ex)
@@ -151,8 +142,7 @@ public class PaymentController(
         {
             var dto = await _bank.SelfCheckAsync();
             var ok = dto.SignatureAccepted || !dto.Enabled;
-            await AuditAsync("银行卡支付接线自检", ok,
-                dto.SignatureAccepted ? "签名通过" : (dto.Enabled ? "签名未通过" : "未启用/未配置"));
+            await AuditAsync("银行卡支付接线自检", ok, dto.SignatureAccepted ? "签名通过" : (dto.Enabled ? "签名未通过" : "未启用/未配置"));
             return Ok(new ApiResponse<ChannelSelfCheckDto> { Data = dto });
         }
         catch (Exception ex)
@@ -193,8 +183,7 @@ public class PaymentController(
         {
             var data = await _balance.GetOverviewAsync(force);
             var okCount = data.Items.Count(i => i.Status == "ok");
-            await AuditAsync(force ? "强制刷新支付账户余额" : "查询支付账户余额",
-                okCount > 0, $"成功 {okCount}/{data.Items.Count} 个渠道");
+            await AuditAsync(force ? "强制刷新支付账户余额" : "查询支付账户余额", okCount > 0, $"成功 {okCount}/{data.Items.Count} 个渠道");
             return Ok(new ApiResponse<BalanceOverviewDto> { Data = data });
         }
         catch (Exception ex)
@@ -217,8 +206,7 @@ public class PaymentController(
     /// </summary>
     [HttpGet("config")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> GetPayConfig() =>
-        Ok(new ApiResponse<PayConfigViewDto> { Data = await _payConfig.GetViewAsync() });
+    public async Task<IActionResult> GetPayConfig() => Ok(new ApiResponse<PayConfigViewDto> { Data = await _payConfig.GetViewAsync() });
 
     /// <summary>
     /// 按需读取**单个**密钥的明文：管理端「支付配置」弹窗里点「显示」时调用。
@@ -233,8 +221,7 @@ public class PaymentController(
     public async Task<IActionResult> GetPayConfigSecret([FromQuery] string field)
     {
         var value = await _payConfig.GetSecretAsync(field);
-        if (value is null)
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = "不支持的配置项", Success = false });
+        if (value is null) return BadRequest(new ApiResponse<object> { Code = 400, Message = "不支持的配置项", Success = false });
 
         await AuditAsync("查看支付密钥明文", true, $"字段 {field}");
         return Ok(new ApiResponse<object> { Data = new { field, value } });
@@ -271,10 +258,7 @@ public class PaymentController(
             _logger.LogWarning("保存支付配置失败（{ExType}）", ex.GetType().Name);
             await AuditAsync("保存支付配置", false, "保存失败");
             // 先按统一口径翻译（业务中文原样 / 驱动原文转中文），再对保留下来的细节做密钥脱敏。
-            var safe = SecretMasker.Scrub(ErrorText.Safe(ex),
-                dto.ProdPrivateKey, dto.ProdAlipayPublicKey,
-                dto.SandboxPrivateKey, dto.SandboxAlipayPublicKey,
-                dto.WechatApiV3Key, dto.WechatPrivateKey, dto.BankSignKey);
+            var safe = SecretMasker.Scrub(ErrorText.Safe(ex), dto.ProdPrivateKey, dto.ProdAlipayPublicKey, dto.SandboxPrivateKey, dto.SandboxAlipayPublicKey, dto.WechatApiV3Key, dto.WechatPrivateKey, dto.BankSignKey);
             return BadRequest(new ApiResponse<object> { Code = 400, Message = safe, Success = false });
         }
     }
@@ -282,8 +266,7 @@ public class PaymentController(
     /// <summary>支付记录列表：可按状态 + 时间段（from/to，闭区间）筛选，供报表页区间统计使用。仅财务（资金流水属财务职责范围）</summary>
     [HttpGet]
     [Authorize(Policy = Policies.FinanceOnly)]
-    public async Task<IActionResult> GetAll(string? status, DateTime? from, DateTime? to) =>
-        Ok(new ApiResponse<List<PaymentDto>> { Data = await _svc.GetAll(status, from, to) });
+    public async Task<IActionResult> GetAll(string? status, DateTime? from, DateTime? to) => Ok(new ApiResponse<List<PaymentDto>> { Data = await _svc.GetAll(status, from, to) });
 
     /// <summary>
     /// 发起支付：为订单创建支付并返回收银台地址。
@@ -297,12 +280,10 @@ public class PaymentController(
             // 先回收超时未支付的订单：避免顾客拿着一个已被系统取消的单继续点支付
             await _orders.ReleaseExpiredPendingOrders();
 
-            var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderNo == dto.OrderNo)
-                ?? throw new Exception("订单不存在");
+            var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderNo == dto.OrderNo) ?? throw new Exception("订单不存在");
 
             // 顾客只能为自己的订单付款：按 Token 内的 customerId 二次校验，不信任前端传参
-            if (IsCustomer && order.CustomerId != CurrentUserId)
-                return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权支付该订单", Success = false });
+            if (IsCustomer && order.CustomerId != CurrentUserId) return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权支付该订单", Success = false });
 
             if (order.OrderStatus is "已支付" or "租赁中")
             {
@@ -321,20 +302,16 @@ public class PaymentController(
                 });
             }
 
-            if (order.OrderStatus != "待支付")
-                throw new Exception($"当前订单状态为「{order.OrderStatus}」，不可支付");
+            if (order.OrderStatus != "待支付") throw new Exception($"当前订单状态为「{order.OrderStatus}」，不可支付");
             var amount = order.TotalRent + order.Deposit;
             var payType = string.IsNullOrWhiteSpace(dto.PayType) ? "支付宝" : dto.PayType.Trim();
 
             // 发起支付即把支付记录的渠道从下单占位（「待定」）更新为顾客本次所选；
             // 付款完成前员工侧看到的也是真实意向，入账时仍会以回调/查单数据最终覆盖。
-            var pendingRecords = await _db.PaymentRecords
-                .Where(p => p.OrderId == order.OrderId && p.PayStatus == "待支付")
-                .ToListAsync();
+            var pendingRecords = await _db.PaymentRecords.Where(p => p.OrderId == order.OrderId && p.PayStatus == "待支付").ToListAsync();
             foreach (var pr in pendingRecords)
                 pr.SetChannel(payType);
-            if (pendingRecords.Count > 0)
-                await _db.SaveChangesAsync();
+            if (pendingRecords.Count > 0) await _db.SaveChangesAsync();
 
             // 当前生效模式决定是否真实支付（生产/沙箱为真实，模拟为内置收银台）
             var rt = await _payConfig.ResolveAsync();
@@ -450,7 +427,7 @@ public class PaymentController(
                 Data = r,
                 Success = r.Accepted,
                 // 失败时把服务端判定的具体原因带出去，前端直接显示，
-                // 不再是一句无法行动的「支付通知未成功受理，请重试」
+                // 用户才知道下一步该补什么，而不是只看到一句笼统的「请重试」
                 Message = r.Message,
                 Code = r.Accepted ? 200 : 400
             });
@@ -491,9 +468,7 @@ public class PaymentController(
             var (ok, msg) = await _wechat.HandleNotifyAsync(headers, body);
             // 订单号在解密后的报文里，这里拿不到明文订单号；审计落在服务端日志
             // （HandleNotifyAsync 内部已按订单号记录入账结果），端点侧不重复记。
-            return ok
-                ? Ok(new { code = "SUCCESS", message = "成功" })
-                : BadRequest(new { code = "FAIL", message = msg });
+            return ok ? Ok(new { code = "SUCCESS", message = "成功" }) : BadRequest(new { code = "FAIL", message = msg });
         }
         catch (Exception ex)
         {
@@ -539,14 +514,12 @@ public class PaymentController(
     public async Task<IActionResult> Status(string orderNo)
     {
         // ── 会员购买（HY 交易号）：查单兜底 + 幂等入账，口径与订单一致 ──
-        if (orderNo.StartsWith("HY"))
-            return await MemberPayStatus(orderNo);
+        if (orderNo.StartsWith("HY")) return await MemberPayStatus(orderNo);
 
         var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderNo == orderNo);
         if (order == null) return NotFound(new ApiResponse<object> { Code = 404, Message = "订单不存在", Success = false });
 
-        if (IsCustomer && order.CustomerId != CurrentUserId)
-            return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权查看该订单", Success = false });
+        if (IsCustomer && order.CustomerId != CurrentUserId) return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权查看该订单", Success = false });
 
         // 若本地仍为待支付，向支付渠道主动查一次（应对回调延迟/丢包——沙箱/开发环境
         // 回调常打不进本机，查单兜底会当场入账，所以查完必须重载订单，
@@ -554,12 +527,10 @@ public class PaymentController(
         // 模拟收银台的入账由 mock/notify 主动推送，无需查单。
         if (order.OrderStatus == "待支付")
         {
-            var latestType = (await _db.PaymentRecords.AsNoTracking()
-                .Where(p => p.OrderId == order.OrderId)
-                .OrderByDescending(p => p.PayId).FirstOrDefaultAsync())?.PayType ?? "";
+            var latestType = (await _db.PaymentRecords.AsNoTracking().Where(p => p.OrderId == order.OrderId).OrderByDescending(p => p.PayId).FirstOrDefaultAsync())?.PayType ?? "";
 
-            // 三个通道各查各的：原实现「非微信即支付宝」，银行卡订单一律被拿支付宝查，
-            // 结果必然是「订单不存在」→ 永远等不到入账，只能靠回调。银行卡若未配查单地址，
+            // 三个通道各查各的：银行卡订单必须走银行卡查单——用支付宝去查必然返回
+            // 「订单不存在」，永远等不到入账。银行卡若未配查单地址，
             // QueryTradeStatusAsync 内部直接返回空串（保持本地状态），不会误判。
             //
             // 占位渠道（「待定」/空）要跳过：那表示顾客还没点过「去支付」，
@@ -579,15 +550,12 @@ public class PaymentController(
 
         // 取本单最近一笔「钱到过账」的支付记录回传交易号：结算后退押金会把记录改成
         // 「部分退款」，只数「已支付」会让已完结订单的交易号变成空串。
-        var record = await _db.PaymentRecords.AsNoTracking()
-            .Where(p => p.OrderId == order.OrderId && PayStatuses.MoneyArrived.Contains(p.PayStatus))
-            .OrderByDescending(p => p.PayId).FirstOrDefaultAsync();
+        var record = await _db.PaymentRecords.AsNoTracking().Where(p => p.OrderId == order.OrderId && PayStatuses.MoneyArrived.Contains(p.PayStatus)).OrderByDescending(p => p.PayId).FirstOrDefaultAsync();
 
-        // 「支付成功」的判定不能只盯「已支付 / 租赁中」两个状态。
-        // 前端支付结果页与支付页现在都会在「页面重新可见」时再查一次（从支付宝切回来、
-        // 浏览器后退、切回标签页），用户过一阵子才切回来时订单往往已经走过
-        // 租赁中 → 已完结，旧的判定会当场把「支付成功」翻成「支付未完成」——
-        // 钱明明付过，界面却告诉用户没付。改为「状态前进到已完结也算」，
+        // 「支付成功」不能只盯「已支付 / 租赁中」两个状态：前端支付页与结果页
+        // 会在「页面重新可见」时再查一次（从支付宝切回来、浏览器后退、切回标签页），
+        // 用户过一阵子才切回来时订单往往已经走过 租赁中 → 已完结，
+        // 只认前两个状态会把已付的单翻成「支付未完成」。因此状态前进到已完结也算，
         // 并以「本单存在钱到过账的记录」兜底，两者取或。
         var paid = order.OrderStatus is "已支付" or "租赁中" or "已完结"
                    || PayStatuses.IsMoneyArrived(record?.PayStatus);
@@ -614,8 +582,7 @@ public class PaymentController(
     private async Task<IActionResult> MemberPayStatus(string tradeNo)
     {
         var view = await _member.GetPurchaseView(tradeNo);
-        if (!view.Exists)
-            return NotFound(new ApiResponse<object> { Code = 404, Message = "会员购买记录不存在", Success = false });
+        if (!view.Exists) return NotFound(new ApiResponse<object> { Code = 404, Message = "会员购买记录不存在", Success = false });
 
         var paid = view.Done;
         var statusText = view.Done ? "已支付" : "待支付";

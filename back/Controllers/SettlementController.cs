@@ -19,8 +19,7 @@ public class SettlementController(SettlementService svc) : ControllerBase
     private readonly SettlementService _svc = svc;
 
     [HttpGet]
-    public async Task<IActionResult> GetAll() =>
-        Ok(new ApiResponse<object> { Data = await _svc.GetAll() });
+    public async Task<IActionResult> GetAll() => Ok(new ApiResponse<object> { Data = await _svc.GetAll() });
 
     /// <summary>
     /// 结算试算：前台在弹窗里选定订单后，立刻显示系统将自动计收的逾期费

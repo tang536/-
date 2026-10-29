@@ -89,8 +89,7 @@ public class Vehicle
     /// 新建车辆档案（管理员「新增车辆」，用况4 步骤2）。
     /// 主键由数据库自增，二维码要等主键落定后再由 <see cref="AssignQrCode"/> 写入，二者都不从入参来。
     /// </summary>
-    public static Vehicle Create(string vehicleNo, string? frameNumber, string? brand, DateTime? buyTime,
-        decimal? buyPrice, string vehicleStatus, decimal? dailyRent, decimal? deposit, string? imageUrl) => new()
+    public static Vehicle Create(string vehicleNo, string? frameNumber, string? brand, DateTime? buyTime, decimal? buyPrice, string vehicleStatus, decimal? dailyRent, decimal? deposit, string? imageUrl) => new()
         {
             VehicleNo = vehicleNo.Trim(),
             FrameNumber = Normalize(frameNumber),
@@ -109,8 +108,7 @@ public class Vehicle
     /// 状态变更走 <see cref="ChangeStatus"/> 以便单独留痕与校验。
     /// 购入时间留空表示「不修改」（历史车辆往往没有采购单据）。
     /// </summary>
-    public void ApplyProfile(string vehicleNo, string? frameNumber, string? brand, DateTime? buyTime,
-        decimal? buyPrice, decimal? dailyRent, decimal? deposit)
+    public void ApplyProfile(string vehicleNo, string? frameNumber, string? brand, DateTime? buyTime, decimal? buyPrice, decimal? dailyRent, decimal? deposit)
     {
         VehicleNo = vehicleNo.Trim();
         FrameNumber = Normalize(frameNumber);

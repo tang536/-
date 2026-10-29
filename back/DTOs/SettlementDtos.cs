@@ -3,10 +3,10 @@ namespace ERental.DTOs;
 /// <summary>
 /// 结算记录列表行。
 ///
-/// 之前直接返回 <see cref="Models.SettleRecord"/> 实体，EF 把 <c>Include</c> 进来的
-/// 整棵对象图（RentalOrder → Customer → 该客户的全部历史订单）一并序列化，
-/// 实测 23 条记录就有 128KB，记录攒到几百条会变成几 MB 的无用负载。
-/// 对账表只需要订单号、车牌、客户名三个字段，这里投影成扁平结构。
+/// 扁平的列表投影，不直接返回 <see cref="Models.SettleRecord"/> 实体：
+/// 实体会把 <c>Include</c> 进来的整棵对象图（RentalOrder → Customer → 该客户的全部历史订单）
+/// 一并序列化，23 条记录就有 128KB，攒到几百条会变成几 MB 的无用负载。
+/// 对账表只需要订单号、车牌、客户名三个字段。
 /// </summary>
 public class SettleListDto
 {

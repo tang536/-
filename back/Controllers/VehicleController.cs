@@ -25,9 +25,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     /// </summary>
     [HttpGet]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> GetAll(string? status, string? keyword, string? brand,
-        string? sortBy = null, bool sortDesc = true,
-        int page = 0, int pageSize = 0)
+    public async Task<IActionResult> GetAll(string? status, string? keyword, string? brand, string? sortBy = null, bool sortDesc = true, int page = 0, int pageSize = 0)
     {
         if (pageSize > 0)
         {
@@ -47,8 +45,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     /// <summary>各状态车辆数（车辆页签角标）。分页后前端没有全集，角标改由后端分组统计。</summary>
     [HttpGet("stats")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> GetStats(string? keyword, string? brand) =>
-        Ok(new ApiResponse<Dictionary<string, int>> { Data = await _svc.GetStatusCountsAsync(keyword, brand) });
+    public async Task<IActionResult> GetStats(string? keyword, string? brand) => Ok(new ApiResponse<Dictionary<string, int>> { Data = await _svc.GetStatusCountsAsync(keyword, brand) });
 
     [HttpGet("{id:int}")]
     [Authorize(Policy = Policies.AdminOrReception)]
@@ -91,8 +88,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     /// <summary>最近热销车辆：顾客线上租车页的推荐位，故对顾客一并开放</summary>
     [HttpGet("popular")]
     [Authorize(Policy = Policies.AdminOrReceptionOrCustomer)]
-    public async Task<IActionResult> GetPopular(int days = 30, int limit = 6) =>
-        Ok(new ApiResponse<List<PopularVehicleDto>> { Data = await _svc.GetPopular(days, limit) });
+    public async Task<IActionResult> GetPopular(int days = 30, int limit = 6) => Ok(new ApiResponse<List<PopularVehicleDto>> { Data = await _svc.GetPopular(days, limit) });
 
     /// <summary>
     /// 顾客端「全部车辆」目录：热销板块点「查看全部车辆」后进入，
@@ -100,8 +96,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
     /// </summary>
     [HttpGet("catalog")]
     [Authorize(Policy = Policies.AdminOrReceptionOrCustomer)]
-    public async Task<IActionResult> GetCatalog([FromQuery] string? keyword) =>
-        Ok(new ApiResponse<List<PopularVehicleDto>> { Data = await _svc.GetCatalog(keyword) });
+    public async Task<IActionResult> GetCatalog([FromQuery] string? keyword) => Ok(new ApiResponse<List<PopularVehicleDto>> { Data = await _svc.GetCatalog(keyword) });
 
     /// <summary>上传车辆图片（multipart/form-data，字段名 file），返回 { url }</summary>
     [HttpPost("{id:int}/image")]
@@ -171,9 +166,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
             return Ok(new ApiResponse<BatchVehicleResultDto>
             {
                 Data = data,
-                Message = data.SuccessCount == data.Total
-                    ? $"成功新增 {data.SuccessCount} 辆"
-                    : $"成功 {data.SuccessCount} / 共 {data.Total} 辆"
+                Message = data.SuccessCount == data.Total ? $"成功新增 {data.SuccessCount} 辆" : $"成功 {data.SuccessCount} / 共 {data.Total} 辆"
             });
         }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
@@ -198,9 +191,7 @@ public class VehicleController(VehicleService svc, AuthService auth) : Controlle
             return Ok(new ApiResponse<BatchVehicleResultDto>
             {
                 Data = data,
-                Message = data.SuccessCount == data.Total
-                    ? $"成功更新 {data.SuccessCount} 辆"
-                    : $"成功 {data.SuccessCount} / 共 {data.Total} 辆"
+                Message = data.SuccessCount == data.Total ? $"成功更新 {data.SuccessCount} 辆" : $"成功 {data.SuccessCount} / 共 {data.Total} 辆"
             });
         }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }

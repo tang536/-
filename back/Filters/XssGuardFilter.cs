@@ -46,8 +46,7 @@ public sealed class XssGuardFilter(ILogger<XssGuardFilter> logger) : IActionFilt
 
         if (changed > 0)
         {
-            _logger.LogWarning("入参含 HTML 标签或脚本伪协议，已剥离 {Count} 处：{Method} {Path}",
-                changed, context.HttpContext.Request.Method, context.HttpContext.Request.Path);
+            _logger.LogWarning("入参含 HTML 标签或脚本伪协议，已剥离 {Count} 处：{Method} {Path}", changed, context.HttpContext.Request.Method, context.HttpContext.Request.Path);
         }
     }
 

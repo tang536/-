@@ -22,9 +22,7 @@ namespace ERental.Services;
 ///  ③ 生成是长任务（本地 4GB 显卡一张图几十秒到几分钟），轮询 + 总体超时，
 ///     失败时把 ComfyUI 自己的报错（缺模型/缺节点/OOM）原样带给用户。
 /// </summary>
-public class AiImageService(
-    ComfyUiClient comfy, ImageStorage images, IOptions<AiImageOptions> opt,
-    AiProgressTracker tracker, ILogger<AiImageService> logger)
+public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<AiImageOptions> opt, AiProgressTracker tracker, ILogger<AiImageService> logger)
 {
     private readonly ComfyUiClient _comfy = comfy;
     private readonly ImageStorage _images = images;
@@ -34,19 +32,14 @@ public class AiImageService(
     private readonly AiImageOptions _opt = opt.Value;
 
     /// <summary>模板目录绝对路径（不存在则返回配置值拼出的路径，由调用方判在否）。</summary>
-    private string TemplatesDir =>
-        Path.IsPathRooted(_opt.WorkflowsDir)
-            ? _opt.WorkflowsDir
-            : Path.Combine(Directory.GetCurrentDirectory(), _opt.WorkflowsDir);
+    private string TemplatesDir => Path.IsPathRooted(_opt.WorkflowsDir) ? _opt.WorkflowsDir : Path.Combine(Directory.GetCurrentDirectory(), _opt.WorkflowsDir);
 
     /// <summary>可用模板名（.json 文件名不含扩展名，按名称排序）。</summary>
     public List<string> ListTemplates()
     {
         var dir = TemplatesDir;
         if (!Directory.Exists(dir)) return [];
-        return [.. Directory.GetFiles(dir, "*.json")
-            .Select(f => Path.GetFileNameWithoutExtension(f))
-            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)];
+        return [.. Directory.GetFiles(dir, "*.json").Select(f => Path.GetFileNameWithoutExtension(f)).OrderBy(n => n, StringComparer.OrdinalIgnoreCase)];
     }
 
     public async Task<AiImageStatus> GetStatusAsync(CancellationToken ct = default)
@@ -58,8 +51,7 @@ public class AiImageService(
         };
         if (!status.Online)
         {
-            status.Message = $"ComfyUI 未启动或地址不通（{await _comfy.EffectiveBaseUrlAsync(ct)}）。" +
-                "请先打开 Comfy Desktop 并等待界面加载完成；地址变更可在「系统配置」页更新。";
+            status.Message = $"ComfyUI 未启动或地址不通（{await _comfy.EffectiveBaseUrlAsync(ct)}）。" + "请先打开 Comfy Desktop 并等待界面加载完成；地址变更可在「系统配置」页更新。";
             return status;
         }
         // 模型下拉：CheckpointLoaderSimple（safetensors 主模型）与 UNETLoader（GGUF）各拉一份，
@@ -79,7 +71,7 @@ public class AiImageService(
     {
         if (string.IsNullOrWhiteSpace(template)) throw new Exception("请选择工作流模板");
         var templatePath = Path.Combine(TemplatesDir, template + ".json");
-        if (!File.Exists(templatePath))
+        if (!File.Exists(templatePath)) 
             throw new Exception($"模板不存在：{template}.json（应放在 back/ComfyWorkflows/ 目录）");
 
         var graphNode = LoadTemplate(templatePath);
@@ -108,8 +100,8 @@ public class AiImageService(
 
             foreach (var section in new[] { "required", "optional" })
             {
-                if (!inputDef.TryGetProperty(section, out var sectionDef) ||
-                    sectionDef.ValueKind != JsonValueKind.Object) continue;
+                if (!inputDef.TryGetProperty(section, out var sectionDef) || sectionDef.ValueKind != JsonValueKind.Object) 
+                    continue;
 
                 foreach (var prop in sectionDef.EnumerateObject())
                 {
@@ -149,16 +141,13 @@ public class AiImageService(
                     {
                         // 下拉：第一项是候选值数组（模型清单/lora清单/采样器名……）
                         def.Kind = "select";
-                        def.Options = [.. fieldSpec[0].EnumerateArray()
-                            .Where(o => o.ValueKind == JsonValueKind.String)
-                            .Select(o => o.GetString() ?? "")];
+                        def.Options = [.. fieldSpec[0].EnumerateArray().Where(o => o.ValueKind == JsonValueKind.String).Select(o => o.GetString() ?? "")];
                         if (def.Options.Count == 0 && def.Group != "image") emptyCombos++;
                     }
                     else
                     {
                         var typeName = fieldSpec[0].GetString() ?? "";
-                        var opts = fieldSpec.GetArrayLength() > 1 && fieldSpec[1].ValueKind == JsonValueKind.Object
-                            ? fieldSpec[1] : (JsonElement?)null;
+                        var opts = fieldSpec.GetArrayLength() > 1 && fieldSpec[1].ValueKind == JsonValueKind.Object ? fieldSpec[1] : (JsonElement?)null;
                         switch (typeName)
                         {
                             case "INT":
@@ -204,9 +193,7 @@ public class AiImageService(
 
         // 分组排序：提示词 → 模型 → 尺寸 → 采样 → 图片 → 输出 → 其他；组内按 key 稳定
         var order = new[] { "prompt", "model", "size", "sampler", "image", "output", "other" };
-        fields = [.. fields
-            .OrderBy(f => Array.IndexOf(order, f.Group))
-            .ThenBy(f => f.Key, StringComparer.Ordinal)];
+        fields = [.. fields.OrderBy(f => Array.IndexOf(order, f.Group)).ThenBy(f => f.Key, StringComparer.Ordinal)];
 
         var schema = new AiTemplateSchema { Template = template, Fields = fields };
         if (!anyInfo)
@@ -316,8 +303,7 @@ public class AiImageService(
         {
             if (cv.TryGetValue(out string? _)) return s;
             if (cv.TryGetValue(out bool cb)) return bool.TryParse(s, out var b) ? b : cb;
-            var wantDouble = s.Contains('.') || s.Contains('e') || s.Contains('E') ||
-                (cv.TryGetValue(out double cd0) && Math.Abs(cd0 % 1) > double.Epsilon);
+            var wantDouble = s.Contains('.') || s.Contains('e') || s.Contains('E') || (cv.TryGetValue(out double cd0) && Math.Abs(cd0 % 1) > double.Epsilon);
             if (wantDouble)
                 return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : cv;
             if (cv.TryGetValue(out long _))
@@ -359,12 +345,10 @@ public class AiImageService(
             switch (node["class_type"]?.GetValue<string>() ?? "")
             {
                 case "KSampler":
-                case "KSamplerAdvanced":
-                    sampler ??= node; break;
+                case "KSamplerAdvanced": sampler ??= node; break;
                 case "EmptyLatentImage":
                 case "EmptySD3LatentImage":
-                case "ImageScale":
-                    sizeNode ??= node; break;
+                case "ImageScale": sizeNode ??= node; break;
             }
         }
         if (sampler?["inputs"] is JsonObject si)

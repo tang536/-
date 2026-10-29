@@ -19,7 +19,7 @@ public sealed record RestoreResult(string FileName, int TableCount, long Rows, s
 /// <summary>
 /// 数据库备份 / 恢复（需求 4.2.1 备份、6.4 故障处理、7.1 数据安全）。
 ///
-/// 与旧实现的差别（旧版只导出明文 JSON，没有恢复，也没有任何保护）：
+/// 四个设计要点：
 ///   ① **加密**：AES-256-GCM，文件结构 `ERBK1 | nonce(12) | tag(16) | ciphertext`。
 ///      备份里含身份证号与 BCrypt 哈希，明文落盘等于把客户档案复制一份到磁盘任意角落；
 ///   ② **可恢复**：先自动做一次"恢复前快照"，再按外键顺序清空并逐行 INSERT（保留原始主键），
@@ -152,7 +152,7 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
         return new BackupResult(fileName, size, Tables.Length, true, sw.ElapsedMilliseconds);
     }
 
-    /// <summary>备份文件列表（新的在前）；只认 .erbk（旧版明文 .json 不参与恢复）</summary>
+    /// <summary>备份文件列表（新的在前）；只列 .erbk 加密备份，明文 .json 不参与恢复</summary>
     public List<BackupFileInfo> ListFiles()
     {
         if (!System.IO.Directory.Exists(Directory)) return [];

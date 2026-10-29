@@ -23,8 +23,7 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
     /// <summary>维保工单列表（管理员 / 前台）</summary>
     [HttpGet]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> GetAll(string? status) =>
-        Ok(new ApiResponse { Data = await _svc.GetAll(status) });
+    public async Task<IActionResult> GetAll(string? status) => Ok(new ApiResponse { Data = await _svc.GetAll(status) });
 
     /// <summary>创建维保工单：入参走 DTO，工单号由服务端生成</summary>
     [HttpPost]
@@ -86,8 +85,7 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
     /// <summary>报废记录（管理员 / 前台可查）</summary>
     [HttpGet("scraps")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> GetScraps() =>
-        Ok(new ApiResponse { Data = await _svc.GetScraps() });
+    public async Task<IActionResult> GetScraps() => Ok(new ApiResponse { Data = await _svc.GetScraps() });
 
     /// <summary>车辆报废：资产处置，仅管理员</summary>
     [HttpPost("scrap")]
@@ -102,6 +100,5 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
         catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    private int? CurrentOperatorId() =>
-        int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
+    private int? CurrentOperatorId() => int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
 }

@@ -34,9 +34,7 @@ public sealed class SingleSessionMiddleware(RequestDelegate next)
             // 解析单独成句：写在 && 短路表达式里的话，userId 在后续使用时不算"确定赋值"（CS0165）
             var hasId = int.TryParse(rawId, out var userId);
             // 一次查询同时拿到「是否当前会话」与「撤销原因」，避免每个请求打两次库
-            (bool Online, string? Reason) state = sid is not null && hasId
-                ? await registry.CheckAsync(userType, userId, sid)
-                : (false, null);
+            (bool Online, string? Reason) state = sid is not null && hasId ? await registry.CheckAsync(userType, userId, sid) : (false, null);
             var online = state.Online;
 
             if (!online)

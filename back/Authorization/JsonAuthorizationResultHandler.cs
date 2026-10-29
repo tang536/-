@@ -21,11 +21,7 @@ public sealed class JsonAuthorizationResultHandler : IAuthorizationMiddlewareRes
     /// <summary>框架默认处理器：策略通过时交回给它，保持正常请求的处理链路不变</summary>
     private readonly AuthorizationMiddlewareResultHandler _default = new();
 
-    public async Task HandleAsync(
-        RequestDelegate next,
-        HttpContext context,
-        AuthorizationPolicy policy,
-        PolicyAuthorizationResult authorizeResult)
+    public async Task HandleAsync(RequestDelegate next, HttpContext context, AuthorizationPolicy policy, PolicyAuthorizationResult authorizeResult)
     {
         if (authorizeResult.Succeeded)
         {
@@ -33,9 +29,7 @@ public sealed class JsonAuthorizationResultHandler : IAuthorizationMiddlewareRes
             return;
         }
 
-        var status = authorizeResult.Challenged
-            ? StatusCodes.Status401Unauthorized
-            : StatusCodes.Status403Forbidden;
+        var status = authorizeResult.Challenged ? StatusCodes.Status401Unauthorized : StatusCodes.Status403Forbidden;
 
         context.Response.StatusCode = status;
         context.Response.ContentType = "application/json; charset=utf-8";

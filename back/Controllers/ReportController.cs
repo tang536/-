@@ -22,14 +22,12 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
     /// <summary>首页核心数据看板：管理员 / 前台 / 财务 均可查看</summary>
     [HttpGet("dashboard")]
     [Authorize(Policy = Policies.AnyStaff)]
-    public async Task<IActionResult> Dashboard() =>
-        Ok(new ApiResponse<VisualReport> { Data = await _svc.GetDashboard() });
+    public async Task<IActionResult> Dashboard() => Ok(new ApiResponse<VisualReport> { Data = await _svc.GetDashboard() });
 
     /// <summary>顶栏通知中心 + 首页预警提醒区数据（含当前用户的已读/未读状态）</summary>
     [HttpGet("notifications")]
     [Authorize(Policy = Policies.AnyStaff)]
-    public async Task<IActionResult> Notifications() =>
-        Ok(new ApiResponse<List<NotificationDto>> { Data = await _svc.GetNotifications(CurrentUserId) });
+    public async Task<IActionResult> Notifications() => Ok(new ApiResponse<List<NotificationDto>> { Data = await _svc.GetNotifications(CurrentUserId) });
 
     /// <summary>
     /// 标记通知已读（用户在通知列表中点开某条后调用）。
@@ -77,8 +75,7 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
     /// </summary>
     [HttpGet("summary")]
     [Authorize(Policy = Policies.AdminOrFinance)]
-    public async Task<IActionResult> Summary(DateTime? from, DateTime? to) =>
-        Ok(new ApiResponse<VisualReport> { Data = await _svc.GetDashboard(from, to) });
+    public async Task<IActionResult> Summary(DateTime? from, DateTime? to) => Ok(new ApiResponse<VisualReport> { Data = await _svc.GetDashboard(from, to) });
 
     /// <summary>
     /// 车辆运营统计（需求 4.2.7）：每台车的累计租赁时长、累计营收、维保次数与维保费用，

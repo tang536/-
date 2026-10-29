@@ -27,9 +27,7 @@ public class MessageController(MessageService messages, ILogger<MessageControlle
     /// pageSize 由 <see cref="MessageService"/> 压到上限，前端传再大也不会把整表拉出来。
     /// </summary>
     [HttpGet("customer")]
-    public async Task<IActionResult> List(
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = MessageService.DefaultPageSize)
+    public async Task<IActionResult> List([FromQuery] int page = 1, [FromQuery] int pageSize = MessageService.DefaultPageSize)
     {
         try
         {

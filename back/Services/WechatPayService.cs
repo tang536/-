@@ -29,9 +29,7 @@ namespace ERental.Services;
 ///   回调验签用「微信支付公钥」（公钥模式，serial 前缀 PUB）或平台证书公钥，
 ///   通知体 resource 需要 **AES-256-GCM**（密钥 = APIv3 密钥）解密。
 /// </summary>
-public class WechatPayService(
-    AppDbContext db, PayConfigService payConfig,
-    AlipayService alipay, IHttpClientFactory httpFactory, ILogger<WechatPayService> logger)
+public class WechatPayService(AppDbContext db, PayConfigService payConfig, AlipayService alipay, IHttpClientFactory httpFactory, ILogger<WechatPayService> logger)
 {
     private readonly AppDbContext _db = db;
     private readonly PayConfigService _payConfig = payConfig;
@@ -43,15 +41,12 @@ public class WechatPayService(
     private const string DefaultGateway = "https://api.mch.weixin.qq.com";
 
     /// <summary>一次微信支付调用所需的运行参数（由配置解析而来）。</summary>
-    public sealed record WechatRuntime(
-        string AppId, string MchId, string ApiV3Key, string CertSerial,
-        string PrivateKey, string NotifyUrl, string Gateway, string PayMode, bool Enabled)
+    public sealed record WechatRuntime(string AppId, string MchId, string ApiV3Key, string CertSerial, string PrivateKey, string NotifyUrl, string Gateway, string PayMode, bool Enabled)
     {
         /// <summary>五项必填凭证是否齐全（缺任何一项都无法完成 APIv3 签名/解密）</summary>
-        public bool CredentialsComplete =>
-            !string.IsNullOrWhiteSpace(AppId) && !string.IsNullOrWhiteSpace(MchId)
-            && !string.IsNullOrWhiteSpace(ApiV3Key) && !string.IsNullOrWhiteSpace(CertSerial)
-            && !string.IsNullOrWhiteSpace(PrivateKey);
+        public bool CredentialsComplete => !string.IsNullOrWhiteSpace(AppId) && !string.IsNullOrWhiteSpace(MchId)
+                                                                             && !string.IsNullOrWhiteSpace(ApiV3Key) && !string.IsNullOrWhiteSpace(CertSerial)
+                                                                             && !string.IsNullOrWhiteSpace(PrivateKey);
 
         /// <summary>
         /// **查余额所需的最小凭证集**：商户号 + 证书序列号 + 商户私钥。

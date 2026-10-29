@@ -34,9 +34,7 @@ public sealed class SkipAuditAttribute : Attribute;
 /// （log_id / user_id / operate_content / operate_time / operate_result / operate_module / ip_address），
 /// **不新增列**，保持与《唐荣强.docx》图4-15 的 17 张表 134 字段一致。
 /// </summary>
-public sealed class AuditLogFilter(
-    IServiceScopeFactory scopeFactory,
-    ILogger<AuditLogFilter> logger) : IAsyncActionFilter
+public sealed class AuditLogFilter(IServiceScopeFactory scopeFactory, ILogger<AuditLogFilter> logger) : IAsyncActionFilter
 {
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
     private readonly ILogger<AuditLogFilter> _logger = logger;
@@ -49,9 +47,7 @@ public sealed class AuditLogFilter(
         // 只读请求、显式匿名接口（登录/注册/支付回调）、显式豁免的接口，一律直接放行。
         // 匿名接口不做自动审计的理由：登录已由 AuthService 按「失败原因」逐条精细记录，
         // 支付回调已由 PaymentController.AuditAsync 记录订单号与入账结果，自动再记一条是重复。
-        if (!AuditModules.IsWriteMethod(request.Method)
-            || metadata.OfType<IAllowAnonymous>().Any()
-            || metadata.OfType<SkipAuditAttribute>().Any())
+        if (!AuditModules.IsWriteMethod(request.Method) || metadata.OfType<IAllowAnonymous>().Any() || metadata.OfType<SkipAuditAttribute>().Any())
         {
             await next();
             return;
@@ -86,17 +82,14 @@ public sealed class AuditLogFilter(
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "写操作审计落库失败（不影响业务）：{Method} {Path}",
-                request.Method, request.Path);
+            _logger.LogWarning(ex, "写操作审计落库失败（不影响业务）：{Method} {Path}", request.Method, request.Path);
         }
     }
 
     /// <summary>取真实响应状态码；未显式设置时按 200 处理（MVC 的返回值最终会被包装成 200）。</summary>
     private static int StatusOf(IActionResult? result) => result switch
     {
-        ObjectResult o => o.StatusCode ?? StatusCodes.Status200OK,
-        StatusCodeResult s => s.StatusCode,
-        _ => StatusCodes.Status200OK
+        ObjectResult o => o.StatusCode ?? StatusCodes.Status200OK, StatusCodeResult s => s.StatusCode, _ => StatusCodes.Status200OK
     };
 
     /// <summary>

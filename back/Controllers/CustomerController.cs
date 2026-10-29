@@ -24,8 +24,7 @@ public class CustomerController(CustomerService svc) : ControllerBase
     /// </summary>
     [HttpGet]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> GetAll(string? keyword, string? level, string? accountStatus,
-        int page = 0, int pageSize = 0)
+    public async Task<IActionResult> GetAll(string? keyword, string? level, string? accountStatus, int page = 0, int pageSize = 0)
     {
         if (pageSize > 0)
         {

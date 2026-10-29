@@ -7,17 +7,16 @@ import Icon from '@/components/Icon'
 import NotFound from '@/components/Forbidden'
 import Layout from '@/components/Layout'
 
-// 统一登录 / 落地页 / 注册：首屏必经路径，保持同步引入
+// 落地页（含登录 / 注册卡面）为首屏必经路径，保持同步引入
 import Login from './components/Login'
-import Register from './components/Register'
 import Landing from './pages/Landing'
 
 /*
- * 其余页面全部改为路由级懒加载。
+ * 其余页面全部按路由懒加载。
  *
- * 原来 24 个页面同步引入，vite 只能打出单个 chunk，顾客在手机上打开落地页
- * 也要先下载员工端才用到的 echarts 报表代码（单 chunk 1.37 MB）。
- * 拆开之后首屏只拿落地页与公共依赖，员工报表那一坨只有管理员点进「报表」才加载。
+ * 同步引入会让 vite 打出单个 chunk，顾客在手机上打开落地页也要先下载员工端才用到的
+ * echarts 报表代码（单 chunk 1.37 MB）。拆开之后首屏只拿落地页与公共依赖，
+ * 员工报表那一坨只有管理员点进「报表」才加载。
  * 只是加载时机变了，路由路径、权限判定、组件本身都没有改。
  */
 const MyOrders = lazy(() => import('./pages/MyOrders'))
@@ -135,10 +134,9 @@ function RootIndex() {
 export default function App() {
   return (
     <Routes>
-      {/* 首屏：产品介绍落地页（无需登录） */}
+      {/* 首屏：产品介绍落地页（无需登录），登录 / 注册是页内卡面 */}
       <Route path="/" element={<RootIndex />} />
       <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
 
       {/* 模拟收银台 / 支付回跳：独立全屏、无需登录 */}
       <Route path="/mock-pay" element={L(<MockPay />)} />

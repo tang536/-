@@ -83,7 +83,7 @@ public static class AlipaySigner
     /// <summary>
     /// 把私钥字符串转成 RSA 对象。
     ///
-    /// 私钥有两种常见格式，必须都支持（不同工具导出格式不同，混用是踩坑重灾区）：
+    /// 私钥有两种常见格式，必须都支持（不同工具导出格式不同，只认一种会导致装载失败）：
     ///  - **PKCS#8**（`-----BEGIN PRIVATE KEY-----`）：支付宝开放平台"密钥工具"默认导出，**推荐**；
     ///  - **PKCS#1**（`-----BEGIN RSA PRIVATE KEY-----`）：openssl genrsa 默认、部分第三方生成器导出。
     /// 两者 DER 结构不同：PKCS#8 外层是 PrivateKeyInfo，PKCS#1 直接是 RSAPrivateKey。

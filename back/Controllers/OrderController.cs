@@ -25,11 +25,7 @@ public class OrderController(OrderService svc) : ControllerBase
     /// 传 <c>pageSize&gt;0</c> 返回分页结构，不传返回全量数组（顾客端"我的订单"等调用不受影响）。
     /// </summary>
     [HttpGet]
-    public async Task<IActionResult> GetAll(
-        string? status, string? keyword,
-        DateTime? dateFrom = null, DateTime? dateTo = null,
-        string? sortBy = null, bool sortDesc = true,
-        int page = 0, int pageSize = 0)
+    public async Task<IActionResult> GetAll(string? status, string? keyword, DateTime? dateFrom = null, DateTime? dateTo = null, string? sortBy = null, bool sortDesc = true, int page = 0, int pageSize = 0)
     {
         var customerId = IsCustomer ? CurrentUserId : (int?)null;
         if (pageSize > 0)
@@ -87,8 +83,7 @@ public class OrderController(OrderService svc) : ControllerBase
     /// <summary>线上可租车辆（仅顾客）：只返回空闲车辆的窄字段，不暴露经营数据</summary>
     [HttpGet("available-vehicles")]
     [Authorize(Policy = Policies.CustomerOnly)]
-    public async Task<IActionResult> AvailableVehicles() =>
-        Ok(new ApiResponse<List<RentableVehicleDto>> { Data = await _svc.GetRentableVehicles() });
+    public async Task<IActionResult> AvailableVehicles() => Ok(new ApiResponse<List<RentableVehicleDto>> { Data = await _svc.GetRentableVehicles() });
 
     /// <summary>线上试算：按所选车辆取价，折扣取本人会员等级。vehicleId 可选，未选车时按系统默认价预估</summary>
     [HttpGet("estimate")]
@@ -182,6 +177,5 @@ public class OrderController(OrderService svc) : ControllerBase
     /// <summary>订单到期预警：返回即将到期（默认3天内）和已逾期的在租订单，前台工作台置顶提醒</summary>
     [HttpGet("warnings")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> Warnings(int warnDays = 3) =>
-        Ok(new ApiResponse<object> { Data = await _svc.GetWarnings(warnDays) });
+    public async Task<IActionResult> Warnings(int warnDays = 3) => Ok(new ApiResponse<object> { Data = await _svc.GetWarnings(warnDays) });
 }

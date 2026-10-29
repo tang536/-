@@ -49,14 +49,12 @@ public class AuthService(
     /// <summary>
     /// 员工登录。
     ///
-    /// 失败锁定口径：**封 IP，不封账号**。
-    /// 原实现是「累计 5 次密码错误锁账号 10 分钟」——这等于把一次拒绝服务武器递出去：
-    /// 任何人知道账号名就能连续输错 5 次，把正常员工（含默认管理员）挡在门外。
-    /// 现改为按来源 IP 累计失败次数（账号不存在、密码错误都计数；角色选错页签、
-    /// 账号被禁用属操作提示而非撞库，不计），达标后封锁该 IP，与认证接口的
-    /// 每 IP 每分钟 10 次限流构成两层防线。阈值取自系统配置 max_login_fail / lock_minutes
-    /// （此前写死 5/10，管理员在配置页改了完全不生效，本次一并修正）。
-    /// 账号侧 login_fail_count 仍累加并展示在员工管理页（留痕用），但不再触发锁定。
+    /// 失败锁定口径：**封 IP，不封账号**。按来源 IP 累计失败次数（账号不存在、
+    /// 密码错误都计数；角色选错页签、账号被禁用属操作提示而非撞库，不计），
+    /// 达标后封锁该 IP，与认证接口的每 IP 每分钟 10 次限流构成两层防线。
+    /// 之所以不锁账号：锁账号等于把拒绝服务的手段递出去，知道账号名就能连续输错
+    /// 把正常员工挡在门外；账号侧 login_fail_count 只累加并在员工管理页展示（留痕用）。
+    /// 阈值取自系统配置 max_login_fail / lock_minutes，管理员改配置即时生效。
     /// </summary>
     public async Task<LoginResponseDto> StaffLogin(StaffLoginDto dto, string? clientIp = null)
     {
@@ -192,9 +190,9 @@ public class AuthService(
     };
 
     /// <summary>
-    /// 顾客登录：**只认「用户名 + 密码」**。
-    /// 已按需求移除「身份证号登录」入口与匹配逻辑——身份证号属敏感个人信息，
-    /// 不应作为可枚举的登录凭据（且租车环节才采集，注册阶段根本不存在）。
+    /// 顾客登录：只认「用户名 + 密码」。
+    /// 不接受身份证号等其它凭据——身份证号属敏感个人信息，不该充当可枚举的登录凭据，
+    /// 且它在租车环节才采集，注册阶段并不存在。
     /// </summary>
     public async Task<LoginResponseDto> CustomerLogin(CustomerLoginDto dto)
     {
@@ -235,8 +233,8 @@ public class AuthService(
             RefreshToken = GenerateJwt(customer.CustomerId, customer.LoginAccount ?? account, "customer",
                 RoleCustomer, sid, TokenTypeRefresh, RefreshLifetime()),
             UserType = "customer",
-            // 关键修复：顾客的角色名固定为「顾客」，不能再用会员等级充当角色，
-            // 否则前端菜单表匹配不到，会回退成管理员菜单。
+            // 角色名固定为「顾客」，与前端菜单表逐条对应；会员等级单独放在 MemberLevel。
+            // 拿等级充当角色会让菜单匹配不到，回退成管理员菜单。
             RoleName = RoleCustomer,
             MemberLevel = customer.MemberLevel,
             UserName = customer.FullName,
@@ -263,6 +261,11 @@ public class AuthService(
         // 身份证号与手机号在租车环节采集，注册阶段不强制
         _db.Customers.Add(customer);
         await _db.SaveChangesAsync();
+        // 需求 4.2.1：账号生命周期全流程留痕。注册是账户的起点，
+        // 与登录、改密、注销同属「用户登录」模块；此前注册不写日志，
+        // 事后查不出某个顾客号是哪天、从哪个 IP 建出来的，与其余环节口径不一致。
+        await WriteLog(customer.CustomerId,
+            $"顾客注册成功（{account}，顾客ID {customer.CustomerId}）", "用户登录", "成功");
         return customer;
     }
 

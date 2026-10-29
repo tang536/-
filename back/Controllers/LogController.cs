@@ -37,12 +37,11 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
 
     /// <summary>日志里实际出现过的操作模块（筛选下拉选项，避免前端硬编码模块名）</summary>
     [HttpGet("modules")]
-    public async Task<IActionResult> GetModules() =>
-        Ok(new ApiResponse<List<string>> { Data = await _svc.GetModules() });
+    public async Task<IActionResult> GetModules() => Ok(new ApiResponse<List<string>> { Data = await _svc.GetModules() });
 
     /// <summary>
     /// 数据库备份（需求 4.2.1 / 6.4）：导出 17 张业务表，AES-256-GCM 加密后落盘。
-    /// 返回结构与旧版保持一致（fileName / sizeKB / tableCount），前端无需改造。
+    /// 返回 fileName / sizeKB / tableCount 三个字段，前端据此提示备份结果。
     /// </summary>
     [HttpPost("backup")]
     public async Task<IActionResult> Backup()
@@ -74,8 +73,7 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
 
     /// <summary>备份文件列表（新的在前），供管理员下载或选择恢复点</summary>
     [HttpGet("backups")]
-    public IActionResult GetBackups() =>
-        Ok(new ApiResponse<object> { Data = _backup.ListFiles() });
+    public IActionResult GetBackups() => Ok(new ApiResponse<object> { Data = _backup.ListFiles() });
 
     /// <summary>下载备份文件（加密后的二进制；解密密钥只在服务端，下载件泄露也读不出内容）</summary>
     [HttpGet("backups/{fileName}/download")]

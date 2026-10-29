@@ -22,8 +22,7 @@ public class AuthController(AuthService auth, SystemConfigService cfg) : Control
     /// </summary>
     [AllowAnonymous]
     [HttpGet("options")]
-    public async Task<IActionResult> Options() =>
-        Ok(new ApiResponse<object> { Data = await _cfg.GetPublic() });
+    public async Task<IActionResult> Options() => Ok(new ApiResponse<object> { Data = await _cfg.GetPublic() });
 
     /// <summary>
     /// 令牌续期：access token 临近过期时用它换一对新令牌，用户无需重新输入密码。
@@ -159,16 +158,13 @@ public class AuthController(AuthService auth, SystemConfigService cfg) : Control
     [Authorize(Policy = Policies.AnyAuthenticated)]
     public async Task<IActionResult> UploadAvatar(IFormFile file)
     {
-        if (file == null || file.Length == 0)
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = "请选择图片文件", Success = false });
+        if (file.Length == 0) return BadRequest(new ApiResponse<object> { Code = 400, Message = "请选择图片文件", Success = false });
 
         // 限制 2MB 以内、仅常见图片格式
-        if (file.Length > 2 * 1024 * 1024)
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = "头像大小不能超过 2MB", Success = false });
+        if (file.Length > 2 * 1024 * 1024) return BadRequest(new ApiResponse<object> { Code = 400, Message = "头像大小不能超过 2MB", Success = false });
 
         var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
-        if (ext is not (".jpg" or ".jpeg" or ".png" or ".webp"))
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = "仅支持 jpg / png / webp 格式", Success = false });
+        if (ext is not (".jpg" or ".jpeg" or ".png" or ".webp")) return BadRequest(new ApiResponse<object> { Code = 400, Message = "仅支持 jpg / png / webp 格式", Success = false });
 
         var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
         var dir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "avatars");

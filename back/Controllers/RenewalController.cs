@@ -16,8 +16,7 @@ public class RenewalController(RenewalService svc) : ControllerBase
     private readonly RenewalService _svc = svc;
 
     [HttpGet]
-    public async Task<IActionResult> GetAll(int? orderId) =>
-        Ok(new ApiResponse<List<RenewalRecord>> { Data = await _svc.GetAll(orderId) });
+    public async Task<IActionResult> GetAll(int? orderId) => Ok(new ApiResponse<List<RenewalRecord>> { Data = await _svc.GetAll(orderId) });
 
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] RenewalRequest req)

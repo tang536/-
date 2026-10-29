@@ -89,9 +89,8 @@ public class RentalOrder
     /// 之后只有「续租」能延长到期时间、只有「还车结算」能写实际归还时间。
     /// <paramref name="orderStatus"/> 由调用方传：柜台单直接「已支付」，线上单为「待支付」。
     /// </summary>
-    public static RentalOrder Create(string orderNo, int customerId, int vehicleId,
-        DateTime leaseStart, DateTime leaseEnd, decimal totalRent, decimal deposit,
-        int? operatorId, string orderStatus = "待支付") => new()
+    public static RentalOrder Create(string orderNo, int customerId, int vehicleId, DateTime leaseStart, DateTime leaseEnd, decimal totalRent, decimal deposit, int? operatorId, string orderStatus = "待支付") =>
+        new()
         {
             OrderNo = orderNo,
             CustomerId = customerId,

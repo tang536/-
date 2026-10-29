@@ -99,8 +99,7 @@ public static class SchemaDrift
     {
         var set = new HashSet<(string, string)>();
         using var cmd = db.Database.GetDbConnection().CreateCommand();
-        cmd.CommandText =
-            "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()";
+        cmd.CommandText = "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()";
         if (cmd.Connection!.State != ConnectionState.Open) cmd.Connection.Open();
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
@@ -116,8 +115,7 @@ public static class SchemaDrift
     /// 标识符转义（MySQL 反引号）、类型写法都交给提供程序，避免自己拼串。
     /// 生成失败返回 <c>null</c>，由调用方降级为人工提示：启动自愈不能因为拼不出 SQL 就中断。
     /// </summary>
-    private static string? BuildAddColumnDdl(
-        AppDbContext db, string table, string column, Type clrType, string storeType, bool nullable)
+    private static string? BuildAddColumnDdl(AppDbContext db, string table, string column, Type clrType, string storeType, bool nullable)
     {
         try
         {
@@ -132,9 +130,7 @@ public static class SchemaDrift
                     IsNullable = nullable
                 }
             ]);
-            var sql = string.Join(" ", operations
-                .Select(o => o.CommandText)
-                .Where(t => !string.IsNullOrWhiteSpace(t)));
+            var sql = string.Join(" ", operations.Select(o => o.CommandText).Where(t => !string.IsNullOrWhiteSpace(t)));
             return string.IsNullOrWhiteSpace(sql) ? null : sql;
         }
         catch (Exception ex)

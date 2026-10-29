@@ -93,13 +93,14 @@ public class CustomerService(AppDbContext db, LogService log)
         // 3NF：客户档案只存等级名，折扣唯一真源在权益表（读取时关联），不再冗余写入；
         // 等级名以权益表为准做归一化（存在才归一，出厂未配置时保留原值）
         var level = string.IsNullOrWhiteSpace(dto.MemberLevel) ? "普通会员" : dto.MemberLevel.Trim();
-        var right = await _db.MemberRights.AsNoTracking()
-                        .FirstOrDefaultAsync(m => m.MemberLevel == level);
+        var right = await _db.MemberRights.AsNoTracking().FirstOrDefaultAsync(m => m.MemberLevel == level);
         if (right != null) c.ChangeMemberLevel(right.MemberLevel);
 
         _db.Customers.Add(c);
         await _db.SaveChangesAsync();
         c.MemberDiscount = await MemberDiscountLookup.OfLevelAsync(_db, c.MemberLevel);
+        // 建档留痕：客户档案是后续开单、结算、退款的依据，谁在什么时候建的必须可查
+        await _log.WriteLog(null,$"新增客户档案（{c.FullName}，客户ID {c.CustomerId}）", "客户管理", "成功");
         return c;
     }
 
@@ -130,9 +131,7 @@ public class CustomerService(AppDbContext db, LogService log)
         // 3NF 后折扣不落档案，读取时按等级关联权益表，改类型折扣全体即时生效、无需同步
         var oldLevel = exist.MemberLevel;
         var level = string.IsNullOrWhiteSpace(dto.MemberLevel) ? oldLevel : dto.MemberLevel.Trim();
-        var right = await _db.MemberRights.AsNoTracking()
-                        .FirstOrDefaultAsync(m => m.MemberLevel == level)
-                    ?? throw new Exception($"会员等级「{level}」不存在，请先在会员管理中维护该类型");
+        var right = await _db.MemberRights.AsNoTracking().FirstOrDefaultAsync(m => m.MemberLevel == level) ?? throw new Exception($"会员等级「{level}」不存在，请先在会员管理中维护该类型");
         exist.ChangeMemberLevel(right.MemberLevel);
 
         exist.BumpVersion(dto.Version);

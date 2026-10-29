@@ -22,9 +22,7 @@ namespace ERental.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize(Policy = Policies.CustomerOnly)]
-public class SupplementController(
-    AppDbContext db, AlipayService alipay, WechatPayService wechat, BankPayService bank,
-    PayConfigService payConfig, ILogger<SupplementController> logger) : ControllerBase
+public class SupplementController(AppDbContext db, AlipayService alipay, WechatPayService wechat, BankPayService bank, PayConfigService payConfig, ILogger<SupplementController> logger) : ControllerBase
 {
     private readonly AppDbContext _db = db;
     private readonly AlipayService _alipay = alipay;
@@ -38,10 +36,7 @@ public class SupplementController(
     /// <summary>
     /// 浏览器此刻的地址栏源（X-Client-Origin，缺失时退回 Referer），用于生成支付回跳地址。
     /// </summary>
-    private string? ClientOrigin =>
-        PayConfigService.ResolveClientOrigin(
-            Request.Headers["X-Client-Origin"].ToString(),
-            Request.Headers.Referer.ToString());
+    private string? ClientOrigin => PayConfigService.ResolveClientOrigin(Request.Headers["X-Client-Origin"].ToString(), Request.Headers.Referer.ToString());
 
     /// <summary>为某张待支付补缴单发起支付，复用支付宝/微信/银行卡三通道，返回收银台地址或二维码。</summary>
     [HttpPost("{payId:int}/pay")]
@@ -49,8 +44,7 @@ public class SupplementController(
     {
         try
         {
-            var rec = await _db.PaymentRecords
-                .FirstOrDefaultAsync(p => p.PayId == payId && p.BizType == "supplement");
+            var rec = await _db.PaymentRecords.FirstOrDefaultAsync(p => p.PayId == payId && p.BizType == "supplement");
             if (rec == null) return NotFound(new ApiResponse<object> { Code = 404, Message = "补缴单不存在", Success = false });
 
             var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderId == rec.OrderId);
@@ -81,9 +75,7 @@ public class SupplementController(
                     break;
                 case "微信":
                 {
-                    var wx = await _wechat.CreatePayAsync(
-                        rec.OutTradeNo!, $"电动车租赁补缴 {order.OrderNo}", rec.PayAmount,
-                        await BuildReturnUrl(rec.PayId));
+                    var wx = await _wechat.CreatePayAsync(rec.OutTradeNo!, $"电动车租赁补缴 {order.OrderNo}", rec.PayAmount, await BuildReturnUrl(rec.PayId));
                     payUrl = wx.PayUrl;
                     qrCode = wx.QrCode;
                     payMode = wx.PayMode;
@@ -157,8 +149,7 @@ public class SupplementController(
     {
         try
         {
-            var rec = await _db.PaymentRecords
-                .FirstOrDefaultAsync(p => p.PayId == payId && p.BizType == "supplement");
+            var rec = await _db.PaymentRecords.FirstOrDefaultAsync(p => p.PayId == payId && p.BizType == "supplement");
             if (rec == null) return NotFound(new ApiResponse<object> { Code = 404, Message = "补缴单不存在", Success = false });
 
             var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderId == rec.OrderId);
@@ -205,6 +196,5 @@ public class SupplementController(
     /// 优先用「顾客当前访问源」，缺失时退回配置值兜底——理由见
     /// <see cref="PayConfigService.BuildReturnUrlAsync"/>。
     /// </summary>
-    private Task<string> BuildReturnUrl(int payId) =>
-        _payConfig.BuildReturnUrlAsync(ClientOrigin, $"supplement-pay/{payId}");
+    private Task<string> BuildReturnUrl(int payId) => _payConfig.BuildReturnUrlAsync(ClientOrigin, $"supplement-pay/{payId}");
 }

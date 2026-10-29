@@ -440,6 +440,8 @@ export default function PayConfigPanel({ focusChannel }: { focusChannel?: string
   const [checking, setChecking] = useState(false)
 
   const [view, setView] = useState<any>(null)
+  /** 三条通道的接线状态总览（/payment/channels），与配置一起刷新 */
+  const [channels, setChannels] = useState<any[]>([])
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [check, setCheck] = useState<any>(null)
   /** 微信 / 银行卡自检结果（各自独立，避免互相覆盖） */
@@ -510,6 +512,14 @@ export default function PayConfigPanel({ focusChannel }: { focusChannel?: string
       toast(e?.message || '支付配置加载失败', 'error')
     } finally {
       setLoading(false)
+    }
+
+    // 通道状态独立拉取：失败只让总览隐藏，不拖累整页配置的展示
+    try {
+      const c: any = await paymentApi.channels()
+      setChannels(c?.data?.items || [])
+    } catch {
+      setChannels([])
     }
   }
 
@@ -658,9 +668,29 @@ export default function PayConfigPanel({ focusChannel }: { focusChannel?: string
 
   return (
     <>
-      {/* 顶部原有的「当前生效模式」横幅（沙箱支付 / 支付宝测试环境 等标签 + 原因说明）
-          已移除：模式状态改由每张卡片头部的徽标（生产已启用 / 待上线 …）与自检结果表达，
-          不必再在页首重复一块横幅。 */}
+      {/* ── 三通道接线状态总览：配没配齐、当前走哪一级 ── */}
+      {/* 数据来自 /payment/channels，与下方各卡片头部的徽标同源（都出自后端 ResolveAsync 的判定），
+          所以两边不会出现「总览说生产、卡片说降级」的矛盾。 */}
+      {channels.length > 0 && (
+        <div className="callout callout-info">
+          <Icon name="shield" size={18} chip />
+          <span>
+            {channels.map((c: any, i: number) => (
+              <span key={c.key}>
+                {i > 0 && <span style={{ opacity: 0.35, margin: '0 10px' }}>·</span>}
+                <b>{c.name}</b>
+                <span
+                  className={`status-tag ${c.enabled ? 'status-success' : c.configured ? 'status-warning' : 'status-default'}`}
+                  style={{ marginLeft: 6 }}
+                  title={c.detail}
+                >
+                  {c.status}
+                </span>
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
 
       {/* ── 自检结果（弹窗形式，不常驻页面） ── */}
       {checkChannel === 'alipay' && check && (

@@ -25,8 +25,7 @@ public class ConfigController(
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
     [HttpGet]
-    public async Task<IActionResult> GetAll() =>
-        Ok(new ApiResponse<object> { Data = await _svc.GetAll() });
+    public async Task<IActionResult> GetAll() => Ok(new ApiResponse<object> { Data = await _svc.GetAll() });
 
     [HttpPut("{key}")]
     public async Task<IActionResult> Update(string key, [FromBody] string value)
@@ -46,8 +45,7 @@ public class ConfigController(
     // ==================== 数据字典（需求 4.2.1） ====================
 
     [HttpGet("dict")]
-    public async Task<IActionResult> GetDict() =>
-        Ok(new ApiResponse<object> { Data = await _svc.GetDict() });
+    public async Task<IActionResult> GetDict() => Ok(new ApiResponse<object> { Data = await _svc.GetDict() });
 
     [HttpPost("dict")]
     public async Task<IActionResult> AddDict([FromBody] DictRequest req)

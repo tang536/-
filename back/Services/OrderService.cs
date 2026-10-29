@@ -412,8 +412,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         if (customer.AccountStatus == "已注销") throw new Exception("该账号已注销，无法线上下单");
         if (!customer.ProfileCompleted) throw new Exception(RealNameRequiredMessage);
 
-        var vehicle = await _db.Vehicles.AsNoTracking()
-            .FirstOrDefaultAsync(v => v.VehicleId == dto.VehicleId) ?? throw new Exception("车辆不存在");
+        var vehicle = await _db.Vehicles.AsNoTracking().FirstOrDefaultAsync(v => v.VehicleId == dto.VehicleId) ?? throw new Exception("车辆不存在");
         // 同 Create：仅作快速失败，并发正确性由 PlaceOrder 的原子占车保证
         if (vehicle.VehicleStatus != "空闲") throw new Exception($"车辆 {vehicle.VehicleNo} 已被他人租走，请重新选择");
 
@@ -463,9 +462,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
     /// 两种模式都**立即把车辆置为「在租」**占用车辆，避免并发被他人重复下单；
     /// 线上单若迟迟不付款，由 OrderService 的清理逻辑（或前台手动取消）释放车辆。
     /// </param>
-    private async Task<RentalOrder> PlaceOrder(
-        Customer customer, Vehicle vehicle, DateTime leaseStart, DateTime leaseEnd,
-        string payType, int? operatorId, bool paidImmediately)
+    private async Task<RentalOrder> PlaceOrder(Customer customer, Vehicle vehicle, DateTime leaseStart, DateTime leaseEnd, string payType, int? operatorId, bool paidImmediately)
     {
         // 时间口径统一到本地：前端传的是 datetime-local 的本地时间字符串（Kind=Unspecified），
         // 但若某条路径传了带 Z 的 UTC 值，Ticks 会整体比本地早 8 小时，
@@ -512,19 +509,13 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             // ② 占车成功后才写订单：订单号冲突等任何异常都会整体回滚，车辆自动退回「空闲」
             // 订单号：秒级时间戳 + 4 位进程内自增序列。
             // 原实现用 3 位随机数，同一秒的并发请求只有 900 个取值，撞 uk_order_no 会让订单平白失败。
-            var order = RentalOrder.Create(
-                "ZL" + DateTime.Now.ToString("yyyyMMddHHmmss")
-                      + (Interlocked.Increment(ref _orderSeq) % 10_000).ToString("D4"),
-                customer.CustomerId, vehicle.VehicleId, leaseStart, leaseEnd, totalRent, deposit,
-                operatorId, paidImmediately ? "已支付" : "待支付");
+            var order = RentalOrder.Create("ZL" + DateTime.Now.ToString("yyyyMMddHHmmss") + (Interlocked.Increment(ref _orderSeq) % 10_000).ToString("D4"), customer.CustomerId, vehicle.VehicleId, leaseStart, leaseEnd, totalRent, deposit, operatorId, paidImmediately ? "已支付" : "待支付");
             _db.RentalOrders.Add(order);
             await _db.SaveChangesAsync();
 
             // 支付渠道占位：线上单下单时不选渠道，付款时由发起支付接口更新为实际所选；
             // 入账时再以回调/查单数据最终覆盖。线下柜台单当场收款，始终携带真实渠道。
-            var pay = PaymentRecord.Create(order.OrderId, totalRent + deposit,
-                string.IsNullOrWhiteSpace(payType) ? paidImmediately ? "现金" : "待定" : payType.Trim(),
-                "order", null, paidImmediately ? "已支付" : "待支付");
+            var pay = PaymentRecord.Create(order.OrderId, totalRent + deposit, string.IsNullOrWhiteSpace(payType) ? paidImmediately ? "现金" : "待定" : payType.Trim(), "order", null, paidImmediately ? "已支付" : "待支付");
             // 真实支付流水号在支付宝回调时写入；线下柜台收款的流水号由柜台凭据补充
             if (paidImmediately) pay.MarkPaid("现金", DateTime.Now, "TX" + DateTime.Now.ToString("yyyyMMddHHmmss"));
             _db.PaymentRecords.Add(pay);
@@ -548,9 +539,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
     /// </summary>
     private static int CalcHours(DateTime start, DateTime end)
     {
-        return end < start
-            ? throw new Exception("租期不正确，到期时间不能早于起租时间")
-            : PricingResolver.CalcHours(start, end);
+        return end < start ? throw new Exception("租期不正确，到期时间不能早于起租时间") : PricingResolver.CalcHours(start, end);
     }
 
     /// <summary>租车环节资料校验：注册时不采集身份证与手机号，这里允许补录（前台代录），补录后必须合规</summary>

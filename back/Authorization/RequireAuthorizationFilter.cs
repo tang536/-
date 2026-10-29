@@ -24,8 +24,7 @@ namespace ERental.Authorization;
 ///     <c>EndpointMetadata</c>，从而看到类级 + 方法级的全部特性；
 ///   · 未认证返回 401（前端据此走登录/刷新流程），已认证但策略未声明返回 403。
 /// </summary>
-public sealed class RequireAuthorizationFilter(ILogger<RequireAuthorizationFilter> logger)
-    : IAsyncAuthorizationFilter
+public sealed class RequireAuthorizationFilter(ILogger<RequireAuthorizationFilter> logger) : IAsyncAuthorizationFilter
 {
     private readonly ILogger<RequireAuthorizationFilter> _logger = logger;
 
@@ -34,8 +33,7 @@ public sealed class RequireAuthorizationFilter(ILogger<RequireAuthorizationFilte
         var metadata = context.ActionDescriptor.EndpointMetadata;
 
         // 显式匿名（登录、注册、支付回调）与显式授权（策略或角色）都算「已作决策」。
-        var decided = metadata.OfType<IAllowAnonymous>().Any()
-                      || metadata.OfType<IAuthorizeData>().Any();
+        var decided = metadata.OfType<IAllowAnonymous>().Any() || metadata.OfType<IAuthorizeData>().Any();
         if (decided) return Task.CompletedTask;
 
         var action = context.ActionDescriptor.DisplayName ?? context.HttpContext.Request.Path;
@@ -43,9 +41,7 @@ public sealed class RequireAuthorizationFilter(ILogger<RequireAuthorizationFilte
         var authenticated = user.Identity?.IsAuthenticated == true;
 
         // 走到这里说明这个接口没有任何授权声明——属于开发期就该修掉的疏漏，记 Warning 便于排查。
-        _logger.LogWarning(
-            "接口 {Action} 未声明任何授权特性，已被全局兜底过滤器拒绝（{Method} {Path}，已认证={Auth}）",
-            action, context.HttpContext.Request.Method, context.HttpContext.Request.Path, authenticated);
+        _logger.LogWarning("接口 {Action} 未声明任何授权特性，已被全局兜底过滤器拒绝（{Method} {Path}，已认证={Auth}）", action, context.HttpContext.Request.Method, context.HttpContext.Request.Path, authenticated);
 
         context.Result = new ObjectResult(new
         {

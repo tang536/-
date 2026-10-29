@@ -8,6 +8,7 @@ import { useAuth, ROLE } from '@/hooks/useAuth'
 import { useAsyncAction, errMessage } from '@/hooks/useAsyncAction'
 import Icon from '@/components/Icon'
 import OverflowMenu, { type OverflowItem } from '@/components/OverflowMenu'
+import RowActions from '@/components/RowActions'
 import { fmtDT, recentDateRange, shiftDateInput, todayInput } from '@/utils/datetime'
 import { downloadBlob, todayStamp } from '@/utils/download'
 
@@ -94,7 +95,7 @@ function BlockState({
 }
 
 export default function Reports() {
-  const { toast } = useUI()
+  const { toast, confirm, prompt } = useUI()
   const { hasRole } = useAuth()
   /** 图表画在 canvas 上，CSS 变量管不到，只能把主题色显式塞进 option（与看板同一套 chartTheme） */
   const { isDark } = useTheme()
@@ -111,8 +112,8 @@ export default function Reports() {
   const [dashboard, setDashboard] = useState<any>(null)
   const [payments, setPayments] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  /** 加载失败与「查到了但没数据」必须分开：前者要重试按钮，后者只是空态提示。
-   *  以前两者共用 !dashboard 一个分支，失败时也显示「暂无可用报表数据」，会误导排查。 */
+  /** 加载失败与「查到了但没数据」分开：前者给重试按钮，后者只是空态提示。
+   *  共用 !dashboard 一个分支会让失败也显示「暂无可用报表数据」，误导排查方向。 */
   const [loadError, setLoadError] = useState<string | null>(null)
   const [reconcile, setReconcile] = useState<any>(null)
 
@@ -129,6 +130,8 @@ export default function Reports() {
   const reconcileAct = useAsyncAction()
   const reloadAct = useAsyncAction()
   const drillAct = useAsyncAction()
+  const printAct = useAsyncAction()
+  const refundAct = useAsyncAction()
 
   const hasRange = !!range.from || !!range.to
 
@@ -231,6 +234,51 @@ export default function Reports() {
     setRange(r)
   }
 
+  /**
+   * 手工退款（系统操作 #44 refundPayment → PaymentController.Refund）。
+   * 财务在支付流水里发现多收、或需在结算流程之外单独退回时走这里：
+   * 先填本次退款金额（默认剩余可退），二次确认后由后端调网关原路退回。
+   * 可退余额 = 支付金额 − 已退金额；已全额退过的不再显示入口。
+   */
+  const handleRefund = (p: any) => refundAct.run(async () => {
+    const paid = Number(p.payAmount) || 0
+    const refunded = Number(p.refundAmount) || 0
+    const remain = Math.round((paid - refunded) * 100) / 100
+    if (remain <= 0) {
+      toast('这笔支付已全额退款', 'warning')
+      return
+    }
+    const input = await prompt({
+      title: `退款 · ${p.orderNo || `支付单 #${p.payId}`}`,
+      message: `支付 ${money(paid)}，已退 ${money(refunded)}，最多可退 ${money(remain)}。请输入本次退款金额：`,
+      defaultValue: remain.toFixed(2),
+      inputType: 'number',
+      confirmText: '下一步',
+      validate: (v) => {
+        const n = Number(v)
+        if (!v.trim() || !Number.isFinite(n)) return '请输入有效金额'
+        if (n <= 0) return '退款金额需大于 0'
+        if (n > remain + 0.001) return `最多可退 ${money(remain)}`
+        return null
+      },
+    })
+    if (input == null) return
+
+    const amount = Number(input)
+    const ok = await confirm({
+      title: '确认退款',
+      message: `将向「${p.payType}」原路退回 ${money(amount)}。该操作会写入支付流水与审计日志，且无法撤销。`,
+      type: 'warning',
+      danger: true,
+      confirmText: '确认退款',
+    })
+    if (!ok) return
+
+    const r: any = await paymentApi.refund(p.payId, amount)
+    toast(r?.message || '退款已提交', 'success')
+    await load(range)
+  }).catch((e: any) => toast(errMessage(e, '退款失败'), 'error'))
+
   const handleExport = () => exportAct.run(async () => {
     const res: any = await printApi.exportRevenue(range.from || undefined, range.to || undefined)
     downloadBlob(res, `营收报表_${range.from || '全部'}_${range.to || '至今'}_${todayStamp()}.csv`)
@@ -238,12 +286,48 @@ export default function Reports() {
   }).catch((e: any) => toast(errMessage(e, '导出失败'), 'error'))
 
   /**
-   * 浏览器打印报表（对应文档「系统操作」中的 printReport()）：
+   * 标准报表打印（系统操作 #25 printReport → PrintController.ReportView）：
+   * 由后端按当前统计区间渲染一张带打印样式的 A4 报表，前端取回 HTML 后用隐藏 iframe 打印。
+   *
+   * 两个坑都避开了：
+   *   ① 不能 window.open(后端地址)——新窗口不带 Authorization 头，JWT 过不了鉴权，
+   *      所以先走 axios 取文本（带 token），再写进文档；
+   *   ② 不用 window.open('') 开空白窗——那要弹窗权限，被拦截时整条链就断了
+   *      （浏览器扩展、无头环境尤其常见），iframe 打印不依赖任何弹窗授权。
+   */
+  const handlePrintStandard = () => printAct.run(async () => {
+    const html: any = await printApi.reportView(range.from || undefined, range.to || undefined)
+    const text = typeof html === 'string' ? html : String(html ?? '')
+    const frame = document.createElement('iframe')
+    frame.setAttribute('aria-hidden', 'true')
+    frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'
+    document.body.appendChild(frame)
+    const cleanup = () => { try { frame.remove() } catch { /* 已被移除 */ } }
+    const win = frame.contentWindow
+    if (!win) {
+      cleanup()
+      toast('当前浏览器不支持内嵌打印，请改用「打印当前页」', 'warning')
+      return
+    }
+    const doc = win.document
+    doc.open()
+    doc.write(text)
+    doc.close()
+    // 等 iframe 内表格与样式排版完成再调打印，否则容易打出空白页
+    setTimeout(() => {
+      try { win.focus(); win.print() } catch { toast('打印被浏览器拦截，请改用「打印当前页」', 'warning') }
+      setTimeout(cleanup, 1000)
+    }, 300)
+  }).catch((e: any) => toast(errMessage(e, '报表打印失败'), 'error'))
+
+  /**
+   * 浏览器打印当前页（纸面版）：
    * 给 body 打 print-report 标记后调起系统打印对话框——
    * 全局小票打印样式会隐藏 #root 只打弹窗，报表打印必须用该标记区分开；
    * 纸面上只保留打印抬头 + 指标卡 + 图表 + 明细表，侧栏/筛选/按钮等界面元素由打印样式排除。
+   * 与「标准报表打印」的区别：这一份带图表，适合内部汇报；标准版是后端固定表格，适合归档。
    */
-  const handlePrint = () => {
+  const handlePrintPage = () => {
     const cleanup = () => document.body.classList.remove('print-report')
     window.addEventListener('afterprint', cleanup, { once: true })
     document.body.classList.add('print-report')
@@ -455,7 +539,8 @@ export default function Reports() {
           )}
           <OverflowMenu
             items={[
-              { key: 'print', label: '打印报表', icon: 'print', onClick: handlePrint },
+              { key: 'print', label: printAct.pending ? '生成中…' : '打印报表（标准版）', icon: 'print', disabled: printAct.pending, onClick: handlePrintStandard },
+              { key: 'print-page', label: '打印当前页', icon: 'print', onClick: handlePrintPage },
               ...(isFinance
                 ? [{
                     key: 'reconcile',
@@ -898,7 +983,7 @@ export default function Reports() {
             <thead>
               <tr>
                 <th>支付ID</th><th>订单号</th><th>客户</th><th className="num">金额</th><th>方式</th>
-                <th>状态</th><th className="num">退款</th><th>交易号</th><th>时间</th>
+                <th>状态</th><th className="num">退款</th><th>交易号</th><th>时间</th><th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -913,6 +998,19 @@ export default function Reports() {
                   <td className="num">{money(p.refundAmount)}</td>
                   <td className="mono">{p.transactionNo || '—'}</td>
                   <td className="cell-time">{fmtDT(p.payTime)}</td>
+                  <td>
+                    <RowActions
+                      items={(Number(p.payAmount) || 0) - (Number(p.refundAmount) || 0) > 0
+                        ? [{
+                            key: 'refund',
+                            label: '退款',
+                            tone: 'danger' as const,
+                            disabled: refundAct.pending,
+                            onClick: () => handleRefund(p),
+                          }]
+                        : []}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>

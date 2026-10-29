@@ -245,7 +245,6 @@ export const vehicleApi = {
     api.put(`/vehicle/${id}/status`, { status, password }, { headers: { 'Content-Type': 'application/json' } }),
   /** 传二维码原文或车辆编号，返回车辆档案 + 租赁记录 */
   byQrCode: (code: string) => api.get('/vehicle/qr', { params: { code } }),
-  orderHistory: (id: number) => api.get(`/vehicle/${id}/orders`),
   /** 最近热销车辆（线上租车页推荐位） */
   popular: (days = 30, limit = 6) => api.get('/vehicle/popular', { params: { days, limit } }),
   /** 顾客端「全部车辆」目录（热销板块「查看全部车辆」入口） */
@@ -368,7 +367,14 @@ export const orderApi = {
   requestEarlyReturn: (id: number) => api.post(`/order/${id}/early-return`),
   /** approve=true 通过（随后结算），false 驳回并填原因 */
   reviewEarlyReturn: (id: number, approve: boolean, rejectReason?: string) =>
-    api.post(`/order/${id}/early-return/review`, { approve, rejectReason })
+    api.post(`/order/${id}/early-return/review`, { approve, rejectReason }),
+  /**
+   * 订单到期预警（系统操作 #6）：返回 { total, overdueCount, soonCount, warnDays, items[] }，
+   * items 里每条含 orderId / orderNo / customerName / contactPhone / vehicleNo / leaseEnd /
+   * warningType（已逾期 | 即将到期）/ overdueHours / remainingHours。
+   * 前台订单页顶部据此置顶提醒，点条目直接筛到该单。
+   */
+  warnings: (warnDays = 3) => api.get('/order/warnings', { params: { warnDays } })
 }
 
 // 会员（顾客自助购买；员工侧仅两类职责：管理员维护会员类型、工作人员查客户会员记录）
@@ -601,7 +607,15 @@ export const printApi = {
   exportOrders: (params?: { status?: string; keyword?: string; dateFrom?: string; dateTo?: string }) =>
     api.get('/print/export/orders', { params, responseType: 'blob' }),
   exportMaintenance: (params?: { status?: string }) =>
-    api.get('/print/export/maintenance', { params, responseType: 'blob' })
+    api.get('/print/export/maintenance', { params, responseType: 'blob' }),
+  /**
+   * 报表打印视图（系统操作 #25 printReport）：后端按统计区间渲染一张带打印样式的
+   * 标准 A4 报表 HTML（PrintController.ReportView）。这里取回 HTML 文本，
+   * 由调用方写进新窗口再调 window.print()——直接 window.open 打不开，
+   * 因为浏览器新窗口不会带 Authorization 头，JWT 过不了后端鉴权。
+   */
+  reportView: (from?: string, to?: string) =>
+    api.get('/print/report-view', { params: { from, to }, responseType: 'text', transformResponse: [(d: any) => d] })
 }
 
 export default api

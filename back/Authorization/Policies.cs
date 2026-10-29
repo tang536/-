@@ -92,10 +92,8 @@ public static class AuthorizationSetup
         options.AddPolicy(Policies.ReceptionOrFinance, p => p.RequireRole(RoleNames.Reception, RoleNames.Finance));
         options.AddPolicy(Policies.FinanceOnly, p => p.RequireRole(RoleNames.Finance));
         options.AddPolicy(Policies.CustomerOnly, p => p.RequireRole(RoleNames.Customer));
-        options.AddPolicy(Policies.AdminOrReceptionOrCustomer,
-            p => p.RequireRole(RoleNames.Admin, RoleNames.Reception, RoleNames.Customer));
-        options.AddPolicy(Policies.AnyRole,
-            p => p.RequireRole(RoleNames.Admin, RoleNames.Reception, RoleNames.Finance, RoleNames.Customer));
+        options.AddPolicy(Policies.AdminOrReceptionOrCustomer, p => p.RequireRole(RoleNames.Admin, RoleNames.Reception, RoleNames.Customer));
+        options.AddPolicy(Policies.AnyRole, p => p.RequireRole(RoleNames.Admin, RoleNames.Reception, RoleNames.Finance, RoleNames.Customer));
         options.AddPolicy(Policies.AnyAuthenticated, p => p.RequireAuthenticatedUser());
     }
 }

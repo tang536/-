@@ -101,7 +101,7 @@ public class AlipaySelfCheckDto
 /// 微信 / 银行卡通道的**接线自检**结果：复用同一份结构，便于前端三通道统一渲染。
 /// 与 <see cref="AlipaySelfCheckDto"/> 的区别：微信/银行卡没有「应用公钥指纹比对」这一步
 /// （微信靠网关返回的 SIGN_ERROR 判定，银行卡靠网关回显的签名错误关键字判定），
-/// 故去掉 ExpectedAppPublicKey 系列字段，改为更通用的 KeyFormat / MerchantId。
+/// 因此不含 ExpectedAppPublicKey 系列字段，只用更通用的 KeyFormat / MerchantId。
 /// </summary>
 public class ChannelSelfCheckDto
 {
@@ -145,7 +145,7 @@ public class PaymentChannelDto
     /// <summary>通道名：支付宝 / 微信支付 / 银行卡</summary>
     public string Name { get; init; } = string.Empty;
 
-    /// <summary>是否已接入真实通道（微信/银行卡当前恒为 false，占位）</summary>
+    /// <summary>是否已接入真实通道（三条通道均已实现，为 false 表示降级到模拟收银台）</summary>
     public bool Integrated { get; init; }
 
     /// <summary>管理员是否已打开该通道开关</summary>

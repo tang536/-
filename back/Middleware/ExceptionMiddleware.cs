@@ -42,11 +42,9 @@ public class ExceptionMiddleware(
             // 它们是预期内的用户/并发问题，不该污染 Error 级别。
             var isBusiness = ErrorText.IsBusiness(ex) || ex is ConcurrentOperationException;
             if (isBusiness)
-                _logger.LogInformation("请求 {Method} {Path} 业务校验未通过：{Message}",
-                    context.Request.Method, context.Request.Path, ex.Message);
+                _logger.LogInformation("请求 {Method} {Path} 业务校验未通过：{Message}", context.Request.Method, context.Request.Path, ex.Message);
             else
-                _logger.LogError(ex, "请求 {Method} {Path} 处理失败（{ExType}）",
-                    context.Request.Method, context.Request.Path, ex.GetType().Name);
+                _logger.LogError(ex, "请求 {Method} {Path} 处理失败（{ExType}）", context.Request.Method, context.Request.Path, ex.GetType().Name);
 
             // 需求 4.2.1 / 8.3「所有故障、异常、报错信息均自动记录至系统日志」：
             // 只记**非业务异常**——业务校验失败是预期内的用户输入问题（前端已即时提示），
@@ -59,9 +57,7 @@ public class ExceptionMiddleware(
             // 控制器层那 68 处 catch 现在调用的是同一个方法，两条出口口径一致。
             var safeMessage = ErrorText.Safe(ex);
 
-            var status = isBusiness || ErrorText.DescribeDatabase(ex) != null
-                ? (int)HttpStatusCode.BadRequest
-                : (int)HttpStatusCode.InternalServerError;
+            var status = isBusiness || ErrorText.DescribeDatabase(ex) != null ? (int)HttpStatusCode.BadRequest : (int)HttpStatusCode.InternalServerError;
 
             context.Response.ContentType = "application/json; charset=utf-8";
             context.Response.StatusCode = status;

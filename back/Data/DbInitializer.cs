@@ -28,8 +28,7 @@ public static class DbInitializer
 
         if (!ColumnExists(db, "customer", "login_account"))
         {
-            db.Database.ExecuteSqlRaw(
-                "ALTER TABLE `customer` ADD COLUMN `login_account` VARCHAR(20) NULL COMMENT '注册用户名' AFTER `customer_id`;");
+            db.Database.ExecuteSqlRaw("ALTER TABLE `customer` ADD COLUMN `login_account` VARCHAR(20) NULL COMMENT '注册用户名' AFTER `customer_id`;");
         }
         if (!IndexExists(db, "customer", "uk_login_account"))
         {
@@ -39,13 +38,11 @@ public static class DbInitializer
         // 登录密码（BCrypt），与 login_account 同批引入，老库同样可能缺
         if (!ColumnExists(db, "customer", "login_password"))
         {
-            db.Database.ExecuteSqlRaw(
-                "ALTER TABLE `customer` ADD COLUMN `login_password` VARCHAR(100) NULL COMMENT '登录密码（BCrypt）';");
+            db.Database.ExecuteSqlRaw("ALTER TABLE `customer` ADD COLUMN `login_password` VARCHAR(100) NULL COMMENT '登录密码（BCrypt）';");
         }
 
         // 注册阶段不采集身份证号，租车环节才强制补录 → 允许为空
-        db.Database.ExecuteSqlRaw(
-            "ALTER TABLE `customer` MODIFY COLUMN `id_card` VARCHAR(18) NULL COMMENT '身份证号（租车环节采集）';");
+        db.Database.ExecuteSqlRaw("ALTER TABLE `customer` MODIFY COLUMN `id_card` VARCHAR(18) NULL COMMENT '身份证号（租车环节采集）';");
 
         // 支付凭证（应用私钥约 1500 字符、支付宝公钥约 400 字符）远超原 VARCHAR(200)，
         // 而支付配置要求「由管理员在管理员端填写」，只能落在 system_config。
@@ -69,9 +66,9 @@ public static class DbInitializer
         }
 
         // 存量数据升级：匿名化释放已注销账号的身份信息（与 AuthService.Deactivate 同口径）。
-        // 早期版本注销只清了登录密码、有的连用户名都没清（甚至有人拿身份证号当用户名），
-        // 身份证/手机号继续占用全局唯一性校验，导致本人重新注册后无法再次实名。
-        // 档案记录本身保留（历史订单仍可经"已注销用户#ID"追溯），仅把 PII 置空释放。
+        // 历史库里注销过的账号可能只清了密码、仍留着登录名甚至身份证号，这些信息继续占用
+        // 全局唯一性校验，会导致本人重新注册后无法再次实名。档案本身保留（历史订单仍可经
+        // "已注销用户#ID"追溯），仅把身份信息置空释放。
         db.Database.ExecuteSqlRaw("""
             UPDATE `customer`
                 SET `id_card` = NULL, `contact_phone` = NULL, `login_account` = NULL,`full_name` = CONCAT('已注销用户#', `customer_id`)
@@ -151,9 +148,9 @@ public static class DbInitializer
             db.Database.ExecuteSqlRaw("ALTER TABLE `rental_order` ADD COLUMN `early_return_status` VARCHAR(20) NULL COMMENT '提前还车申请状态（NULL=未申请，待审核=顾客已申请等前台处理）' AFTER `cancel_reason`;");
         }
 
-        // 存量修复：早期版本「归还结算」不会清还车申请，前台跳过申请单直接结算时会留下
-        // 「订单已完结 + 申请仍待审核」的幽灵单——汇总表里点「审核」只会得到「请完成归还结算」，
-        // 而单子早已结算过，永远关闭不掉。这里按已结束的订单一次性收口成「已处理」。
+        // 存量修复：已结束（已完结 / 已取消）的订单若还挂着「待审核」的提前还车申请，
+        // 就是一条关不掉的幽灵单——汇总表里点「审核」只会得到「请完成归还结算」，
+        // 而单子早已结算过。这里一次性收口成空状态。
         // 幂等：条件写死 order_status，跑第二遍影响 0 行。
         db.Database.ExecuteSqlRaw("UPDATE `rental_order` SET `early_return_status` = '' " + "WHERE `order_status` IN ('已完结', '已取消') AND `early_return_status` = '待审核';");
 
@@ -586,8 +583,8 @@ public static class DbInitializer
         }
 
         // 描述同步：键已存在但描述过期时更新（只改描述、绝不碰值——值可能被管理员改过）。
-        // 典型场景：登录锁定口径从「锁账号」改为「封 IP」后，老库里的描述仍写着
-        // 「账号锁定时长」，管理员照描述理解会以为改的是账号封锁，故需幂等刷新
+        // 描述必须与当前口径一致：例如 lock_minutes 的含义是「封锁该 IP 的时长」，
+        // 库里若仍留着「账号锁定时长」这类旧描述，管理员按描述理解会改错对象，故幂等刷新
         var staleDesc = db.SystemConfigs
             .Where(c => defaultConfigs.Select(d => d.Key).Contains(c.ConfigKey))
             .ToList()

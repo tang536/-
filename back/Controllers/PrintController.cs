@@ -68,9 +68,7 @@ public class PrintController(
     {
         var dashboard = await _reportSvc.GetDashboard(from, to);
         var sb = new StringBuilder();
-        sb.AppendLine(from.HasValue || to.HasValue
-            ? $"统计区间,{from?.ToString("yyyy-MM-dd") ?? "最早"} ~ {to?.ToString("yyyy-MM-dd") ?? "至今"}"
-            : "统计区间,全部（累计口径）");
+        sb.AppendLine(from.HasValue || to.HasValue ? $"统计区间,{from?.ToString("yyyy-MM-dd") ?? "最早"} ~ {to?.ToString("yyyy-MM-dd") ?? "至今"}" : "统计区间,全部（累计口径）");
         sb.AppendLine("指标,数值");
         sb.AppendLine($"总营收,{dashboard.TotalRevenue:F2}");
         sb.AppendLine($"总订单数,{dashboard.TotalOrders}");
@@ -94,21 +92,17 @@ public class PrintController(
     /// <summary>订单明细导出：订单查询与打印 → 管理员 / 前台（用况2、用况3）</summary>
     [HttpGet("export/orders")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> ExportOrdersCsv(
-        string? status, string? keyword, DateTime? dateFrom = null, DateTime? dateTo = null) =>
-        CsvFile(await _svc.OrderListCsv(status, keyword, dateFrom, dateTo), "订单明细");
+    public async Task<IActionResult> ExportOrdersCsv(string? status, string? keyword, DateTime? dateFrom = null, DateTime? dateTo = null) => CsvFile(await _svc.OrderListCsv(status, keyword, dateFrom, dateTo), "订单明细");
 
     /// <summary>维保记录导出：维保记录查询与打印 → 仅管理员（用况4）</summary>
     [HttpGet("export/maintenance")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> ExportMaintenanceCsv(string? status) =>
-        CsvFile(await _svc.MaintenanceListCsv(status), "维保记录");
+    public async Task<IActionResult> ExportMaintenanceCsv(string? status) => CsvFile(await _svc.MaintenanceListCsv(status), "维保记录");
 
     /// <summary>统一输出 CSV：前置 UTF-8 BOM，避免 Excel 打开中文乱码</summary>
     private FileContentResult CsvFile(string content, string name)
     {
-        var bytes = new byte[] { 0xEF, 0xBB, 0xBF }
-            .Concat(Encoding.UTF8.GetBytes(content)).ToArray();
+        var bytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Encoding.UTF8.GetBytes(content)).ToArray();
         return File(bytes, "text/csv; charset=utf-8", $"{name}_{DateTime.Now:yyyyMMdd}.csv");
     }
 }

@@ -12,8 +12,7 @@ namespace ERental.Controllers;
 [Route("api/[controller]")]
 // 授权拆到方法级：顾客端会员中心（顾客）与管理员侧会员管理（管理员）共用一个控制器，
 // 类级 Roles 会与方法级 Roles 取交集，导致两边都进不来，所以这里不能挂类级特性。
-public class MemberController(
-    MemberService svc, AlipayService alipay, PayConfigService payConfig) : ControllerBase
+public class MemberController(MemberService svc, AlipayService alipay, PayConfigService payConfig) : ControllerBase
 {
     private readonly MemberService _svc = svc;
     private readonly AlipayService _alipay = alipay;

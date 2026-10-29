@@ -33,6 +33,32 @@ const statusMap: Record<string, string> = {
 const STATUS_OPTIONS = ['待支付', '已支付', '租赁中', '已完结', '已取消']
 
 /**
+ * 订单到期预警（系统操作 #6，OrderController.Warnings）。
+ * 后端只回在租/已支付且到期时间落在 warnDays 内的单子，分「已逾期」与「即将到期」两类。
+ * 这两个数字是前台当天要打的电话清单，所以放在列表页最上方而不是藏进筛选项。
+ */
+type OrderWarning = {
+  orderId: number
+  orderNo: string
+  customerName: string
+  contactPhone?: string | null
+  vehicleNo: string
+  leaseEnd: string
+  orderStatus: string
+  warningType: '已逾期' | '即将到期'
+  overdueHours: number
+  remainingHours: number
+}
+
+type WarningSummary = {
+  total: number
+  overdueCount: number
+  soonCount: number
+  warnDays: number
+  items: OrderWarning[]
+}
+
+/**
  * 租赁订单页。
  *
  * 结构图「租赁订单管理模块」下含「订单创建与续租 / 订单退租与取消 / 订单预警与查询」三个子项，
@@ -82,6 +108,8 @@ export default function Orders() {
   const [loading, setLoading] = useState(true)
   const [receipt, setReceipt] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
+  /** 到期/逾期预警。与列表筛选无关，独立拉取：换页换条件不该让它闪一下。 */
+  const [warn, setWarn] = useState<WarningSummary | null>(null)
   /** 服务端分页状态：页码从 1 开始，total 由后端统计 */
   const [page, setPage] = useState(() => Math.max(1, Number(searchParams.get('page')) || 1))
   const [pageSize, setPageSize] = useState(() => Number(searchParams.get('size')) || DEFAULT_PAGE_SIZE)
@@ -113,10 +141,26 @@ export default function Orders() {
     }
   }
 
+  /**
+   * 拉到期预警。失败不打断列表：预警是辅助信息，挂了就整块不显示，
+   * 不弹 toast 抢主流程的错误提示位（后端不可用时列表自己会报错）。
+   */
+  const loadWarnings = async () => {
+    try {
+      const res: any = await orderApi.warnings(3)
+      setWarn(res.data ?? null)
+    } catch {
+      setWarn(null)
+    }
+  }
+
   // 顶栏全局搜索会带上 ?q=，进入页面后自动作为筛选条件。
   // 页码归位（setPage(1)）写在各个筛选控件的事件里，而不是再挂一个 effect：
   // 两个 effect 会同一次渲染各发一次请求，页码变化时会看到列表闪一下。
   useEffect(() => { load() }, [status, keyword, dateFrom, dateTo, sortBy, sortDir, page, pageSize])
+
+  // 预警只在进页面时拉一次：它不是分页数据，跟着翻页重拉纯属浪费。
+  useEffect(() => { loadWarnings() }, [])
 
   /**
    * 把当前筛选/排序/页码写回地址栏（replace，不往浏览历史里堆记录）。
@@ -239,6 +283,44 @@ export default function Orders() {
           </button>
         )}
       </div>
+
+      {/* 到期/逾期预警（系统操作 #6）：只在有单子要跟进时出现，没有就整块不渲染——
+          常驻一条「0 笔逾期」会把真正要处理的单子淹掉。 */}
+      {view === 'list' && warn && warn.total > 0 && (
+        <div className={`callout ${warn.overdueCount > 0 ? 'callout-danger' : 'callout-warning'}`}
+             style={{ marginBottom: 12, alignItems: 'flex-start' }}>
+          <Icon name="clock" size={18} chip />
+          <div className="callout-body">
+            <div className="callout-head">
+              订单到期预警：已逾期 <strong>{warn.overdueCount}</strong> 笔，
+              {warn.warnDays} 天内到期 <strong>{warn.soonCount}</strong> 笔
+              <button type="button" className="link-btn" style={{ marginLeft: 8 }}
+                      onClick={() => { setStatus('租赁中'); setPage(1) }}>
+                只看在租订单
+              </button>
+            </div>
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18, lineHeight: 1.9 }}>
+              {warn.items.slice(0, 5).map(w => (
+                <li key={w.orderId}>
+                  <button type="button" className="link-btn"
+                          onClick={() => { setKeyword(w.orderNo); setStatus(''); setPage(1) }}>
+                    {w.orderNo}
+                  </button>
+                  {' '}
+                  {w.customerName}
+                  {w.contactPhone ? `（${w.contactPhone}）` : ''} · {w.vehicleNo} · 到期 {fmtDT(w.leaseEnd)} ·{' '}
+                  <strong style={{ color: w.warningType === '已逾期' ? 'var(--danger, #C0392B)' : 'inherit' }}>
+                    {w.warningType === '已逾期' ? `已逾期 ${w.overdueHours} 小时` : `剩 ${w.remainingHours} 小时`}
+                  </strong>
+                </li>
+              ))}
+              {warn.items.length > 5 && (
+                <li>另有 {warn.items.length - 5} 笔，点上方「只看在租订单」查看全部</li>
+              )}
+            </ul>
+          </div>
+        </div>
+      )}
 
       <div className="toolbar">
         {/* 页签即入口：前台在「订单列表 / 创建订单」间切换；管理员只做查询，不显示页签 */}
