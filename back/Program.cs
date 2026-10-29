@@ -327,7 +327,6 @@ else
     app.Logger.LogInformation("JWT 签名密钥来源：{Source}", jwtKeySource);
 
 // 系统操作 startup()：建表 → 老库平滑升级 → 种子数据，三步均幂等。
-// 抽到 SystemStartupService 里，是为了对齐设计文档中的 1 号系统操作（启动顺序即该操作的后置条件）。
 using (var scope = app.Services.CreateScope())
 {
     var startup = scope.ServiceProvider.GetRequiredService<SystemStartupService>();

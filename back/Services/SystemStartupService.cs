@@ -3,13 +3,9 @@
 namespace ERental.Services;
 
 /// <summary>
-/// 系统操作 <c>startup()</c>：进程启动时由运维管理员触发，按「建表 → 老库升级 → 种子数据」的固定顺序执行一次。
-///
 /// 三步都是幂等的：<c>EnsureCreated</c> 只在库不存在时建表，<c>EnsureSchemaUpgrades</c> 按索引/约束名
 /// 判断是否已存在，<c>Seed</c> 按主键/唯一键逐个补种。因此重复执行不会产生重复数据，也不会覆盖
 /// 管理员已经改过的配置项。
-///
-/// 单独抽成一个服务而不是留在 Program.cs 里，是因为设计与分析文档把 startup 列为 1 号系统操作，
 /// </summary>
 public sealed class SystemStartupService(
     AppDbContext db,
