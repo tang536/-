@@ -79,12 +79,9 @@ public class SystemConfigService(AppDbContext db)
                 && !c.ConfigKey.StartsWith(SessionRegistry.Prefix))
             .OrderBy(c => c.ConfigId)
             .ToListAsync();
-
-    /// <summary>
+    
     /// 登录页需要的公开配置（系统操作 #2 openLoginPage）：站点名称、可用登录方式、主题选项。
-    /// 只返回这三个白名单键——这个接口在未认证状态下就能取，不能把整张配置表（含支付密钥）摊出去。
-    /// 缺键时给默认值：种子数据被清过也不至于让登录页白屏。
-    /// </summary>
+    
     public async Task<Dictionary<string, string>> GetPublic()
     {
         var keys = new[] { "site.name", "login.modes", "theme.options" };

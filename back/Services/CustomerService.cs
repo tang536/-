@@ -31,7 +31,7 @@ public class CustomerService(AppDbContext db, LogService log)
         if (!string.IsNullOrEmpty(accountStatus)) q = q.Where(c => c.AccountStatus == accountStatus);
 
         var total = await q.CountAsync();
-        var (_, _, skip, take) = DTOs.Paging.Normalize(page, pageSize);
+        var (_, _, skip, take) = Paging.Normalize(page, pageSize);
         var ordered = q.OrderByDescending(c => c.CreateTime);
         var items = take > 0
             ? await ordered.Skip(skip).Take(take).ToListAsync()
