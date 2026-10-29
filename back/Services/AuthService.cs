@@ -163,15 +163,15 @@ public class AuthService(
         // 关键：角色一律以数据库中的真实角色为准，前端不再根据"登录时点的哪个页签"决定跳转
         var roleName = user.Role?.RoleName ?? RoleReception;
         // 单点登录：先登记会话（顶掉该账号此前的登录），再把会话标识签进 token
-        var sid = await _sessions.IssueAsync("staff", user.UserId);
-        var token = GenerateJwt(user.UserId, user.LoginAccount, "staff", roleName, sid);
+        var sid = await _sessions.IssueAsync(user.UserType, user.UserId);
+        var token = GenerateJwt(user.UserId, user.LoginAccount, user.UserType, roleName, sid);
         return new LoginResponseDto
         {
             Token = token,
             // 续期令牌：与 access token 同一个 sid，单点登录被顶掉后它一并失效
-            RefreshToken = GenerateJwt(user.UserId, user.LoginAccount, "staff", roleName, sid,
+            RefreshToken = GenerateJwt(user.UserId, user.LoginAccount, user.UserType, roleName, sid,
                 TokenTypeRefresh, RefreshLifetime()),
-            UserType = "staff",
+            UserType = user.UserType,
             RoleName = roleName,
             UserName = user.UserName ?? user.LoginAccount,
             UserId = user.UserId,
@@ -404,7 +404,7 @@ public class AuthService(
         await _db.SaveChangesAsync();
         await WriteLog(user.UserId, $"管理员自助注销账号：{user.LoginAccount}", "系统管理", "成功");
         // 账号已停用：清掉在线会话（否则停用了却还能凭旧 token 用到过期）
-        await _sessions.RevokeAllAsync("staff", user.UserId, "账号已停用，登录状态已失效");
+        await _sessions.RevokeAllAsync(user.UserType, user.UserId, "账号已停用，登录状态已失效");
     }
 
     /// <summary>
@@ -571,10 +571,10 @@ public class AuthService(
         var roleName = user.Role?.RoleName ?? RoleReception;
         return new LoginResponseDto
         {
-            Token = GenerateJwt(userId, user.LoginAccount, "staff", roleName, sid),
-            RefreshToken = GenerateJwt(userId, user.LoginAccount, "staff", roleName, sid,
+            Token = GenerateJwt(userId, user.LoginAccount, user.UserType, roleName, sid),
+            RefreshToken = GenerateJwt(userId, user.LoginAccount, user.UserType, roleName, sid,
                 TokenTypeRefresh, RefreshLifetime()),
-            UserType = "staff",
+            UserType = user.UserType,
             RoleName = roleName,
             UserName = user.UserName ?? user.LoginAccount,
             UserId = userId,

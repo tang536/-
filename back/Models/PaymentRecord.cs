@@ -109,8 +109,4 @@ public class PaymentRecord
         RefundAmount = refundedTotal;
         PayStatus = refundedTotal >= PayAmount ? "已退款" : "部分退款";
     }
-
-    /// <summary>写入通道侧商户订单号（补缴单必须全局唯一，首付款留空回退订单号）。</summary>
-    public void AssignOutTradeNo(string? outTradeNo) =>
-        OutTradeNo = string.IsNullOrWhiteSpace(outTradeNo) ? null : outTradeNo.Trim();
 }

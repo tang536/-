@@ -80,9 +80,9 @@ public class UserService(AppDbContext db, SessionRegistry sessions)
         // 管理员改了密码或停用账号 → 立刻清掉该账号的在线会话：
         // 否则「被停用的人」凭旧 token 还能继续用到过期，改密也形同没改。
         if (!string.IsNullOrEmpty(dto.Password))
-            await _sessions.RevokeAllAsync("staff", id, "密码已被管理员重置，请用新密码重新登录");
+            await _sessions.RevokeAllAsync(user.UserType, id, "密码已被管理员重置，请用新密码重新登录");
         if (dto.UserStatus == 0)
-            await _sessions.RevokeAllAsync("staff", id, "账号已被管理员停用");
+            await _sessions.RevokeAllAsync(user.UserType, id, "账号已被管理员停用");
     }
 
     public async Task DeleteStaff(int id)
@@ -92,7 +92,7 @@ public class UserService(AppDbContext db, SessionRegistry sessions)
         await EnsureNotLastActiveAdmin(user, "删除");
         _db.SystemUsers.Remove(user);
         await _db.SaveChangesAsync();
-        await _sessions.RevokeAllAsync("staff", id, "账号已被删除，登录状态已失效");
+        await _sessions.RevokeAllAsync(user.UserType, id, "账号已被删除，登录状态已失效");
     }
 
     /// <summary>

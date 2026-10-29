@@ -1,6 +1,11 @@
 /** 系统角色（与后端 AuthService.Role* 常量一一对应） */
 export type RoleName = '管理员' | '前台' | '财务' | '顾客'
-export type UserType = 'staff' | 'customer'
+/**
+ * 账号类型（与后端 SystemUser.UserType 多态取值一一对应）。
+ * 员工侧细分 admin / reception / finance，顾客侧为 customer；
+ * 界面判定通常只关心「是不是顾客」，因此比较时一律与 'customer' 对照。
+ */
+export type UserType = 'customer' | 'staff' | 'admin' | 'reception' | 'finance'
 
 export interface UserInfo {
   token: string
