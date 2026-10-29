@@ -81,9 +81,18 @@ export default defineConfig({
         manualChunks: (id: string) => {
           const p = id.replace(/\\/g, '/')
           if (!p.includes('/node_modules/')) return
+          /*
+           * 只拆 echarts 与 zrender 这两个「纯 JS、不依赖 React」的库。
+           *
+           * echarts-for-react 特意留在入口 chunk，不并进来：它 extends React.Component，
+           * 一旦被拆进独立 chunk，就和入口形成
+           *   入口(lazy→Dashboard) → vendor-echarts → (需要 React) → 入口
+           * 的环，rollup 唯一的解法是把这个 chunk 提到入口做 modulepreload——
+           * 结果首屏照样下载 579 KB 的 echarts，拆包等于白拆（实测确认过）。
+           * 它本身只有几 KB 的封装，留在入口毫无负担。
+           */
           if (p.includes('/node_modules/echarts/')
-              || p.includes('/node_modules/zrender/')
-              || p.includes('/node_modules/echarts-for-react/')) {
+              || p.includes('/node_modules/zrender/')) {
             return 'vendor-echarts'
           }
         }
