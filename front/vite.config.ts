@@ -62,24 +62,30 @@ export default defineConfig({
     rollupOptions: {
       output: {
         /*
-         * 手动分包：把「很少变、体积大」的依赖从业务代码里摘出来。
+         * 手动分包：只把«报表才用得到»的 echarts 家族单独摘出去，其余全部交给
+         * rollup 默认排序。
          *
-         * 之前全部页面同步引入，vite 只能打出单个 1.37 MB 的 chunk——顾客在手机上
-         * 打开落地页，也要先下载只有管理员看报表才会用到的 echarts。
-         * 拆开之后：
-         *   vendor-echarts —— 只有点进「报表」才下载，顾客端永远不碰；
-         *   vendor-react    —— 所有页面共用，哈希长期不变，命中浏览器缓存；
-         *   vendor          —— 其余第三方（axios 等）。
+         * 曾经试过把 react / 其余第三方也各切一块（三块分立），结果线上白屏：
+         *   Class extends value undefined is not a constructor or null
+         * 因为 echarts-for-react 内部是 `class EChartsReactCore extends React.Component`，
+         * 而上面那条 `/echarts/` 带尾斜杠，匹配不到 `/echarts-for-react/`，它就被判给了
+         * 「其余第三方」那一块；那块又排在 react 块之前执行，基类还是 undefined。
+         * 教训：手动分包一旦切断了«谁继承谁»的顺序，只有运行时才会炸，构建期一切正常。
+         *
+         * 现在只切一刀，且把 echarts-for-react 明确并入 echarts 家族（它必须和第
+         * 一个 chunk 一起被 lazy 加载，此时 React 早已就绪）。react 与业务代码留在
+         * 入口 chunk 里，由 rollup 自己保证顺序，不再人为干预。
          * 路径分隔符统一换成 / 再匹配，否则 Windows 下的反斜杠会让判断全部落空、
          * 分包配置静默失效（仍然是单 chunk，只是没人发现）。
          */
         manualChunks: (id: string) => {
           const p = id.replace(/\\/g, '/')
           if (!p.includes('/node_modules/')) return
-          if (p.includes('/echarts/') || p.includes('/zrender/')) return 'vendor-echarts'
-          if (p.includes('/react/') || p.includes('/react-dom/')
-              || p.includes('/react-router') || p.includes('/scheduler/')) return 'vendor-react'
-          return 'vendor'
+          if (p.includes('/node_modules/echarts/')
+              || p.includes('/node_modules/zrender/')
+              || p.includes('/node_modules/echarts-for-react/')) {
+            return 'vendor-echarts'
+          }
         }
       }
     }
