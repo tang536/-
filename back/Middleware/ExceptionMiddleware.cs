@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Security.Claims;
 using System.Text.Json;
 using ERental.Services;
@@ -7,12 +7,10 @@ namespace ERental.Middleware;
 
 /// <summary>
 /// 全局异常兜底 + **对外响应脱敏**。
-///
 /// 三类异常的处理口径：
 ///  ① 业务校验异常（我方主动 throw 的中文提示）→ 原样返回，管理员/用户需要知道原因；
 ///  ② 数据库异常 → 翻译成中文提示（原始英文报错进日志）；
 ///  ③ 其余未预期异常 → 只回**通用中文提示**，**绝不回 ex.Message**。
-///
 /// ⚠️ 为什么 ③ 不能回原始 Message（本轮安全审查的重点）：
 ///  未预期异常的 Message 常常暴露实现细节——连接字符串、文件绝对路径、
 ///  网关原始响应、甚至签名/密钥片段；而堆栈里还可能带请求参数。
@@ -74,7 +72,6 @@ public class ExceptionMiddleware(
 
     /// <summary>
     /// 系统级故障写入 <c>system_log</c>（需求规格 4.2.1「所有故障、异常、报错信息均自动记录」）。
-    ///
     /// 只写异常**类型名**（如 MySqlException），不写 Message：
     /// Message 可能含连接串、绝对路径、网关原始响应等敏感片段，而 system_log 是可在界面上查看的表。
     /// 记录本身失败时静默降级——审计是旁路，不能把「原始故障」覆盖成「记录故障时又出错」。

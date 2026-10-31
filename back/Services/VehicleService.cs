@@ -19,13 +19,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         return await q.ToListAsync();
     }
 
-    /// <summary>
-    /// 分页查询（管理端车辆台账）：pageSize≤0 时等价于 <see cref="GetAll"/>。
-    /// <paramref name="brand"/> 是列表页的品牌筛选，放到库里过滤——前端只对当前页做筛选会导致
-    /// 总数与页码都失真，所以下推到 SQL。
-    /// <paramref name="sortBy"/> 来自表头点击（白名单映射），未识别时按车辆编号升序，
-    /// 保证「不排序」时翻页不重不漏。
-    /// </summary>
+    /// <summary>分页查询（管理端车辆台账）：pageSize≤0 时等价于 </summary>
     public async Task<(List<Vehicle> Items, int Total)> GetPaged(
         string? status, string? keyword, string? brand,
         string? sortBy = null, bool sortDesc = true, int page = 0, int pageSize = 0)
@@ -57,10 +51,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         return (items, total);
     }
 
-    /// <summary>
-    /// 各状态的车辆数（车辆页签上的角标）。分页后前端拿不到全集，必须由后端单独统计，
-    /// 否则角标只会反映"当前这一页"。筛选条件与列表保持一致（关键字 + 品牌 + 状态无关）。
-    /// </summary>
+    /// <summary>各状态的车辆数（车辆页签上的角标）</summary>
     public async Task<Dictionary<string, int>> GetStatusCountsAsync(string? keyword, string? brand)
     {
         var q = _db.Vehicles.AsQueryable();
@@ -97,12 +88,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         return v;
     }
 
-    /// <summary>
-    /// 批量新增车辆。逐条创建、逐条校验，某条失败不影响其他条；返回逐条结果，
-    /// 前端据此展示「成功 N / 失败 M」并把失败行单独列出。
-    /// 同批次内的车辆编号 / 车架号也做去重（避免一批里手滑写了两行同一车牌），
-    /// 再加库内存在性校验，与单条 Create 的口径完全一致。
-    /// </summary>
+    /// <summary>批量新增车辆</summary>
     public async Task<BatchVehicleResultDto> CreateBatch(List<VehicleSaveDto> items)
     {
         var result = new BatchVehicleResultDto { Total = items.Count };
@@ -183,14 +169,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
                 $"变更车辆状态（档案编辑）：{exist.VehicleNo}（{before} → {exist.VehicleStatus}）", "车辆管理", "成功");
     }
 
-    /// <summary>
-    /// 批量编辑车辆：仅覆盖被勾选（Apply*）的字段，未勾选的保持原值，避免误伤。
-    /// 状态变更同样需要管理员密码二次校验（用况4 扩展用况3）：整批只校验一次
-    /// （同一管理员、同一会话），密码错误则整批中止并以一句人话提示。
-    /// 逐条校验业务规则（在租不可改、报废不可逆、在租不可手工设置等），
-    /// 失败项单独记入结果，不影响其它项落库——与批量新增同口径。
-    /// 顺序：先把所有校验跑完再落值，任一条不过则该条不参与保存，杜绝半截写入。
-    /// </summary>
+    /// <summary>批量编辑车辆：仅覆盖被勾选（Apply*）的字段，未勾选的保持原值，避免误伤</summary>
     public async Task<BatchVehicleResultDto> UpdateBatch(BatchVehicleUpdateDto dto, int? operatorId = null)
     {
         var result = new BatchVehicleResultDto { Total = dto.Ids.Count };
@@ -252,7 +231,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         return result;
     }
 
-    /// <summary>上传车辆图片（覆盖旧图）；传空则清空，车辆恢复为无图状态</summary>
+    /// <summary>上传车辆图片（覆盖旧图）</summary>
     public async Task<string?> SetImage(int id, IFormFile? file)
     {
         var v = await _db.Vehicles.FindAsync(id) ?? throw new Exception("车辆不存在");
@@ -263,11 +242,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         return v.ImageUrl;
     }
 
-    /// <summary>
-    /// 以 URL 直接设置车辆图片（AI 生图落地）。仅接受本站内路径
-    /// （/uploads/…），拒绝外链——外链图挂在车辆档案上，图床一挂车辆就破图，
-    /// 且等于替第三方站点存了一张来路不明的图。
-    /// </summary>
+    /// <summary>以 URL 直接设置车辆图片（AI 生图落地）</summary>
     public async Task SetImageUrl(int id, string? url)
     {
         var v = await _db.Vehicles.FindAsync(id) ?? throw new Exception("车辆不存在");
@@ -286,10 +261,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         await _db.SaveChangesAsync();
     }
 
-    /// <summary>
-    /// 最近热销车辆：按近 days 天的成单量排名，供顾客线上租车页展示。
-    /// 一台车都没租过时退回「空闲车辆」，避免新系统上线后该区块空白。
-    /// </summary>
+    /// <summary>最近热销车辆：按近 days 天的成单量排名，供顾客线上租车页展示</summary>
     public async Task<List<PopularVehicleDto>> GetPopular(int days = 30, int limit = 6)
     {
         var since = DateTime.Now.AddDays(-days);
@@ -335,12 +307,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         .ThenBy(x => x.VehicleNo)];
     }
 
-    /// <summary>
-    /// 顾客端「全部车辆」目录：返回所有车辆（含在租/维保/报废），
-    /// 让顾客先看清门店有什么车、什么状态，再决定是否下单。
-    /// 只暴露 PopularVehicleDto 的窄字段（车型/图片/状态/租金押金/成单量），
-    /// 不含购入价、车架号、采购时间等经营数据 —— 与车辆档案全表严格区分。
-    /// </summary>
+    /// <summary>顾客端「全部车辆」目录：返回所有车辆（含在租/维保/报废）， 让顾客先看清门店有什么车、什么状态，再决定是否下单</summary>
     public async Task<List<PopularVehicleDto>> GetCatalog(string? keyword = null)
     {
         var q = _db.Vehicles.AsNoTracking();
@@ -398,11 +365,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         await _db.SaveChangesAsync();
     }
 
-    /// <summary>
-    /// 手动更改车辆状态（用况4 步骤4）。密码二次校验已由控制器在调用前完成；
-    /// 这里只负责业务规则（合法性 + 在租/报废的不可逆约束）与**状态变更留痕**
-    /// （需求 4.2.2「状态变更全程留痕」）。
-    /// </summary>
+    /// <summary>手动更改车辆状态（用况4 步骤4）</summary>
     public async Task UpdateStatus(int id, string status, int? operatorId = null)
     {
         // 用 AsNoTracking：状态改由下面的原子 UPDATE 落库，
@@ -441,7 +404,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
             $"手动变更车辆状态：{v.VehicleNo}（{before} → {status}）", "车辆管理", "成功");
     }
 
-    /// <summary>车辆档案字段校验（需求 5.1 格式校验精度）。只拦截明显不合法的取值</summary>
+    /// <summary>车辆档案字段校验（需求 5</summary>
     private static void ValidateProfile(VehicleSaveDto v)
     {
         if (string.IsNullOrWhiteSpace(v.VehicleNo))
@@ -472,10 +435,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
             throw new Exception("押金不能为负数");
     }
 
-    /// <summary>
-    /// 扫码查询：传入二维码原文（<c>ERENTAL:VEHICLE:1</c>）或直接传车辆编号，返回档案 + 租赁记录。
-    /// 扫码枪本质是键盘输入，故入参做宽松解析：带前缀、只扫出编号、手工粘贴都认。
-    /// </summary>
+    /// <summary>扫码查询：传入二维码原文（ERENTAL:VEHICLE:1）或直接传车辆编号，返回档案 + 租赁记录</summary>
     public async Task<VehicleQrDetailDto> GetByQrCode(string? code)
     {
         var token = ParseQrCode(code);
@@ -543,18 +503,10 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
     private static bool IsClosed(string status) =>
         status is "已完成" or "已完结" or "已取消";
 
-    /// <summary>
-    /// ⚠️ 码值必须用**车辆主键**，不能用车辆编号：车牌号含中文，走 UTF-8 字节模式，
-    /// 而相当一部分扫码枪与解码库只按 ISO-8859-1 解，扫出来是乱码（实测 OpenCV 也解不出）。
-    /// 用主键还顺带避免「改了车牌号二维码就失效」。
-    /// </summary>
+    /// <summary>⚠️ 码值必须用车辆主键，不能用车辆编号：车牌号含中文，走 UTF-8 字节模式， 而相当一部分扫码枪与解码库只按 …</summary>
     private static string BuildQrCode(int vehicleId) => $"ERENTAL:VEHICLE:{vehicleId}";
 
-    /// <summary>
-    /// 从扫码内容中解析出「码值」。
-    /// 兼容三种输入：完整二维码原文（新码是车辆 ID、老码可能是车辆编号）、
-    /// 只扫出码值、用户手工粘贴带空格的文本。
-    /// </summary>
+    /// <summary>从扫码内容中解析出「码值」</summary>
     private static string ParseQrCode(string? code)
     {
         if (string.IsNullOrWhiteSpace(code)) return string.Empty;

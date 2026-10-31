@@ -2,7 +2,7 @@
 import ReactEChartsCore from 'echarts-for-react/lib/core'
 import echarts, { chartTheme } from '@/utils/chart'
 import { useTheme } from '@/hooks/useTheme'
-import { reportApi, orderApi, paymentApi } from '@/api'
+import { reportApi, orderApi, paymentApi, messageApi } from '@/api'
 import { useUI } from '@/components/UIProvider'
 import { useNavigate } from 'react-router-dom'
 import { useAuth, ROLE } from '@/hooks/useAuth'
@@ -227,12 +227,12 @@ export default function Dashboard() {
   useEffect(() => {
     Promise.all([
       reportApi.dashboard(),
-      reportApi.notifications(),
+      messageApi.list(),
       canViewOrders ? orderApi.list() : Promise.resolve({ data: [] }),
     ])
       .then(([d, n, o]: any[]) => {
         setStats(d.data)
-        setNotifications(n.data || [])
+        setNotifications(n.data?.items || [])
         setRecentOrders((o.data || []).slice(0, 6))
       })
       .catch((e: any) => toast(e?.message || '看板数据加载失败', 'error'))

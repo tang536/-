@@ -2285,6 +2285,8 @@ html[data-theme="dark"] .settle-busy { background: rgba(3, 7, 18, 0.68); }
 /* 空间不够时向上弹：把锚点从按钮下方改到按钮上方，避免被滚动容器裁掉 */
 .overflow-menu.is-above .overflow-menu-list { top: auto; bottom: calc(100% + 6px); }
 .overflow-menu.is-above .overflow-caret { transform: rotate(-90deg); }
+/* portal 版菜单：向上弹时箭头翻转（菜单已挂到 body，不再依赖 .overflow-menu 祖先） */
+.overflow-caret.is-up { transform: rotate(-90deg); }
 .overflow-menu-list {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
   min-width: 168px; padding: 5px;

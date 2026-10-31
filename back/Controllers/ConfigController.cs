@@ -9,7 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace ERental.Controllers;
 
-/// <summary>系统配置 + 数据字典管理，均仅管理员可用（需求 4.2.1）</summary>
+/// <summary>系统配置 + 数据字典管理，均仅管理员可用（需求 4</summary>
 [ApiController]
 [Route("api/[controller]")]
 [Authorize(Policy = Policies.AdminOnly)]
@@ -25,10 +25,10 @@ public class ConfigController(
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
     [HttpGet]
-    public async Task<IActionResult> GetAll() => Ok(new ApiResponse<object> { Data = await _svc.GetAll() });
+    public async Task<IActionResult> ManageSystemConfig() => Ok(new ApiResponse<object> { Data = await _svc.GetAll() });
 
     [HttpPut("{key}")]
-    public async Task<IActionResult> Update(string key, [FromBody] string value)
+    public async Task<IActionResult> UpdateSystemConfig(string key, [FromBody] string value)
     {
         try { await _svc.Update(key, value); return Ok(new ApiResponse<object> { Message = "配置更新成功" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
@@ -36,7 +36,7 @@ public class ConfigController(
 
     /// <summary>删除管理员自建的配置项（核心业务参数受保护，只能改值不能删）</summary>
     [HttpDelete("{key}")]
-    public async Task<IActionResult> Delete(string key)
+    public async Task<IActionResult> DeleteSystemConfig(string key)
     {
         try { await _svc.Delete(key); return Ok(new ApiResponse<object> { Message = "配置项已删除" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
@@ -45,24 +45,24 @@ public class ConfigController(
     // ==================== 数据字典（需求 4.2.1） ====================
 
     [HttpGet("dict")]
-    public async Task<IActionResult> GetDict() => Ok(new ApiResponse<object> { Data = await _svc.GetDict() });
+    public async Task<IActionResult> QueryDictItems() => Ok(new ApiResponse<object> { Data = await _svc.GetDict() });
 
     [HttpPost("dict")]
-    public async Task<IActionResult> AddDict([FromBody] DictRequest req)
+    public async Task<IActionResult> AddDictItem([FromBody] DictRequest req)
     {
         try { return Ok(new ApiResponse<object> { Data = await _svc.AddDict(req), Message = "字典项已添加" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPut("dict/{id:int}")]
-    public async Task<IActionResult> UpdateDict(int id, [FromBody] DictRequest req)
+    public async Task<IActionResult> UpdateDictItem(int id, [FromBody] DictRequest req)
     {
         try { await _svc.UpdateDict(id, req); return Ok(new ApiResponse<object> { Message = "字典项已更新" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpDelete("dict/{id:int}")]
-    public async Task<IActionResult> DeleteDict(int id)
+    public async Task<IActionResult> DeleteDictItem(int id)
     {
         try { await _svc.DeleteDict(id); return Ok(new ApiResponse<object> { Message = "字典项已删除" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
@@ -70,7 +70,7 @@ public class ConfigController(
 
     /// <summary>字典自更新：扫描车辆品牌、维保故障类型、会员权益等级，把库中实际值同步进字典</summary>
     [HttpPost("dict/sync")]
-    public async Task<IActionResult> SyncDict()
+    public async Task<IActionResult> SyncDictItems()
     {
         try
         {
@@ -88,12 +88,9 @@ public class ConfigController(
 
     // ==================== ComfyUI 地址（AI 生图） ====================
 
-    /// <summary>
-    /// 读取 ComfyUI 地址配置：当前生效值 + 来源（db = 页面配的 / appsettings = 出厂默认）
-    /// + 在线状态。页面据此展示「现在连的是哪个地址、通不通」。
-    /// </summary>
+    /// <summary>读取 ComfyUI 地址配置：当前生效值 + 来源（db = 页面配的 / appsettings = 出厂默认）…</summary>
     [HttpGet("comfyui")]
-    public async Task<IActionResult> GetComfyUi(CancellationToken ct)
+    public async Task<IActionResult> GetComfyConfig(CancellationToken ct)
     {
         var (url, source) = await _comfyCfg.GetEffectiveAsync(ct);
         var online = await _comfy.IsOnlineAsync(ct);
@@ -103,9 +100,9 @@ public class ConfigController(
         });
     }
 
-    /// <summary>保存 ComfyUI 地址：换端口 / 换机器后在这里更新，保存后即时生效。</summary>
+    /// <summary>保存 ComfyUI 地址：换端口 / 换机器后在这里更新，保存后即时生效</summary>
     [HttpPut("comfyui")]
-    public async Task<IActionResult> SetComfyUi([FromBody] ComfyUiUrlRequest req, CancellationToken ct)
+    public async Task<IActionResult> SetComfyConfig([FromBody] ComfyUiUrlRequest req, CancellationToken ct)
     {
         try
         {
@@ -118,10 +115,10 @@ public class ConfigController(
         }
     }
 
-    /// <summary>测试连接：不保存，直接探测填的地址通不通（给「先测再存」用）。</summary>
+    /// <summary>测试连接：不保存，直接探测填的地址通不通（给「先测再存」用）</summary>
     [HttpPost("comfyui/test")]
     [SkipAudit]   // 纯连通性探测，不改任何数据，记进操作日志只会淹没真正的配置变更
-    public async Task<IActionResult> TestComfyUi([FromBody] ComfyUiUrlRequest req, CancellationToken ct)
+    public async Task<IActionResult> TestComfyConnection([FromBody] ComfyUiUrlRequest req, CancellationToken ct)
     {
         var url = req.Url.Trim();
         if (url.Length == 0)
@@ -150,10 +147,7 @@ public class ConfigController(
         }
     }
 
-    /// <summary>
-    /// 数据库初始化：清空全部业务运行数据（订单/支付/结算/维保/盘点/报废/续租/日志/客户/车辆）。
-    /// 支付配置（pay.*）与管理员账号等 system_user 账号、系统配置、数据字典、会员类型全部保留。
-    /// </summary>
+    /// <summary>数据库初始化：清空全部业务运行数据（订单/支付/结算/维保/盘点/报废/续租/日志/客户/车辆）</summary>
     [HttpPost("reset-db")]
     public async Task<IActionResult> ResetDatabase()
     {

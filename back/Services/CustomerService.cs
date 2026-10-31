@@ -18,11 +18,7 @@ public class CustomerService(AppDbContext db, LogService log)
         return list;
     }
 
-    /// <summary>
-    /// 分页查询（管理端客户台账）：pageSize≤0 时等价于 <see cref="GetAll"/>。
-    /// 会员等级与账号状态两个筛选项同样下推到 SQL——只对当前页筛会让总数与页码失真。
-    /// 折扣是关联计算字段，分页后再填充，避免把整表拉进内存。
-    /// </summary>
+    /// <summary>分页查询（管理端客户台账）：pageSize≤0 时等价于 </summary>
     public async Task<(List<Customer> Items, int Total)> GetPaged(
         string? keyword, string? level, string? accountStatus, int page, int pageSize)
     {
@@ -174,18 +170,7 @@ public class CustomerService(AppDbContext db, LogService log)
         }
     }
 
-    /// <summary>
-    /// 客户消费记录（需求 4.2.3）：该客户全量租赁、消费、支付记录，
-    /// 支持按时间（订单创建时间）与订单状态筛选，可逐单查看详情。
-    ///
-    /// 金额口径：租金 / 押金取订单应收，实收 / 退款取订单对应支付流水的合计——
-    /// 「订单上写了多少」和「实际收到多少」是两回事（有退款、也有未支付），
-    /// 只报前者会让人以为钱已经到账。
-    /// </summary>
-    /// <param name="id">客户 ID</param>
-    /// <param name="from">起始日（含，按订单创建时间）；不传表示不限制起点</param>
-    /// <param name="to">截止日（含当天）；右端点取次日 00:00，避免漏掉截止日当天</param>
-    /// <param name="status">订单状态精确匹配（待支付/已支付/租赁中/已完结/已取消）；为空表示不限</param>
+    /// <summary>客户消费记录（需求 4</summary>
     public async Task<CustomerRecordsDto> GetRecordsAsync(int id, DateTime? from, DateTime? to, string? status)
     {
         var c = await _db.Customers.AsNoTracking().FirstOrDefaultAsync(x => x.CustomerId == id)

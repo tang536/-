@@ -2,7 +2,6 @@
 
 /// <summary>
 /// AI 生图（ComfyUI）接入参数。
-///
 /// 本机跑的是「Comfy Desktop」桌面版（安装目录
 /// C:\Users\&lt;用户&gt;\AppData\Local\Comfy-Desktop\ComfyUI-Installs\ComfyUI，
 /// 共享 input/output 与 models 目录在 ComfyUI-Shared 下）。桌面版自带一个

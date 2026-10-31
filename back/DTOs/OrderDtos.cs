@@ -205,12 +205,34 @@ public class NotificationDto
     public DateTime? ReadTime { get; set; }
 }
 
-/// <summary>前台审核提前还车申请入参</summary>
+/// <summary>
+/// 前台审核提前还车申请入参。
+/// 审核通过即视为「验车完成」：损坏费在这里一次填清，后端**同步生成结算单**，
+/// 顾客不必再等前台二次操作；驳回则只回写申请状态，订单按原租期继续。
+/// </summary>
 public class EarlyReturnReviewDto
 {
     public bool Approve { get; init; }
     /// <summary>驳回原因。Approve=false 时必填，便于顾客了解后续处理方式。</summary>
     public string? RejectReason { get; init; }
+    /// <summary>验车发现的损坏费（仅通过时生效）。押金不足以覆盖时会并入补缴金额。</summary>
+    public decimal DamageFee { get; init; }
+    /// <summary>结算备注（仅通过时生效），例如车况说明、随车物品清点结果。</summary>
+    public string? Remark { get; init; }
+}
+
+/// <summary>
+/// 通知列表返回结构（员工通知中心与顾客消息中心共用）。
+/// 分页只影响 Items，Unread / Total 始终是整张列表的计数——
+/// 拿当前页去数「未读 N 条」会在翻页后失真。
+/// </summary>
+public class NotificationListDto
+{
+    public List<NotificationDto> Items { get; init; } = [];
+    public int Unread { get; init; }
+    public int Total { get; init; }
+    public int Page { get; init; }
+    public int PageSize { get; init; }
 }
 
 /// <summary>标记通知已读入参：Ids 为消息主键（message_id）列表，为空表示「全部标记已读」</summary>

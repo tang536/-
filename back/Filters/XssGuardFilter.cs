@@ -1,18 +1,15 @@
-using ERental.Services;
+﻿using ERental.Services;
 using Microsoft.AspNetCore.Mvc.Filters;
 
 namespace ERental.Filters;
 
 /// <summary>
 /// 全局入参 XSS 清洗（模型绑定之后、动作方法之前执行）。
-///
 /// 挂在 <see cref="Microsoft.Extensions.DependencyInjection.MvcCoreMvcBuilderExtensions"/> 的
 /// 全局过滤器上，17 个控制器、100 多个接口一次性覆盖，
 /// 不需要（也不允许）由各控制器自己记得调用——「靠自觉」的安全措施等于没有。
-///
 /// 只清不改语义：<see cref="InputSanitizer.Clean"/> 剥离的是 HTML 标签与脚本伪协议，
 /// 普通文本（含「价格&lt;100」这类尖括号）原样保留。
-///
 /// 改动内容会写一条 Warning 日志（含路径与处数）：谁在往备注里粘 HTML，
 /// 事后排查运营问题时有据可查；不记原值，避免把可能敏感的内容再落一份。
 /// </summary>

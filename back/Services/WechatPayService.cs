@@ -7,28 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-/// <summary>
-/// 微信支付 APIv3 收单服务（正式通道）：H5 下单、订单查询、异步回调验签与解密入账。
-///
-/// 为什么选 **H5 支付**（transactions/h5）而不是 Native 扫码：
-///   Native 返回 code_url（weixin:// 二维码串），前端必须渲染二维码、轮询等用户扫；
-///   H5 返回 h5_url（https://wx.tenpay.com/...），可以直接 window.location 跳过去，
-///   与支付宝「电脑网站支付」的页面跳转模式同构——支付页 / 结果页 / 轮询兜底三处
-///   前端逻辑无需按渠道分叉。
-///
-/// 与支付宝通道的**同构约定**（三通道共用同一套业务语义）：
-///   1. 凭证齐全 → 走真实通道；不齐全 → 退回内置模拟收银台（与三级降级同思路，
-///      但判定条件是「本通道自己的必填项」，不与支付宝的三级降级互相干扰）；
-///   2. 入账**只认验签/解密过的支付数据**，且全部汇入
-///      <see cref="AlipayService.ApplyTradeResultAsync"/>（幂等 + 金额校验 + 写支付记录）；
-///   3. 沙箱/开发环境回调打不进本机 → 前端轮询触发的主动查单兜底入账。
-///
-/// ⚠️ 签名规格：微信 APIv3 的请求签名放在 **Authorization 头**（不是参数里），
-///   格式 `WECHATPAY2-SHA256-RSA2048 mchid="...",nonce_str="...",timestamp="...",serial_no="...",signature="..."`，
-///   待签串为五行的报文摘要（方法/路径/时间戳/随机串/报文体），商户私钥 SHA256withRSA。
-///   回调验签用「微信支付公钥」（公钥模式，serial 前缀 PUB）或平台证书公钥，
-///   通知体 resource 需要 **AES-256-GCM**（密钥 = APIv3 密钥）解密。
-/// </summary>
+/// <summary>微信支付 APIv3 收单服务（正式通道）：H5 下单、订单查询、异步回调验签与解密入账</summary>
 public class WechatPayService(AppDbContext db, PayConfigService payConfig, AlipayService alipay, IHttpClientFactory httpFactory, ILogger<WechatPayService> logger)
 {
     private readonly AppDbContext _db = db;
@@ -37,10 +16,10 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
     private readonly IHttpClientFactory _httpFactory = httpFactory;
     private readonly ILogger<WechatPayService> _logger = logger;
 
-    /// <summary>微信支付 APIv3 默认网关。管理员未填网关时用它。</summary>
+    /// <summary>微信支付 APIv3 默认网关</summary>
     private const string DefaultGateway = "https://api.mch.weixin.qq.com";
 
-    /// <summary>一次微信支付调用所需的运行参数（由配置解析而来）。</summary>
+    /// <summary>一次微信支付调用所需的运行参数（由配置解析而来）</summary>
     public sealed record WechatRuntime(string AppId, string MchId, string ApiV3Key, string CertSerial, string PrivateKey, string NotifyUrl, string Gateway, string PayMode, bool Enabled)
     {
         /// <summary>五项必填凭证是否齐全（缺任何一项都无法完成 APIv3 签名/解密）</summary>
@@ -48,29 +27,16 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
                                                                              && !string.IsNullOrWhiteSpace(ApiV3Key) && !string.IsNullOrWhiteSpace(CertSerial)
                                                                              && !string.IsNullOrWhiteSpace(PrivateKey);
 
-        /// <summary>
-        /// **查余额所需的最小凭证集**：商户号 + 证书序列号 + 商户私钥。
-        /// 余额接口是 GET，只用这三项做 APIv3 请求头签名（mchid / serial_no / signature），
-        /// 不涉及下单用的 AppId，也不涉及回调解密用的 APIv3 密钥——
-        /// 因此「账户绑定」弹窗只收这三项，填齊即可查余额，不必先把下单凭证配全。
-        /// </summary>
+        /// <summary>查余额所需的最小凭证集：商户号 + 证书序列号 + 商户私钥</summary>
         public bool BalanceCredentialsComplete =>
             !string.IsNullOrWhiteSpace(MchId) && !string.IsNullOrWhiteSpace(CertSerial)
             && !string.IsNullOrWhiteSpace(PrivateKey);
     }
 
-    /// <summary>
-    /// 一次下单的结果。
-    /// <para><see cref="PayUrl"/>：需要跳转的收银台地址（H5 真实通道 / 模拟收银台）。</para>
-    /// <para><see cref="QrCode"/>：需要前端渲染成二维码的内容（Native 真实通道的 code_url），其余情况为空。</para>
-    /// 两个字段互斥：前端先看 QrCode，为空再跳 PayUrl——这样 H5 与 Native 共用同一条下单接口。
-    /// </summary>
+    /// <summary>一次下单的结果</summary>
     public sealed record WechatPayResult(string PayUrl, string QrCode, bool Real, string PayMode);
 
-    /// <summary>
-    /// 读取本通道凭证并判定是否可走真实通道。
-    /// 敏感项沿用 SecretProvider 分层解析（env > secrets > db），与支付宝口径一致。
-    /// </summary>
+    /// <summary>读取本通道凭证并判定是否可走真实通道</summary>
     public async Task<(WechatRuntime Rt, bool Real)> ResolveAsync()
     {
         var raw = await _payConfig.GetRawAsync();
@@ -94,21 +60,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         return (rt, enabled && rt.CredentialsComplete);
     }
 
-    /// <summary>
-    /// 创建支付：凭证齐全 → 按下单方式走真实通道；否则 → 内置模拟收银台
-    /// （带 payType=微信 标记，回调按微信入账）。
-    ///
-    /// 两种下单方式的差别**只在下单接口与返回值**，签名、查单、回调入账完全共用：
-    ///   · h5     → <c>/v3/pay/transactions/h5</c>，返回 h5_url，前端整页跳转；
-    ///   · native → <c>/v3/pay/transactions/native</c>，返回 code_url，前端渲染二维码。
-    /// 之所以要两套：H5 只对企业主体开放（还要求 ICP 备案域名、类目审核、经营数据），
-    /// 个体工商户与小微商户只能开 Native；且 H5 只能在微信外部的移动端浏览器里唤起，
-    /// PC 端演示体验也差。配置项 <c>pay.wechat_pay_mode</c> 决定走哪条，换资质不用改代码。
-    /// </summary>
-    /// <param name="orderNo">商户订单号（即 out_trade_no，用于微信侧对账与回调查单）</param>
-    /// <param name="subject">商品描述（展示在用户微信收银台上的订单标题）</param>
-    /// <param name="amount">支付金额（单位：元；内部换算成分提交微信）</param>
-    /// <param name="returnUrl">支付完成后引导用户返回的前端地址（H5 拼进 redirect_url，Native 不用）</param>
+    /// <summary>创建支付：凭证齐全 → 按下单方式走真实通道</summary>
     public async Task<WechatPayResult> CreatePayAsync(
         string orderNo, string subject, decimal amount, string returnUrl)
     {
@@ -127,12 +79,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
             : await CreateH5Async(rt, orderNo, subject, totalFen, returnUrl);
     }
 
-    /// <summary>
-    /// Native 下单：返回 code_url（<c>weixin://wxpay/bizpayurl?pr=...</c>），由前端渲染成二维码。
-    ///
-    /// 与 H5 报文的差异：**不传 scene_info**——Native 没有浏览器环境，也就没有 payer_client_ip
-    /// 与 h5_info，多传反而可能被拒。其余字段与 H5 完全一致，两种方式共用同一套签名与入账。
-    /// </summary>
+    /// <summary>Native 下单：返回 code_url（weixin://wxpay/bizpayurl?pr=</summary>
     private async Task<WechatPayResult> CreateNativeAsync(
         WechatRuntime rt, string orderNo, string subject, int totalFen)
     {
@@ -173,7 +120,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         return new WechatPayResult("", codeUrl, true, PayConfigService.WechatPayModeNative);
     }
 
-    /// <summary>H5 下单：返回可跳转的收银台地址（h5_url 追加 redirect_url）。</summary>
+    /// <summary>H5 下单：返回可跳转的收银台地址（h5_url 追加 redirect_url）</summary>
     private async Task<WechatPayResult> CreateH5Async(
         WechatRuntime rt, string orderNo, string subject, int totalFen, string returnUrl)
     {
@@ -222,17 +169,19 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         return new WechatPayResult(payUrl, "", true, PayConfigService.WechatPayModeH5);
     }
 
-    /// <summary>
-    /// 主动查询微信订单状态（前端轮询兜底，与支付宝查单同思路）。
-    /// trade_state=SUCCESS 时调用共享入账逻辑；金额从分换算回元再送入校验。
-    /// </summary>
+    /// <summary>主动查询微信订单状态（前端轮询兜底，与支付宝查单同思路）</summary>
     public async Task<string> QueryTradeStatusAsync(string orderNo)
     {
-        var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderNo == orderNo);
-        if (order == null) return "订单不存在";
+        // orderNo 可能是租赁订单号，也可能是补缴单 out_trade_no（SP- 前缀）。
+        var isSupplement = orderNo.StartsWith("SP-");
+        var order = isSupplement ? null : await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderNo == orderNo);
+        var suppl = isSupplement ? await _db.PaymentRecords.FirstOrDefaultAsync(p => p.OutTradeNo == orderNo) : null;
+        if (!isSupplement && order == null) return "订单不存在";
+        if (isSupplement && suppl == null) return "补缴单不存在";
+        var localStatus = isSupplement ? suppl!.PayStatus : order!.OrderStatus;
 
         var (rt, real) = await ResolveAsync();
-        if (!real) return order.OrderStatus;   // 模拟模式：本地状态即真相
+        if (!real) return localStatus;   // 模拟模式：本地状态即真相
 
         string tradeState, transactionId; int totalFen;
         try
@@ -242,7 +191,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         catch (Exception ex)
         {
             _logger.LogWarning("查询微信订单 {OrderNo} 失败（{ExType}），回退本地状态", orderNo, ex.GetType().Name);
-            return order.OrderStatus;
+            return localStatus;
         }
 
         if (tradeState == "SUCCESS")
@@ -255,25 +204,13 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
                 ["total_amount"] = (totalFen / 100m).ToString("0.00")
             }, "微信");
             _logger.LogInformation("微信查单兜底入账 {OrderNo}：{Result}（{Message}）", orderNo, ok ? "成功" : "拒绝", msg);
-            return ok ? "已支付" : order.OrderStatus;
+            return ok ? "已支付" : localStatus;
         }
-        // 其余状态（NOTPAY / USERPAYING / 未知）都以本地订单状态为准，无需再分支
-        return tradeState == "CLOSED" ? "已关闭" : order.OrderStatus;
+        // 其余状态（NOTPAY / USERPAYING / 未知）都以本地状态为准，无需再分支
+        return tradeState == "CLOSED" ? "已关闭" : localStatus;
     }
 
-    /// <summary>
-    /// 查询微信支付商户**账户余额**（管理员看板「支付账户余额」用）。
-    ///
-    /// 接口：<c>GET /v3/merchant/fund/balance/{account_type}</c>，
-    ///   · BASIC     —— 基本账户，收款资金默认进这里，绝大多数商户看的是它；
-    ///   · OPERATION —— 运营账户，仅当商户开通了「基本账户自动转入运营账户」才有钱。
-    /// 两级都试：BASIC 拿不到（未开通资金流 / 无权限）再退 OPERATION，
-    /// 这样「钱在运营账户里」的商户也不会看到一个空余额。
-    ///
-    /// 单位换算只在返回值处做一次：微信用**分**（整数），本系统全链路用元。
-    /// 失败原因只回 HTTP 状态码与微信错误码（如 NO_AUTH / PARAM_ERROR），
-    /// 不回原始报文——报文里含商户号等排查信息，属日志而非展示信息。
-    /// </summary>
+    /// <summary>查询微信支付商户账户余额（管理员看板「支付账户余额」用）</summary>
     public async Task<(bool Ok, decimal? Available, decimal? Pending, string? Error)> QueryBalanceAsync()
     {
         var (rt, _) = await ResolveAsync();
@@ -328,7 +265,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         return (false, null, null, lastError ?? "微信余额查询失败");
     }
 
-    /// <summary>从微信错误响应里取 <c>code</c>（如 NO_AUTH），取不到回空串。只用于提示，不含敏感数据。</summary>
+    /// <summary>从微信错误响应里取 code（如 NO_AUTH），取不到回空串</summary>
     private static string ReadWechatErrorCode(string body)
     {
         try
@@ -347,15 +284,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         return "";
     }
 
-    /// <summary>
-    /// 微信支付接线自检：向网关发一次最小查询（假订单号），判断签名/证书是否配对。
-    ///
-    /// 与支付宝自检同构的思路——不依赖真实订单：
-    ///   - 网关回 <c>401 / SIGN_ERROR</c> → 签名或证书序列号被拒（密钥不配对，或 cert_serial 填错）；
-    ///   - 网关回 <c>404 / ORDER_NOT_EXIST</c>（或 200）→ 签名已通过，只是订单不存在，属正常；
-    ///   因此「订单不存在」恰恰证明「签名被接受」，是我们要的成功信号。
-    /// 教学价值：把"微信配置是否正确"也变成一个可一键回答的问题。
-    /// </summary>
+    /// <summary>微信支付接线自检：向网关发一次最小查询（假订单号），判断签名/证书是否配对</summary>
     public async Task<ChannelSelfCheckDto> SelfCheckAsync()
     {
         var (rt, _) = await ResolveAsync();
@@ -429,12 +358,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         }
     }
 
-    /// <summary>
-    /// 处理微信异步回调：验签（微信支付公钥）→ AES-256-GCM 解密 resource → 入账。
-    /// 返回 (是否受理, 说明)。控制器按结果回 200 / 4xx——微信对非 2xx 会按策略重推。
-    /// </summary>
-    /// <param name="headers">回调请求头（Wechat-Timestamp / Wechat-Nonce / Wechat-Signature / Wechat-Serial）</param>
-    /// <param name="body">回调原始 JSON 报文（验签必须用**原始字节**对应的文本，不能反序列化再拼）</param>
+    /// <summary>处理微信异步回调：验签（微信支付公钥）→ AES-256-GCM 解密 resource → 入账</summary>
     public async Task<(bool Ok, string Message)> HandleNotifyAsync(
         IDictionary<string, string> headers, string body)
     {
@@ -500,21 +424,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         }, "微信");
     }
 
-    /// <summary>
-    /// 微信退款（APIv3 <c>POST /v3/refund/domestic/refunds</c>）。
-    ///
-    /// 与支付宝退款的同构约定：
-    ///   ① 幂等键 <paramref name="outRefundNo"/> 由调用方按「支付记录 + 累计退款额」生成，
-    ///      同一键重复提交微信侧只受理一次——网关成功但本地事务回滚后重试不会重复退款；
-    ///   ② 金额单位是**分**，且必须同时带订单总额 <paramref name="totalAmount"/>（微信用于校验部分退款）；
-    ///   ③ 返回 SUCCESS / PROCESSING 都算受理成功（资金到账是异步的），
-    ///      CLOSED / ABNORMAL 视为失败，交由调用方回滚业务事务。
-    /// </summary>
-    /// <param name="outTradeNo">原支付订单号（商户侧 out_trade_no；也可换 transaction_id，本项目用订单号）</param>
-    /// <param name="outRefundNo">商户退款单号（幂等键）</param>
-    /// <param name="amount">本次退款金额（元）</param>
-    /// <param name="totalAmount">原订单实付总额（元，微信要求 refund ≤ total）</param>
-    /// <param name="reason">退款原因（会展示在微信账单里，长度截断到 80 字）</param>
+    /// <summary>微信退款（APIv3 POST /v3/refund/domestic/refunds）</summary>
     public async Task<(bool Ok, string Message)> RefundAsync(
         string outTradeNo, string outRefundNo, decimal amount, decimal totalAmount, string? reason = null)
     {
@@ -601,10 +511,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         return (G("trade_state"), G("transaction_id"), totalFen);
     }
 
-    /// <summary>
-    /// 构造 APIv3 请求签名（Authorization 头）。
-    /// 待签串固定五行：方法\nURL（含查询串）\n时间戳\n随机串\n报文体\n，商户私钥 SHA256withRSA。
-    /// </summary>
+    /// <summary>构造 APIv3 请求签名（Authorization 头）</summary>
     private static string BuildAuthorization(WechatRuntime rt, string method, string url, string body)
     {
         var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds().ToString();
@@ -615,7 +522,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
              + $"timestamp=\"{timestamp}\",serial_no=\"{rt.CertSerial}\",signature=\"{signature}\"";
     }
 
-    /// <summary>带签名头发起 POST，返回响应体；<paramref name="operation"/> 只用于日志与错误文案（下单/退款）</summary>
+    /// <summary>带签名头发起 POST，返回响应体</summary>
     private async Task<string> PostSignedAsync(WechatRuntime rt, string url, string body, string operation = "下单")
     {
         var http = _httpFactory.CreateClient();
@@ -653,7 +560,7 @@ public class WechatPayService(AppDbContext db, PayConfigService payConfig, Alipa
         return plain;
     }
 
-    /// <summary>发起支付请求的客户端 IP（H5 下单 scene_info 必填；取不到时给合法占位）</summary>
+    /// <summary>发起支付请求的客户端 IP（H5 下单 scene_info 必填</summary>
     private static string ClientIp() =>
         System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName()).AddressList
             .FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)

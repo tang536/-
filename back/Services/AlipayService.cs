@@ -9,22 +9,7 @@ using Microsoft.Extensions.Options;
 
 namespace ERental.Services;
 
-/// <summary>
-/// 支付宝收单服务：下单（生成收银台跳转链接）、异步回调验签与入账、订单状态查询。
-///
-/// 设计原则：
-///  1. **代码不区分沙箱/生产/模拟**——当前用哪一级由 <see cref="PayConfigService.ResolveAsync"/>
-///     按「凭证齐全度」自动判定，本服务只拿判定结果（<see cref="PayRuntime"/>）执行。
-///     换环境 = 管理员端改凭证，不碰任何一行业务代码。
-///  2. **入账只认验签过的支付数据**——前端跳转回来只代表「用户离开收银台」，不代表付款成功。
-///     入账有两路，共用同一套幂等 + 金额校验逻辑 <see cref="ApplyTradeResultAsync"/>：
-///     ① 支付宝服务器异步通知（强制验签），生产环境的主路；
-///     ② 前端轮询触发的主动查单（alipay.trade.query）兜底入账——沙箱/自部署环境
-///     notify_url 打不进 localhost，异步通知天然不通，查单是唯一同步手段。
-///  3. **幂等**——同一笔支付可能收到多次回调，已处理过直接返回成功，不重复加钱、不重复改状态。
-///  4. **三级兜底**——生产凭证不全 → 沙箱；沙箱也不全 → 内置模拟收银台。
-///     保证无网/无资质环境也能把「下单→支付→回调→入账」整条链路演示通。
-/// </summary>
+/// <summary>支付宝收单服务：下单（生成收银台跳转链接）、异步回调验签与入账、订单状态查询</summary>
 public class AlipayService(
     AppDbContext db, PayConfigService payConfig, IOptions<AlipayOptions> opt,
     MemberService member, MessageService messages, ILogger<AlipayService> logger, IHttpClientFactory httpFactory)
@@ -36,25 +21,15 @@ public class AlipayService(
     private readonly ILogger<AlipayService> _logger = logger;
     private readonly IHttpClientFactory _httpFactory = httpFactory;
 
-    /// <summary>兼容旧调用方的配置视图（NowPay 时代遗留），仅用于读取 SignType 等静态项。</summary>
+    /// <summary>兼容旧调用方的配置视图（NowPay 时代遗留），仅用于读取 SignType 等静态项</summary>
     private AlipayOptions Options => opt.Value;
 
-    /// <summary>
-    /// 创建支付：为指定订单生成支付宝「电脑网站支付」跳转链接。
-    /// 返回收银台 URL，前端直接 window.location 跳过去。
-    /// </summary>
-    /// <param name="orderNo">我方订单号（作为支付宝 out_trade_no）</param>
-    /// <param name="subject">商品标题，出现在支付宝收银台</param>
-    /// <param name="amount">应付金额（元）</param>
-    /// <param name="returnUrl">
+    /// <summary>创建支付：为指定订单生成支付宝「电脑网站支付」跳转链接</summary>
     /// 付款完成后的同步回跳地址。调用方应传 <see cref="PayConfigService.BuildReturnUrlAsync"/>
     /// 算出的「用户当前访问源 + 前端路径」——服务端自己猜的 IP 一旦与用户地址栏不符，
     /// 就会出现"付完款跳到另一个 IP"。传空则退回运行时配置（<c>pay.return_url</c>）。
-    /// </param>
-    /// <param name="notifyUrl">
     /// 异步通知地址，同样按访问源生成（见 <see cref="PayConfigService.BuildNotifyUrlAsync"/>）。
     /// 传空则退回运行时配置（<c>pay.notify_url</c>）。
-    /// </param>
     public async Task<string> CreatePagePayAsync(
         string orderNo, string subject, decimal amount, string? returnUrl = null, string? notifyUrl = null)
     {
@@ -101,16 +76,7 @@ public class AlipayService(
         return url;
     }
 
-    /// <summary>
-    /// 处理**真实**支付宝异步通知。
-    /// 返回 "success"（纯文本，支付宝收到后停止重推）或 "failure"。
-    ///
-    /// ⚠️ 本方法只服务真实支付宝回调，必须验签成功才入账。
-    /// 内置模拟收银台（/mock-pay）的通知请走 <see cref="HandleMockNotifyAsync"/>：
-    /// 模拟通知天生没有签名，若让它走这里必然被验签拒绝（这正是「微信/银行卡支付提示
-    /// 通知未受理」的根因——沙箱凭证一旦配好，IsReal=true，验签就强制生效）。
-    /// </summary>
-    /// <param name="form">回调表单参数（支付宝以 application/x-www-form-urlencoded POST 过来）</param>
+    /// <summary>处理真实支付宝异步通知</summary>
     public async Task<string> HandleNotifyAsync(IDictionary<string, string> form)
     {
         var rt = await _payConfig.ResolveAsync();
@@ -144,17 +110,7 @@ public class AlipayService(
         return ok ? "success" : "failure";
     }
 
-    /// <summary>
-    /// 处理**内置模拟收银台**（/mock-pay）的支付通知。
-    ///
-    /// 模拟收银台是课设环境里替代真实网关的演示件，它发出的通知**没有、也不可能有签名**，
-    /// 因此必须与真实回调分两条通道处理：
-    ///   · 真实回调（/alipay/notify）永远验签；
-    ///   · 模拟通知（本方法）按「当前是否生产模式」判定：演示环境放行，生产一律拒绝。
-    /// 把模拟通知送进真实回调的验签通道，配了凭证的环境会因缺 sign 必被拒，
-    /// 表现为「微信/银行卡付款一直失败」而支付宝通道正常——问题不在渠道，在通道混用。
-    /// 两条通道共用同一套入账逻辑（<see cref="ApplyTradeResultAsync"/>），口径不会走偏。
-    /// </summary>
+    /// <summary>处理内置模拟收银台（/mock-pay）的支付通知</summary>
     public async Task<MockNotifyResult> HandleMockNotifyAsync(IDictionary<string, string> form)
     {
         var rt = await _payConfig.ResolveAsync();
@@ -184,12 +140,7 @@ public class AlipayService(
         return ok ? MockNotifyResult.Ok(msg) : MockNotifyResult.Fail(msg);
     }
 
-    /// <summary>
-    /// 通知入账的**唯一实现**：支付宝回调、模拟通知、微信回调、银行卡回调共用。
-    /// 共用是为了让所有通道的状态机、幂等、金额校验永远一致——
-    /// 若各写一份，改了其中一处就会出现"模拟能付通、真实付不通"这类只在上线后才暴露的问题。
-    /// </summary>
-    /// <returns>(是否受理成功, 说明文案)。文案会直接给到前端，故必须是可以给人看的话。</returns>
+    /// <summary>通知入账的唯一实现：支付宝回调、模拟通知、微信回调、银行卡回调共用</summary>
     public async Task<(bool Ok, string Message)> ApplyTradeResultAsync(
         IDictionary<string, string> form, string payType)
     {
@@ -238,11 +189,7 @@ public class AlipayService(
             _logger, "支付通知入账", reset: () => _db.ChangeTracker.Clear());
     }
 
-    /// <summary>
-    /// 租赁订单入账本体（必须在订单行锁的保护下执行）。
-    /// 状态机与金额校验的判定顺序保持原样：幂等 → 已取消 → 状态合法性 → 金额核对 → 写入。
-    /// 顺序不能变：先判金额再判幂等，会让重复通知因为金额字段缺失而被判失败、进而被支付宝无限重推。
-    /// </summary>
+    /// <summary>租赁订单入账本体（必须在订单行锁的保护下执行）</summary>
     private async Task<(bool Ok, string Message)> ApplyOrderPaidAsync(
         string outTradeNo, string tradeNo, string totalAmount, string payType)
     {
@@ -328,10 +275,7 @@ public class AlipayService(
         }
     }
 
-    /// <summary>
-    /// 线上补缴单入账：与首付款入账同一套幂等 + 行锁 + 金额校验，但只改这条补缴支付记录、不动订单状态。
-    /// 订单在结算时已是「已完结」，补缴款是后续的独立应收。
-    /// </summary>
+    /// <summary>线上补缴单入账：与首付款入账同一套幂等 + 行锁 + 金额校验，但只改这条补缴支付记录、不动订单状态</summary>
     private async Task<(bool Ok, string Message)> ApplySupplementPaidAsync(
         string outTradeNo, string tradeNo, string totalAmount, string payType)
     {
@@ -393,17 +337,7 @@ public class AlipayService(
         }
     }
 
-    /// <summary>
-    /// 支付宝接线自检：不依赖订单，直接向当前模式对应的网关发一次最小请求，判断配置是否可用。
-    ///
-    /// 为什么需要它：接入支付宝最常见的故障是「后台登记的应用公钥与本地私钥不配对」，
-    /// 表现为所有下单/查询都报 isv.invalid-signature。若靠"下单→失败"来试，
-    /// 既慢又难定位。这里用一个必然不存在的订单号发查询：
-    ///   - 返回「交易不存在」类错误 → **签名已被网关接受**，配置正确；
-    ///   - 返回 isv.invalid-signature → 密钥不配对，同时给出本地私钥对应的应用公钥，
-    ///     管理员拿去开放平台「接口加签方式」重新上传即可。
-    /// 教学价值：把"配置是否正确"变成一个可一键回答的问题。
-    /// </summary>
+    /// <summary>支付宝接线自检：不依赖订单，直接向当前模式对应的网关发一次最小请求，判断配置是否可用</summary>
     public async Task<AlipaySelfCheckDto> SelfCheckAsync()
     {
         var rt = await _payConfig.ResolveAsync();
@@ -516,20 +450,16 @@ public class AlipayService(
         }
     }
 
-    /// <summary>
-    /// 主动查询支付宝交易状态（前端轮询 + 回跳兜底）。
-    ///
-    /// 查到「付款成功」不能只是返回字符串——必须当场走与异步回调**完全相同**的入账逻辑
-    /// <see cref="ApplyTradeResultAsync"/>。沙箱/自部署环境里支付宝服务器往往打不进本机
-    /// notify_url（localhost 不可达），异步通知这条路天然不通，主动查单是唯一同步手段；
-    /// 若只查不入账，前端轮询会永远拿到「待支付」（沙箱已付款、订单却没支付即此因）。
-    /// 入账逻辑本身幂等且带金额校验，查单与回调双路触发也不会重复加钱。
-    /// </summary>
-    /// <returns>无返回值：查单的副作用是入账，状态由调用方重新读库获取。</returns>
+    /// <summary>主动查询支付宝交易状态（前端轮询 + 回跳兜底）</summary>
     public async Task QueryTradeStatusAsync(string orderNo)
     {
-        var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderNo == orderNo);
-        if (order == null) return;
+        // orderNo 有两种形态：租赁订单号（首付款）或补缴单 out_trade_no（SP- 前缀）。
+        // 只有「两种都查无此号」才跳过；否则补缴单会在此被误判为不存在，查单兜底永不执行，
+        // 表现为「顾客已付款但补缴单一直停在待支付」。
+        var exists = orderNo.StartsWith("SP-")
+            ? await _db.PaymentRecords.AnyAsync(p => p.OutTradeNo == orderNo)
+            : await _db.RentalOrders.AnyAsync(o => o.OrderNo == orderNo);
+        if (!exists) return;
 
         var rt = await _payConfig.ResolveAsync();
         if (!rt.IsReal || !rt.CredentialsComplete)
@@ -571,11 +501,7 @@ public class AlipayService(
         }
     }
 
-    /// <summary>
-    /// 会员购买（HY 开头交易号）的状态查询：不经过租赁订单表，直接向网关查单。
-    /// 模拟模式返回占位 code="MOCK"——模拟收银台的入账由 mock/notify 主动推送，无需查单。
-    /// 网关异常会向上抛出，由调用方决定兜底策略。
-    /// </summary>
+    /// <summary>会员购买（HY 开头交易号）的状态查询：不经过租赁订单表，直接向网关查单</summary>
     public async Task<(string Code, string TradeStatus, string TradeNo, string TotalAmount)> QueryTradeRawAsync(string outTradeNo)
     {
         var rt = await _payConfig.ResolveAsync();
@@ -584,21 +510,7 @@ public class AlipayService(
         return await QueryAlipayAsync(outTradeNo, rt);
     }
 
-    /// <summary>
-    /// 支付宝**原路退款**（alipay.trade.refund）。
-    ///
-    /// 向支付宝发起原路退款（需求 4.2.5「剩余押金原路退还」）。
-    /// 退款必须真正打到网关：只把 `payment_record.refund_amount` 改掉会造成
-    /// 账面已退、钱仍在商户账户里的资金风险。
-    ///
-    /// 幂等：支付宝以 <paramref name="outRequestNo"/> 作为退款请求号，**同一个请求号重复提交
-    /// 只会退一次**。调用方用「支付记录 ID + 累计应退金额」拼出请求号（见 PaymentService），
-    /// 因此"网关成功但本地事务回滚"后重试是安全的，不会退两笔。
-    ///
-    /// 部分退款：支付宝按「累计退款额」语义处理同一笔交易的多次退款，每次传**本次退款金额**
-    /// 与不同的请求号即可；调用方负责保证每次金额不自相矛盾。
-    /// </summary>
-    /// <returns>Ok=false 时 Message 是可直接展示给前台/财务的中文原因。</returns>
+    /// <summary>支付宝原路退款（alipay</summary>
     public async Task<(bool Ok, string Message)> RefundAsync(
         string outTradeNo, string? tradeNo, string outRequestNo, decimal amount, string? reason = null)
     {
@@ -685,7 +597,7 @@ public class AlipayService(
         }
     }
 
-    /// <summary>向支付宝网关发起 alipay.trade.query 并解析响应（HTTP/解析异常向上抛）</summary>
+    /// <summary>向支付宝网关发起 alipay</summary>
     private async Task<(string Code, string TradeStatus, string TradeNo, string TotalAmount)> QueryAlipayAsync(
         string outTradeNo, PayRuntime rt)
     {
@@ -752,14 +664,7 @@ public class AlipayService(
 
     private static string Escape(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
-    /// <summary>
-    /// 读取支付宝网关响应体。
-    ///
-    /// 为什么不能直接用 ReadAsStringAsync：沙箱网关会用响应头里的 charset（常见为 GBK）声明编码，
-    /// 而 .NET 默认只认 UTF-8 / ASCII 等少数几项，遇到 GBK 会直接抛「不支持的编码名」异常，
-    /// 把一次正常的查询变成 500。这里改为先取字节流，再按响应声明的 charset 解码，
-    /// 不支持时依次回退 GBK → UTF-8，保证不再因编码问题崩掉。
-    /// </summary>
+    /// <summary>读取支付宝网关响应体</summary>
     private static async Task<string> ReadBodyAsync(HttpResponseMessage resp)
     {
         var bytes = await resp.Content.ReadAsByteArrayAsync();

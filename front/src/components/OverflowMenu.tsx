@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import Icon, { type IconName } from '@/components/Icon'
 
 export interface OverflowItem {
@@ -14,6 +15,12 @@ export interface OverflowItem {
 /**
  * 「更多」溢出菜单：把工具条里的低频/次级操作收进一个下拉，界面上只留
  * 「刷新 + 主操作 + 更多」两三个按钮，降低观感噪音；点页面空白处自动收起。
+ *
+ * 关键：菜单用 createPortal 挂到 document.body，并以 position:fixed 依触发器
+ * 视口坐标定位。这样它**脱离**任何祖先的 overflow 裁剪（典型是表格的
+ * .table-wrap{overflow-x:auto}——按 CSS 规范 overflow-y 会被算成 auto，绝对
+ * 定位菜单一旦超出表格可见区就被切掉，出现「显示内容不全、只剩一个取消」）。
+ * 渲染到 body 后不再受表格滚动容器约束，向上/向下都能完整展开。
  */
 export default function OverflowMenu({ items, triggerLabel = '更多' }: {
   items: OverflowItem[]
@@ -21,81 +28,83 @@ export default function OverflowMenu({ items, triggerLabel = '更多' }: {
 }) {
   const [open, setOpen] = useState(false)
   const [above, setAbove] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ top: number; left: number; minWidth: number }>({ top: 0, left: 0, minWidth: 0 })
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
   // 点菜单外任意处即收起（用 mousedown 而非 click，按下即响应、手感更跟手）
   useEffect(() => {
     if (!open) return
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (triggerRef.current && triggerRef.current.contains(t)) return
+      if (listRef.current && listRef.current.contains(t)) return
+      setOpen(false)
     }
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
   }, [open])
 
-  // 决定菜单朝上还是朝下弹：不能只看视口，要看「最近会竖向裁切菜单的祖先容器」
-  // 还剩多少可见空间。典型就是这个表格的 .table-wrap —— 它写了 overflow-x:auto，
-  // 按 CSS 规范 overflow-y 会被算成 auto，绝对定位的菜单一旦超出 table-wrap 底部
-  // 就被裁掉、看不全。只看视口的话，只要表格下方还有屏幕空间就永远朝下弹，
-  // 结果就是「永远在下面、还被切掉」。
-  const recompute = useCallback(() => {
-    if (!ref.current || !listRef.current) return
-    const trigger = ref.current.getBoundingClientRect()
-    const menuH = listRef.current.getBoundingClientRect().height
+  // 依触发器在视口里的位置决定菜单落点：默认朝下，下方放不下再朝上。
+  // 因为菜单是 fixed 定位、挂在 body 上，这里只看视口空间即可，不用去找裁剪祖先。
+  const place = useCallback(() => {
+    const trigger = triggerRef.current
+    if (!trigger) return
+    const r = trigger.getBoundingClientRect()
+    const menuH = listRef.current ? listRef.current.offsetHeight : 0
     const margin = 8
-
-    // 从触发器往上找：把所有会竖向裁切（overflowY 为 auto/scroll/hidden）的祖先
-    // 在视口内的可见区域取交集，得到菜单真正被允许的边界。
-    let clipTop = 0
-    let clipBottom = window.innerHeight
-    let node: HTMLElement | null = ref.current.parentElement
-    while (node && node !== document.body) {
-      const oy = getComputedStyle(node).overflowY
-      if (oy === 'auto' || oy === 'scroll' || oy === 'hidden') {
-        const r = node.getBoundingClientRect()
-        clipTop = Math.max(clipTop, r.top)
-        clipBottom = Math.min(clipBottom, r.bottom)
-      }
-      node = node.parentElement
+    const minW = Math.max(r.width, 168)
+    const belowFits = window.innerHeight - r.bottom >= menuH + margin
+    const aboveFits = r.top >= menuH + margin
+    const goAbove = !belowFits && aboveFits
+    const left = Math.max(8, r.right - minW)
+    if (goAbove) {
+      setAbove(true)
+      setPos({ top: Math.max(8, r.top - menuH - 6), left, minWidth: minW })
+    } else {
+      setAbove(false)
+      setPos({ top: r.bottom + 6, left, minWidth: minW })
     }
-
-    const spaceBelow = clipBottom - trigger.bottom
-    const spaceAbove = trigger.top - clipTop
-    // 默认朝下；下方放不下时，只要上方更宽裕（或至少比下方宽）就向上弹。
-    const belowFits = spaceBelow >= menuH + margin
-    const aboveFits = spaceAbove >= menuH + margin
-    const preferAbove = !belowFits && (aboveFits || spaceAbove > spaceBelow)
-    setAbove(preferAbove)
   }, [])
 
-  // 展开后立即量一次（useLayoutEffect：在绘制前完成，避免先朝下闪一下再翻上去）
+  // 展开后立即量一次（useLayoutEffect：绘制前完成，避免先闪一下错误位置）
   useLayoutEffect(() => {
-    if (open) recompute()
-  }, [open, recompute])
+    if (open) place()
+  }, [open, place])
 
-  // 打开期间窗口尺寸变化（旋转/缩放）时重新判断一次朝向
+  // 打开期间窗口尺寸变化或任意容器滚动时重新定位，避免菜单与触发器错位
   useEffect(() => {
     if (!open) return
-    const onResize = () => recompute()
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [open, recompute])
+    const onScrollOrResize = () => place()
+    window.addEventListener('scroll', onScrollOrResize, true)
+    window.addEventListener('resize', onScrollOrResize)
+    return () => {
+      window.removeEventListener('scroll', onScrollOrResize, true)
+      window.removeEventListener('resize', onScrollOrResize)
+    }
+  }, [open, place])
 
   return (
-    <div className={`overflow-menu ${open ? 'is-open' : ''} ${above ? 'is-above' : ''}`} ref={ref}>
+    <>
       <button
-        className="btn-sm btn-sm-default btn-icon-sm"
+        ref={triggerRef}
+        type="button"
+        className={`btn-sm btn-sm-default btn-icon-sm ${open ? 'is-active' : ''}`}
         onClick={() => setOpen(o => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
       >
         <Icon name="menu" size={15} />
         <span className="btn-label">{triggerLabel}</span>
-        <Icon name="chevron-right" size={12} className="overflow-caret" />
+        <Icon name="chevron-right" size={12} className={`overflow-caret ${above ? 'is-up' : ''}`} />
       </button>
-      {open && (
-        <div className="overflow-menu-list" role="menu" ref={listRef}>
+      {open && createPortal(
+        <div
+          className={`overflow-menu-list ${above ? 'is-above' : ''}`}
+          role="menu"
+          ref={listRef}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, minWidth: pos.minWidth, zIndex: 3000 }}
+        >
           {items.map(it => (
             <button
               key={it.key}
@@ -108,8 +117,9 @@ export default function OverflowMenu({ items, triggerLabel = '更多' }: {
               <span>{it.label}</span>
             </button>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
-    </div>
+    </>
   )
 }

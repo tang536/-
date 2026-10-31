@@ -1,8 +1,6 @@
 ﻿namespace ERental.Services;
 
-/// <summary>
-/// 图片落盘的统一入口（维保现场照片、车辆图片共用一套规则）
-/// </summary>
+/// <summary>图片落盘的统一入口（维保现场照片、车辆图片共用一套规则）</summary>
 public class ImageStorage(IWebHostEnvironment env)
 {
     private readonly IWebHostEnvironment _env = env;
@@ -10,11 +8,7 @@ public class ImageStorage(IWebHostEnvironment env)
     private static readonly string[] AllowedImageExt = [".jpg", ".jpeg", ".png", ".webp", ".gif"];
     private const long MaxImageBytes = 5 * 1024 * 1024;
 
-    /// <summary>
-    /// 上传根目录（…/wwwroot/uploads）。对外暴露是为了让维保照片上传等
-    /// 非 HTTP 场景也能把文件写进同一个命名空间，避免两处各拼一次路径、
-    /// 日后 wwwroot 位置一变就漏改。
-    /// </summary>
+    /// <summary>上传根目录（…/wwwroot/uploads）</summary>
     private string RootUploadsPath
     {
         get
@@ -26,10 +20,7 @@ public class ImageStorage(IWebHostEnvironment env)
         }
     }
 
-    /// <summary>
-    /// 保存图片并返回可直接引用的相对路径（如 /uploads/vehicle/xxx.jpg）。
-    /// 文件名用「时间戳 + 随机串」重命名，不采用上传时的原始文件名（避免路径穿越与同名覆盖）。
-    /// </summary>
+    /// <summary>保存图片并返回可直接引用的相对路径（如 /uploads/vehicle/xxx</summary>
     public async Task<string> SaveAsync(IFormFile? file, string subDir)
     {
         if (file == null || file.Length == 0) throw new Exception("请选择要上传的图片");
@@ -50,10 +41,7 @@ public class ImageStorage(IWebHostEnvironment env)
         return $"/uploads/{subDir}/{name}";
     }
 
-    /// <summary>
-    /// 保存内存中的图片字节流（AI 生图成品下载后走这里，与上传同一套命名/目录规则）。
-    /// ext 需带点（如 ".png"）。返回可直接引用的相对路径。
-    /// </summary>
+    /// <summary>保存内存中的图片字节流（AI 生图成品下载后走这里，与上传同一套命名/目录规则）</summary>
     public async Task<string> SaveStreamAsync(Stream content, string subDir, string ext)
     {
         if (!AllowedImageExt.Contains(ext.ToLowerInvariant()))
@@ -72,10 +60,7 @@ public class ImageStorage(IWebHostEnvironment env)
         return $"/uploads/{subDir}/{name}";
     }
 
-    /// <summary>
-    /// 删除一张已上传的图片（按 /uploads/ 开头的相对路径）。
-    /// 文件不存在时静默忽略；路径不在 uploads 目录下则拒绝删除。
-    /// </summary>
+    /// <summary>删除一张已上传的图片（按 /uploads/ 开头的相对路径）</summary>
     public void Delete(string? url)
     {
         if (string.IsNullOrWhiteSpace(url)) return;

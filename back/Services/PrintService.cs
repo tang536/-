@@ -9,11 +9,7 @@ public class PrintService(AppDbContext db, ReportService reports)
     private readonly AppDbContext _db = db;
     private readonly ReportService _reports = reports;
 
-    /// <summary>
-    /// 报表打印视图（系统操作 #25 printReport）：把统计看板的结果渲染成一张带打印样式的 HTML。
-    /// 浏览器只需要一个「按了就能打印」的页面，数字直接复用 GetDashboard 的口径，
-    /// 避免屏幕上看到的和打印出来的变成两套数。
-    /// </summary>
+    /// <summary>报表打印视图（系统操作 #25 printReport）：把统计看板的结果渲染成一张带打印样式的 HTML</summary>
     public async Task<string> ReportHtml(DateTime? from = null, DateTime? to = null)
     {
         var r = await _reports.GetDashboard(from, to);
@@ -111,7 +107,7 @@ public class PrintService(AppDbContext db, ReportService reports)
         return sb.ToString();
     }
 
-    /// <summary>订单明细导出（需求 4.2.4：订单查询支持订单明细导出）</summary>
+    /// <summary>订单明细导出（需求 4</summary>
     public async Task<string> OrderListCsv(string? status, string? keyword, DateTime? dateFrom = null, DateTime? dateTo = null)
     {
         var q = _db.RentalOrders.AsNoTracking()
@@ -148,7 +144,7 @@ public class PrintService(AppDbContext db, ReportService reports)
         return sb.ToString();
     }
 
-    /// <summary>维保记录导出（需求 4.2.6：维保记录查询支持导出）</summary>
+    /// <summary>维保记录导出（需求 4</summary>
     public async Task<string> MaintenanceListCsv(string? status)
     {
         var q = _db.MaintenanceOrders.AsNoTracking().Include(m => m.Vehicle).AsQueryable();
@@ -180,15 +176,8 @@ public class PrintService(AppDbContext db, ReportService reports)
             : v;
     }
 
-    /// <summary>
-    /// 小票上的身份证号脱敏（需求 7.1「去标识化」）。
-    /// 小票会被随手丢在柜台、被顾客拍照，打出完整 18 位等于把证件号散播到不可控的地方；
-    /// 保留前 4 位与后 4 位，既能让前台核对是本人，又不构成完整证件号。
-    /// </summary>
-    /// <summary>
-    /// 身份证脱敏：保留前 4 位与后 4 位，中间按实际长度补 *（小票属易丢失凭证，需求 6.4「敏感信息脱敏」）。
-    /// 内部可见是为了让单元测试能直接验证边界（空值/短号/标准 18 位）。
-    /// </summary>
+    /// <summary>小票上的身份证号脱敏（需求 7</summary>
+    /// <summary>身份证脱敏：保留前 4 位与后 4 位，中间按实际长度补 *（小票属易丢失凭证，需求 6</summary>
     internal static string MaskIdCard(string? idCard)
     {
         var s = (idCard ?? string.Empty).Trim();

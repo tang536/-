@@ -1,16 +1,12 @@
 namespace ERental.Models;
 
-/// <summary>
-/// 可视化报表：统计看板的计算结果，非数据库映射。
-/// 既是 <c>GET /api/report/dashboard</c> 的 JSON 载荷（前端 Dashboard / Reports 直接读字段），
-/// 也是 <c>/api/print/export/revenue</c> 导出 CSV 的数据源。
-/// </summary>
+/// <summary>可视化报表：统计看板的计算结果，非数据库映射</summary>
 public record VisualReport
 {
     // ===== 累计指标（统计报表页使用）=====
     public decimal TotalRevenue { get; init; }
     public int TotalOrders { get; init; }
-    /// <summary>客户总数。首页看板与统计报表共用同一字段，不再另设同义属性</summary>
+    /// <summary>客户总数</summary>
     public int TotalCustomers { get; init; }
     /// <summary>总的维修费用</summary>
     public decimal TotalMaintenanceFee { get; init; }
@@ -39,7 +35,7 @@ public record VisualReport
     public int MaintenanceCount { get; init; }
     /// <summary>资料待完善的客户数（缺身份证号或手机号）</summary>
     public int IncompleteProfileCount { get; init; }
-    /// <summary>保养到期车辆数（以最近一次已完成维保为基准，超过 maintain_cycle_days 即计入；周期为 0 时为 0）</summary>
+    /// <summary>保养到期车辆数（以最近一次已完成维保为基准，超过 maintain_cycle_days 即计入</summary>
     public int MaintenanceDueCount { get; init; }
 
     // ===== 运营指标（管理员端统计报表专用，与财务口径区分）=====
@@ -55,15 +51,15 @@ public record VisualReport
     /// <summary>车辆总数（使用率分母）</summary>
     public int TotalVehicleCount { get; init; }
 
-    /// <summary>平均单笔租期（小时）：区间内订单的平均时长。0 表示无有效订单</summary>
+    /// <summary>平均单笔租期（小时）：区间内订单的平均时长</summary>
     public decimal AvgRentHours { get; init; }
 
-    /// <summary>单台车平均产出（元/台）：区间营收 / 车辆总数；衡量车队赚钱效率</summary>
+    /// <summary>单台车平均产出（元/台）：区间营收 / 车辆总数</summary>
     public decimal RevenuePerVehicle { get; init; }
 
     /// <summary>订单取消率（%）：区间内已取消订单 / 区间内全部订单</summary>
     public decimal CancelRate { get; init; }
 
-    /// <summary>订单趋势（日期 → 订单数）。与营收趋势同区间，用于观察"单量"而非"金额"</summary>
+    /// <summary>订单趋势（日期 → 订单数）</summary>
     public Dictionary<string, int>? OrderTrend { get; init; }
 }

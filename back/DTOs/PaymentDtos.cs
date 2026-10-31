@@ -2,7 +2,6 @@
 
 /// <summary>
 /// 支付记录出参。
-///
 /// 为什么不直接返回 EF 实体：<c>PaymentRecord</c> 带 <c>RentalOrder</c> 导航，
 /// 而订单又带 <c>Customer</c> + <c>Vehicle</c>，直接序列化会把整棵对象图吐给前端——
 /// 实测财务调用 <c>GET /api/payment</c> 时会拿到客户的登录账号、身份证号、
@@ -30,7 +29,6 @@ public class PaymentDto
 
 /// <summary>
 /// 内置模拟收银台通知的处理结果。
-///
 /// 为什么真实回调返回纯文本 success/failure，这里却要一个 DTO？
 /// 因为真实回调的"读者"是支付宝服务器（只认两个单词），
 /// 而模拟通知的读者是**本系统的前端**——它需要把失败原因原样显示给用户，

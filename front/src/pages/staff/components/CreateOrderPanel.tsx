@@ -190,17 +190,35 @@ export default function CreateOrderPanel({ onBack }: { onBack: () => void }) {
         }
       }
 
-      const res: any = await orderApi.create(payload)
+      const res: any = await orderApi.createStaff(payload)
       const order = res.data
       toast(mode === 'new' ? '线下订单创建成功，客户档案已同步建立' : '订单创建成功，车辆已置为在租状态', 'success')
 
       // 开单后立即拉取小票，前台可当场打印交付客户（顾客端亦可在「我的订单」自助打印）
+      let receiptOk = false
       try {
         const r: any = await printApi.orderReceipt(order.orderId)
         setReceipt(r.content)
+        receiptOk = true
       } catch {
-        onBack()
+        /* 小票拉取失败不影响订单本身：下方按 receiptOk 决定回到列表还是留在开单页 */
       }
+
+      if (!receiptOk) {
+        // 小票打不开就直接回订单列表，不再停留在已提交的开单表单上（避免半提交态）
+        onBack()
+        return
+      }
+
+      /**
+       * 关键：先清空表单，再刷新基础数据。
+       * 刚租出的车状态变为「在租」，会从「空闲」列表里消失。若不先 reset，
+       * 下方 loadBase 重拉列表后，受控下拉框仍指向已被移除的车辆 id，
+       * React 找不到匹配项会把它强制回退到「请选择车辆」，连带下方车辆提示、
+       * 费用试算、实名补录块一起消失，界面明显跳动，影响体验。
+       * 先 reset 到干净的开单态，再 loadBase 刷新空闲车/客户，下一单直接可用。
+       */
+      resetForm()
       loadBase()
     } catch (e: any) {
       toast(e?.message || '订单创建失败', 'error')

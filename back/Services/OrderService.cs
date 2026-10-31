@@ -11,61 +11,31 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
     private readonly AppDbContext _db = db;
     private readonly ILogger<OrderService> _logger = logger;
 
-    /// <summary>超时单回收的单批上限。分批是为了不让一次清理锁住过多行、拖成长事务。</summary>
+    /// <summary>超时单回收的单批上限</summary>
     private const int CleanupBatchSize = 200;
 
-    /// <summary>
-    /// 租车交易的硬性门槛：**必须完成实名认证**（已登记身份证号 + 手机号）。
-    /// 线上下单与线下开单都走这一条校验，前台代录资料成功后即视为完成认证。
-    /// </summary>
+    /// <summary>租车交易的硬性门槛：必须完成实名认证（已登记身份证号 + 手机号）</summary>
     private const string RealNameRequiredMessage = "该客户尚未完成实名认证（缺身份证号或手机号），请先补录资料后再租车";
 
-    /// <summary>
-    /// 待支付订单的有效期（分钟）。超时后系统自动取消订单并释放车辆。
-    /// 为什么必须有这个兜底：顾客点开支付宝收银台后关掉页面/支付失败就直接走人，
-    /// 订单会永远卡在「待支付」、车辆永远「在租」，后面的人再也租不到这辆车。
-    /// 15 分钟足够完成一次真实支付，又不会让车被长时间无意义地占用。
-    /// </summary>
+    /// <summary>待支付订单的有效期（分钟）</summary>
     private const int PendingPayTimeoutMinutes = 15;
 
-    /// <summary>
-    /// 「已发起支付」订单的额外宽限（分钟）。
-    ///
-    /// 只按创建时间判定超时会误伤一类最常见的正常场景：顾客 14 分钟时才点「去支付」，
-    /// 正在支付宝里输密码 / 选银行卡 / 扫码，第 16 分钟后台任务就把他这单取消了。
-    /// 之后回调到达只能落到「订单已取消，该笔收款需人工退款」分支——钱收了、单作废，
-    /// 柜台还得手工退一次款，顾客体验也差。
-    ///
-    /// 判定依据不用新增字段：顾客点「去支付」时，PaymentController 会把支付记录的渠道
-    /// 从占位值「待定」改成真实渠道（支付宝/微信/银行卡）。所以
-    /// 「pay_type ≠ 待定 且仍待支付」就等价于「人已经在收银台上，只是还没回来」。
-    /// 这类订单给 10 分钟宽限，总时长 25 分钟，足够一次含短信验证的支付走完；
-    /// 超时后照样释放车辆，不会让车被无限占住。
-    /// </summary>
+    /// <summary>「已发起支付」订单的额外宽限（分钟）</summary>
     private const int PendingPayGraceMinutes = 10;
 
-    /// <summary>支付记录上的渠道占位值：下单时写入，顾客点「去支付」后被改成真实渠道。</summary>
+    /// <summary>支付记录上的渠道占位值：下单时写入，顾客点「去支付」后被改成真实渠道</summary>
     private const string PayTypePlaceholder = "待定";
 
-    /// <summary>
-    /// 订单号尾号发号器（进程内自增）。
-    /// 原实现是 Random(100,999) 三位随机数：同一秒内的并发请求只有 900 个取值，
-    /// 撞上 uk_order_no 会让其中一单直接失败。这里改成自增序列，
-    /// 同进程内同一秒不会重复（本项目为单实例部署，见 SessionRegistry 的同类取舍）。
-    /// </summary>
+    /// <summary>订单号尾号发号器（进程内自增）</summary>
     private static int _orderSeq = Random.Shared.Next(0, 10_000);
 
-    /// <summary>惰性回收的最小间隔（秒）：列表页高频访问时不必每次都扫一遍超时单。</summary>
+    /// <summary>惰性回收的最小间隔（秒）：列表页高频访问时不必每次都扫一遍超时单</summary>
     private const int LazyReleaseIntervalSeconds = 30;
 
-    /// <summary>上次惰性回收的时间点（UTC Ticks），供 <see cref="ThrottledRelease"/> 节流。</summary>
+    /// <summary>上次惰性回收的时间点（UTC Ticks），供 节流</summary>
     private static long _lastLazyReleaseTicks;
 
-    /// <summary>
-    /// 【兜底回收】把所有超时未支付的订单批量取消并释放车辆。
-    /// 采用「惰性回收」策略：在订单列表 / 发起支付 / 状态查询等入口调用，
-    /// 而不是只靠定时任务——只要有人访问，积压的超时单就会被清掉，无需依赖后台任务存活。
-    /// </summary>
+    /// <summary>【兜底回收】把所有超时未支付的订单批量取消并释放车辆</summary>
     public async Task<int> ReleaseExpiredPendingOrders()
     {
         var deadline = DateTime.Now.AddMinutes(-PendingPayTimeoutMinutes);
@@ -90,14 +60,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         return total;
     }
 
-    /// <summary>
-    /// 回收一批超时单：全程在一个事务里，先用 <c>FOR UPDATE SKIP LOCKED</c> 圈定本批，
-    /// 再统一改状态、作废支付记录、释放车辆。
-    ///
-    /// 为什么必须锁：定时任务与「顾客点支付时的惰性回收」会同时触发，
-    /// 两个线程都可能读到同一张超时单 → 各自置「已取消」→ 各自尝试释放车辆。
-    /// 锁 + SKIP LOCKED 让它们自动分到不同的单，谁也碰不到对方正在处理的行。
-    /// </summary>
+    /// <summary>回收一批超时单：全程在一个事务里，先用 FOR UPDATE SKIP LOCKED 圈定本批， 再统一改状态、作废…</summary>
     private async Task<int> ReleaseBatchAsync(DateTime deadline)
     {
         await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
@@ -162,18 +125,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         }
     }
 
-    /// <summary>
-    /// 惰性回收的节流版本：30 秒内只真正扫一次库。
-    ///
-    /// 为什么需要节流：列表页每次刷新、每次翻页、每次改筛选条件都会走到 QueryAsync，
-    /// 而 <see cref="PendingOrderCleanupService"/> 本来就每分钟带命名锁跑同一段回收逻辑。
-    /// 两者叠在一起时，一个人连点几次筛选就能触发十几次「扫待支付单 + 可能开事务锁行」，
-    /// 换来的只是把回收时刻从「最迟 1 分钟后」提到「立即」——而超时判定本身的刻度是
-    /// 15 分钟，这点提前量对用户没有任何可感知差别。
-    ///
-    /// 用 CompareExchange 占位而不是「先读时间戳、再赋值」：并发进来的几个请求里只有一个
-    /// 真正去扫，其余直接按「刚扫过」返回，不会同时开好几个事务抢同一批订单。
-    /// </summary>
+    /// <summary>惰性回收的节流版本：30 秒内只真正扫一次库</summary>
     private async Task ThrottledRelease()
     {
         var now = DateTime.UtcNow.Ticks;
@@ -224,17 +176,14 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         }
     }
 
-    /// <summary>订单查询。customerId 非空时仅返回该顾客的订单（顾客端数据隔离）</summary>
+    /// <summary>订单查询</summary>
     public async Task<List<OrderDto>> GetAll(
         string? status = null, string? keyword = null, int? customerId = null,
         DateTime? dateFrom = null, DateTime? dateTo = null,
         string? sortBy = null, bool sortDesc = true)
         => (await QueryAsync(status, keyword, customerId, dateFrom, dateTo, sortBy, sortDesc, 0, 0)).Rows;
 
-    /// <summary>
-    /// 分页查询（管理端长列表用）：pageSize≤0 时等价于 <see cref="GetAll"/>。
-    /// 总数在**分页前**统计，前端据此渲染页码；排序与过滤条件与全量查询完全一致。
-    /// </summary>
+    /// <summary>分页查询（管理端长列表用）：pageSize≤0 时等价于 </summary>
     public async Task<(List<OrderDto> Rows, int Total)> GetPaged(
         string? status, string? keyword, int? customerId,
         DateTime? dateFrom, DateTime? dateTo, string? sortBy, bool sortDesc,
@@ -357,10 +306,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         })];
     }
 
-    /// <summary>
-    /// 租车试算：按所选车辆取价（未单独定价才回退全局配置），折扣按客户会员等级关联权益表。
-    /// customerId = 0 表示「线下尚未建档的散客」：不查等级、按不打折预估，开单建档后仍走真实折扣。
-    /// </summary>
+    /// <summary>租车试算：按所选车辆取价（未单独定价才回退全局配置），折扣按客户会员等级关联权益表</summary>
     public async Task<RentEstimateDto> Estimate(int customerId, DateTime start, DateTime end, int? vehicleId = null)
     {
         var customer = customerId > 0
@@ -384,7 +330,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         };
     }
 
-    /// <summary>线下开单。CustomerId = 0 表示线下新客户，按身份证号查重后自动建档</summary>
+    /// <summary>线下开单</summary>
     public async Task<RentalOrder> Create(CreateOrderDto dto, int operatorId)
     {
         // 用 AsNoTracking 读车辆：车辆状态由 PlaceOrder 里的原子 UPDATE 改写，
@@ -405,7 +351,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         return await PlaceOrder(customer, vehicle, dto.LeaseStart, dto.LeaseEnd, dto.PayType, operatorId, paidImmediately: true);
     }
 
-    /// <summary>线上下单。客户身份只认 Token 里的 customerId；未实名直接拒绝</summary>
+    /// <summary>线上下单</summary>
     public async Task<RentalOrder> CreateOnline(int customerId, OnlineOrderDto dto)
     {
         var customer = await _db.Customers.FindAsync(customerId) ?? throw new Exception("账号不存在");
@@ -447,21 +393,11 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         return created;
     }
 
-    /// <summary>
-    /// 开单主流程（线下 / 线上共用）：计费、生成订单、占用车辆、登记收款。
-    /// </summary>
-    /// <param name="customer">下单客户（线下可能是当场新建的档案）</param>
-    /// <param name="vehicle">出租车辆（调用前已确认状态为空闲）</param>
-    /// <param name="leaseStart">起租时间（本地时间口径）</param>
-    /// <param name="leaseEnd">到期时间（本地时间口径）</param>
-    /// <param name="payType">支付渠道：线下为柜台实收渠道，线上为「待定」占位</param>
-    /// <param name="operatorId">操作员工号；线上下单为 null</param>
-    /// <param name="paidImmediately">
+    /// <summary>开单主流程（线下 / 线上共用）：计费、生成订单、占用车辆、登记收款</summary>
     /// true = 柜台当场收款，订单与支付记录直接置「已支付」（线下）；
     /// false = 线上下单，订单与支付记录置「待支付」，等支付宝回调验签通过再入账。
     /// 两种模式都**立即把车辆置为「在租」**占用车辆，避免并发被他人重复下单；
     /// 线上单若迟迟不付款，由 OrderService 的清理逻辑（或前台手动取消）释放车辆。
-    /// </param>
     private async Task<RentalOrder> PlaceOrder(Customer customer, Vehicle vehicle, DateTime leaseStart, DateTime leaseEnd, string payType, int? operatorId, bool paidImmediately)
     {
         // 时间口径统一到本地：前端传的是 datetime-local 的本地时间字符串（Kind=Unspecified），
@@ -532,11 +468,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         }
     }
 
-    /// <summary>
-    /// 租期折算成计费小时数（向上取整，最少 1 小时）。
-    /// ⚠️「到期早于起租」必须在这里拦掉：否则会被向上取整兜成 1 小时，
-    /// 变成一笔看起来正常的订单，错误被悄悄吞掉。
-    /// </summary>
+    /// <summary>租期折算成计费小时数（向上取整，最少 1 小时）</summary>
     private static int CalcHours(DateTime start, DateTime end)
     {
         return end < start ? throw new Exception("租期不正确，到期时间不能早于起租时间") : PricingResolver.CalcHours(start, end);
@@ -589,7 +521,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         }
     }
 
-    /// <summary>顾客申请还车（无论是否到期都可线上申请，到期后的超时费由结算时按倍数自动计）。订单必须是「已支付 / 租赁中」，且不能重复申请。</summary>
+    /// <summary>顾客申请还车（无论是否到期都可线上申请，到期后的超时费由结算时按倍数自动计）</summary>
     public async Task RequestEarlyReturn(int orderId, int customerId)
     {
         await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
@@ -615,7 +547,11 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         }
     }
 
-    /// <summary>前台审核还车申请。rejectReason 非空即驳回，否则视为通过（清空申请状态）。</summary>
+    /// <summary>该订单是否存在待审核的还车申请：审核接口据此拒绝「无申请却走审核通道」的调用</summary>
+    public Task<bool> HasPendingEarlyReturn(int orderId) =>
+        _db.RentalOrders.AnyAsync(o => o.OrderId == orderId && o.EarlyReturnStatus == "待审核");
+
+    /// <summary>前台审核还车申请</summary>
     public async Task ReviewEarlyReturn(int orderId, bool approve, string? rejectReason)
     {
         if (!approve && string.IsNullOrWhiteSpace(rejectReason))
@@ -648,10 +584,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         }
     }
 
-    /// <summary>
-    /// 订单到期预警：返回「即将到期（3天内）」和「已逾期」的在租订单。
-    /// 前台工作台据此置顶提醒，避免车辆超期未还造成租金损失与车况失控。
-    /// </summary>
+    /// <summary>订单到期预警：返回「即将到期（3天内）」和「已逾期」的在租订单</summary>
     public async Task<object> GetWarnings(int warnDays = 3)
     {
         var now = DateTime.Now;

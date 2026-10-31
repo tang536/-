@@ -26,14 +26,7 @@ public class AuthService(
     private const string RoleFinance = "财务";
     public const string RoleCustomer = "顾客";
 
-    /// <summary>
-    /// 专供「账号不存在」时消耗等量算力的假哈希。
-    ///
-    /// 进程内第一次登录时生成一次（约 100 毫秒），值是随机口令的 BCrypt 结果：
-    /// 不指向任何真实账号，也不需要保密——它唯一的作用是让「账号不存在」这条路径
-    /// 也跑满一次 BCrypt 的时间。work factor 必须与注册时的默认值（11）一致，
-    /// 否则两边耗时对不上，侧信道照样能测出来。
-    /// </summary>
+    /// <summary>专供「账号不存在」时消耗等量算力的假哈希</summary>
     private static readonly string DummyPasswordHash =
         BCrypt.Net.BCrypt.HashPassword(Guid.NewGuid().ToString("N"), workFactor: 11);
 
@@ -43,19 +36,10 @@ public class AuthService(
     /// <summary>续期令牌类型：有效期长，只用于换新令牌，不能直接访问业务接口</summary>
     public const string TokenTypeRefresh = "refresh";
 
-    /// <summary>JWT 中区分令牌用途的声明名（与 Program.cs 的 JwtBearer 校验事件同源）</summary>
+    /// <summary>JWT 中区分令牌用途的声明名（与 Program</summary>
     public const string TokenTypeClaim = "token_type";
 
-    /// <summary>
-    /// 员工登录。
-    ///
-    /// 失败锁定口径：**封 IP，不封账号**。按来源 IP 累计失败次数（账号不存在、
-    /// 密码错误都计数；角色选错页签、账号被禁用属操作提示而非撞库，不计），
-    /// 达标后封锁该 IP，与认证接口的每 IP 每分钟 10 次限流构成两层防线。
-    /// 之所以不锁账号：锁账号等于把拒绝服务的手段递出去，知道账号名就能连续输错
-    /// 把正常员工挡在门外；账号侧 login_fail_count 只累加并在员工管理页展示（留痕用）。
-    /// 阈值取自系统配置 max_login_fail / lock_minutes，管理员改配置即时生效。
-    /// </summary>
+    /// <summary>员工登录</summary>
     public async Task<LoginResponseDto> StaffLogin(StaffLoginDto dto, string? clientIp = null)
     {
         var ip = string.IsNullOrWhiteSpace(clientIp) ? "unknown" : clientIp;
@@ -177,10 +161,7 @@ public class AuthService(
         };
     }
 
-    /// <summary>
-    /// 登录页页签（admin/reception/finance）→ 系统角色名 的映射。
-    /// 页签为空时不校验（兼容旧前端 / 其它调用方）；填了就必须匹配。
-    /// </summary>
+    /// <summary>登录页页签（admin/reception/finance）→ 系统角色名 的映射</summary>
     private static string? MapRoleType(string? roleType) => roleType?.Trim().ToLowerInvariant() switch
     {
         "admin" => RoleAdmin,
@@ -189,11 +170,7 @@ public class AuthService(
         _ => null
     };
 
-    /// <summary>
-    /// 顾客登录：只认「用户名 + 密码」。
-    /// 不接受身份证号等其它凭据——身份证号属敏感个人信息，不该充当可枚举的登录凭据，
-    /// 且它在租车环节才采集，注册阶段并不存在。
-    /// </summary>
+    /// <summary>顾客登录：只认「用户名 + 密码」</summary>
     public async Task<LoginResponseDto> CustomerLogin(CustomerLoginDto dto)
     {
         if (string.IsNullOrWhiteSpace(dto.Account)) throw new Exception("请输入用户名");
@@ -299,12 +276,7 @@ public class AuthService(
         return customer;
     }
 
-    /// <summary>
-    /// 顾客自助修改登录密码（个人中心入口）。
-    /// 三道闸：原密码必须正确（防冒用）→ 新密码过复杂度校验（与注册同规则）→
-    /// 新旧不得相同（避免「改了个寂寞」，也让原密码泄露后的一次修改真正生效）。
-    /// 成功后写操作日志，满足需求 7.1「账号安全操作全流程留痕」。
-    /// </summary>
+    /// <summary>顾客自助修改登录密码（个人中心入口）</summary>
     public async Task ChangeCustomerPassword(int customerId, ChangePasswordDto dto)
     {
         var oldPwd = dto.OldPassword;
@@ -339,15 +311,7 @@ public class AuthService(
         await _sessions.RevokeAllAsync("customer", customerId, "密码已修改，请用新密码重新登录");
     }
 
-    /// <summary>
-    /// 用户自主注销账号（本人操作，需二次输入密码确认）。
-    /// **仅对「顾客」与「管理员」开放**（需求约束）：
-    /// - 顾客：入口只在「个人中心」；账号置「已注销」并释放用户名 / 清除凭据；
-    ///   档案与历史订单保留，满足需求 7.1「数据不可删除、全流程可追溯」。
-    /// - 管理员：入口在「账号管理」页；账号置为停用（user_status = 0），复用既有登录校验拦截。
-    /// - 前台 / 财务：不提供自助注销（避免门店业务岗位被随手停用），请由管理员处理。
-    /// 前置条件：存在未完结订单的顾客、系统中最后一名管理员，均不允许注销。
-    /// </summary>
+    /// <summary>用户自主注销账号（本人操作，需二次输入密码确认）</summary>
     public async Task Deactivate(int userId, string userType, string password)
     {
         if (string.IsNullOrWhiteSpace(password))
@@ -410,15 +374,7 @@ public class AuthService(
         await _sessions.RevokeAllAsync(user.UserType, user.UserId, "账号已停用，登录状态已失效");
     }
 
-    /// <summary>
-    /// 员工关键操作的二次密码校验（用况4 扩展用况3：管理员手动更改车辆状态，
-    /// 使其变成其他状态需要管理员密码）。
-    ///
-    /// 校验对象是**当前登录用户本人**的密码，而不是"随便一个管理员的密码"：
-    /// 目的就是确认坐在电脑前的人就是已登录的管理员，避免他人趁管理员离开工位
-    /// 顺手把在租/维保车辆改成空闲。校验按 BCrypt 比对，明文不落库、不写日志。
-    /// 失败写操作日志（需求 7.1 账号安全操作全流程留痕）。
-    /// </summary>
+    /// <summary>员工关键操作的二次密码校验（用况4 扩展用况3：管理员手动更改车辆状态， 使其变成其他状态需要管理员密码）</summary>
     public async Task VerifyStaffPassword(int userId, string? password)
     {
         if (string.IsNullOrWhiteSpace(password))
@@ -432,10 +388,7 @@ public class AuthService(
         }
     }
 
-    /// <summary>
-    /// 退出登录：撤销当前这一个会话（单点登录登记表里的那条）。
-    /// 只撤销 token 自带的 sid，不会误伤该账号在别处的新会话。
-    /// </summary>
+    /// <summary>退出登录：撤销当前这一个会话（单点登录登记表里的那条）</summary>
     public async Task Logout(string userType, int userId, string? sessionToken) =>
         await _sessions.RevokeAsync(userType, userId, sessionToken);
 
@@ -457,13 +410,7 @@ public class AuthService(
         await _db.SaveChangesAsync();
     }
 
-    /// <summary>
-    /// 当前请求的客户端 IP；没有 HTTP 上下文（后台任务、单元测试）时返回 null。
-    /// ForwardedHeaders 中间件已按「只信任本机反代」还原 X-Forwarded-For，
-    /// 所以这里读 RemoteIpAddress 拿到的就是真实来源，与其他控制器同一口径。
-    /// IPv4-mapped IPv6（<c>::ffff:127.0.0.1</c>）统一还原成 IPv4，
-    /// 避免同一台机器在日志里出现两种写法、按 IP 聚合时对不上。
-    /// </summary>
+    /// <summary>当前请求的客户端 IP</summary>
     private string? ClientIp()
     {
         var addr = _http.HttpContext?.Connection.RemoteIpAddress;
@@ -501,27 +448,15 @@ public class AuthService(
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
-    /// <summary>访问令牌有效期（配置 <c>Jwt:ExpireMinutes</c>，默认 120 分钟）</summary>
+    /// <summary>访问令牌有效期（配置 Jwt:ExpireMinutes，默认 120 分钟）</summary>
     private TimeSpan AccessLifetime() =>
         TimeSpan.FromMinutes(double.Parse(_config["Jwt:ExpireMinutes"] ?? "120"));
 
-    /// <summary>续期令牌有效期（配置 <c>Jwt:RefreshExpireDays</c>，默认 7 天）</summary>
+    /// <summary>续期令牌有效期（配置 Jwt:RefreshExpireDays，默认 7 天）</summary>
     private TimeSpan RefreshLifetime() =>
         TimeSpan.FromDays(double.Parse(_config["Jwt:RefreshExpireDays"] ?? "7"));
 
-    /// <summary>
-    /// 用续期令牌换一对新令牌。
-    ///
-    /// 三个必须校验的点：
-    ///  ① 签名与有效期——防止伪造与过期令牌续命；
-    ///  ② <c>token_type</c> 必须是 refresh——防止把 access token 当续期凭证反复延长；
-    ///  ③ <c>sid</c> 仍是该账号的当前会话——**这是与单点登录的接缝**：
-    ///     账号在别处登录或已被强制下线（改密 / 停用 / 注销）时，登记表里的 sid 已变或已墓碑化，
-    ///     此时续期必须失败，否则「被顶下线」就形同虚设，旧设备能靠续期令牌一直活下去。
-    ///
-    /// 续期**不重新 Issue 会话**：沿用原 sid，否则每续一次就把自己顶下线一次。
-    /// 角色与账号状态重新查库，不信任旧令牌里的声明——管理员可能刚改过角色或停用了账号。
-    /// </summary>
+    /// <summary>用续期令牌换一对新令牌</summary>
     public async Task<LoginResponseDto> RefreshAsync(string refreshToken)
     {
         if (string.IsNullOrWhiteSpace(refreshToken))
@@ -585,11 +520,7 @@ public class AuthService(
         };
     }
 
-    /// <summary>
-    /// 校验续期令牌的签名与有效期，并确认它确实是 refresh 类型。
-    /// 校验参数与 JwtBearer 保持一致（issuer / audience / 签名算法），否则会出现
-    /// 「中间件认可、这里不认可」的诡异不一致。
-    /// </summary>
+    /// <summary>校验续期令牌的签名与有效期，并确认它确实是 refresh 类型</summary>
     private ClaimsPrincipal ValidateRefreshToken(string refreshToken)
     {
         var handler = new JwtSecurityTokenHandler();

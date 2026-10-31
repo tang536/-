@@ -13,6 +13,8 @@ public class CreatePayDto
 /// <summary>发起支付结果：把收银台地址回给前端跳转</summary>
 public class CreatePayResultDto
 {
+    /// <summary>本次支付对应的补缴单 id（补缴场景才有）；顾客端据此跳到支付页继续选渠道</summary>
+    public int PayId { get; init; }
     public string OrderNo { get; init; } = string.Empty;
     public string PayType { get; init; } = string.Empty;
     public decimal Amount { get; init; }
@@ -50,6 +52,12 @@ public class PayStatusDto
     public bool Paid { get; init; }
     public decimal Amount { get; init; }
     public string TransactionNo { get; init; } = string.Empty;
+
+    /// <summary>业务类型：order 租车首付款 / member 会员购买 / supplement 补缴单，回跳结果页据此切换文案与引导</summary>
+    public string BizType { get; init; } = "order";
+
+    /// <summary>补缴单主键（BizType=supplement 时有效），结果页用它回链到补缴单</summary>
+    public int PayId { get; init; }
 }
 
 /// <summary>支付宝接线自检结果：一键回答「当前配置能不能用」</summary>

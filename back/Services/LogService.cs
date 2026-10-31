@@ -9,13 +9,7 @@ public class LogService(AppDbContext db)
 {
     private readonly AppDbContext _db = db;
 
-    /// <summary>
-    /// 日志分页查询（需求 4.2.1「日志管理」：支持按用户、时间、操作类型筛选查询）。
-    /// 时间按「自然日」闭区间处理：to 当天 23:59:59 也要包含，故上界取次日零点做开区间比较。
-    ///
-    /// 返回前会把 userId 解成「谁」：先查工作人员表，再查顾客档案
-    /// （顾客的自助动作也会写日志），两处都查不到说明账号已被删除，标记为 unknown。
-    /// </summary>
+    /// <summary>日志分页查询（需求 4</summary>
     public async Task<(int Total, List<SystemLogDto> Items)> GetAll(
         int page = 1, int size = 20, int? userId = null,
         DateTime? from = null, DateTime? to = null,

@@ -7,25 +7,10 @@ using Microsoft.EntityFrameworkCore.Migrations.Operations;
 
 namespace ERental.Data;
 
-/// <summary>
-/// 模型 ↔ 数据库的列级差异体检（安全网）。
-///
-/// 为什么需要它：EF 的 <c>EnsureCreated()</c> 只在「数据库不存在」时建表，对已存在的老库
-/// **既不补表也不补列**；而任意一次 EF 查询都会按实体模型投影出全部列，只要库里少了其中一列，
-/// 查询就抛 <c>Unknown column 'x' in 'field list'</c>。这类异常发生在 Program.cs 的启动路径上，
-/// 会让整个后端进程起不来（本项目就踩过一次：customer.account_status）。
-///
-/// 处理策略：
-///   · 「模型里有、库里没有」的**可空列** → 自动补上。往非空表里加可空列永远安全，
-///     不需要默认值，也不会重写数据，MySQL 8 下是瞬时 DDL。
-///   · **非空列** → 只打印可直接执行的 ALTER 建议，不擅自补默认值（给字段选默认值属于业务决策）。
-///   · 建议语句由 EF 迁移 SQL 生成器产出（与当前数据库提供程序同源），不手工拼 SQL 字符串。
-///   · 无法从模型推断存储类型的属性 → 同样只打印，交给人工。
-/// 每一步都会打印日志；全部动作幂等，重复启动不会产生副作用。
-/// </summary>
+/// <summary>模型 ↔ 数据库的列级差异体检（安全网）</summary>
 public static class SchemaDrift
 {
-    /// <summary>体检并自愈可空列；无法自动修复的条目打印到启动日志，供人工处理。</summary>
+    /// <summary>体检并自愈可空列</summary>
     public static void Reconcile(AppDbContext db)
     {
         var existing = LoadColumns(db);
@@ -94,7 +79,7 @@ public static class SchemaDrift
         }
     }
 
-    /// <summary>读取当前库已有的「表.列」，键统一小写（MySQL 在 Windows 上大小写不敏感）。</summary>
+    /// <summary>读取当前库已有的「表</summary>
     private static HashSet<(string, string)> LoadColumns(AppDbContext db)
     {
         var set = new HashSet<(string, string)>();
@@ -110,11 +95,7 @@ public static class SchemaDrift
         return set;
     }
 
-    /// <summary>
-    /// 用 EF 迁移 SQL 生成器拼一条「补列」DDL —— 与当前数据库提供程序同源，
-    /// 标识符转义（MySQL 反引号）、类型写法都交给提供程序，避免自己拼串。
-    /// 生成失败返回 <c>null</c>，由调用方降级为人工提示：启动自愈不能因为拼不出 SQL 就中断。
-    /// </summary>
+    /// <summary>用 EF 迁移 SQL 生成器拼一条「补列」DDL —— 与当前数据库提供程序同源， 标识符转义（MySQL 反引号…</summary>
     private static string? BuildAddColumnDdl(AppDbContext db, string table, string column, Type clrType, string storeType, bool nullable)
     {
         try
@@ -140,7 +121,7 @@ public static class SchemaDrift
         }
     }
 
-    /// <summary>模型属性 → MySQL 存储类型。优先用模型显式配置的类型，其次按 CLR 类型 + 长度推断。</summary>
+    /// <summary>模型属性 → MySQL 存储类型</summary>
     private static string? ResolveStoreType(IProperty prop)
     {
         var configured = prop.GetColumnType();

@@ -1,12 +1,10 @@
-namespace ERental.Options;
+﻿namespace ERental.Options;
 
 /// <summary>
 /// 局域网接入开关。
-///
 /// 课设演示需要「手机 / 另一台电脑连同一个 Wi-Fi 就能访问系统」，但回调类地址
 /// （支付宝 notify_url / return_url）一旦写死 localhost，换台设备访问时就失效——
 /// 支付平台的服务器会去回调 localhost，那当然打不通。
-///
 /// 这里不改动管理员在「支付配置」页填写的值，只是在其**为空**时按本机局域网 IP
 /// 兜底生成一个可用地址，让"局域网演示"开箱即用；管理员手工填过的值优先级更高，
 /// 绝不会被覆盖（生产环境要靠内网穿透或公网域名，必须由人显式指定）。
@@ -30,7 +28,6 @@ public class LanOptions
     /// <summary>
     /// 前端入口协议。局域网模式启动脚本会同时给 vite 注入 LAN_HOST=1，vite 据此启用
     /// 自签 HTTPS（登录密码与 JWT 不在公共 Wi-Fi 里裸奔），所以这里默认必须是 https。
-    ///
     /// 一旦与前端实际协议不符，支付回跳就会变成「明文 HTTP 打到 TLS 端口」——
     /// 服务端在握手阶段直接断开，手机浏览器只显示「xx 未发送任何数据」
     /// （Chrome 的 ERR_EMPTY_RESPONSE），而不是常见的「无法访问此网站」。

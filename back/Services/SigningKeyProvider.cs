@@ -3,30 +3,18 @@ using System.Text;
 
 namespace ERental.Services;
 
-/// <summary>
-/// 启动时决定 JWT 签名密钥，取值顺序：
-///   1) 显式配置（环境变量 <c>Jwt__Key</c> 或 appsettings 里的 <c>Jwt:Key</c>），长度 ≥ 32 且不是仓库里的示例值；
-///   2) <c>Jwt:KeyFile</c> 指向的密钥文件（默认 <c>App_Data/signing.key</c>）；
-///   3) 都没有：生成 48 字节随机密钥写进该文件，之后每次启动复用。
-///
-/// 为什么不每次启动都随机：签名密钥一换，所有已签发令牌立即失效；备份密钥
-/// （未配置 <c>Backup:Key</c> 时由 Jwt:Key 派生）也会跟着变，历史备份直接解不开。
-/// 为什么不再把密钥写死进配置：写死的默认密钥等于公开的密钥，任何人都能伪造管理员令牌。
-/// </summary>
+/// <summary>启动时决定 JWT 签名密钥，取值顺序： 1) 显式配置（环境变量 Jwt__Key 或 appsettings 里…</summary>
 public static class SigningKeyProvider
 {
-    /// <summary>HS256 要求密钥至少 256 位；这里按字符数兜底，48 字节 Base64 后是 64 字符。</summary>
+    /// <summary>HS256 要求密钥至少 256 位</summary>
     public const int MinLength = 32;
 
     private const int SecretBytes = 48;
 
-    /// <summary>仓库历史上出现过的默认值 / 模板占位符，命中即当作「没配」，重新随机。</summary>
+    /// <summary>仓库历史上出现过的默认值 / 模板占位符，命中即当作「没配」，重新随机</summary>
     private static readonly string[] InsecureMarkers = { "ChangeMe", "DoNotUseInProduction", "your-secret", "<" };
 
-    /// <summary>
-    /// 解析出可用的签名密钥。<paramref name="source"/> 回传来源描述，用于启动日志
-    /// （只记来源，绝不打印密钥本身）。
-    /// </summary>
+    /// <summary>解析出可用的签名密钥</summary>
     public static string Resolve(IConfiguration cfg, IHostEnvironment env, out string source)
     {
         var configured = cfg["Jwt:Key"];

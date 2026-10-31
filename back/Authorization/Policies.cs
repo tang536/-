@@ -1,10 +1,9 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 
 namespace ERental.Authorization;
 
 /// <summary>
 /// 系统角色名常量。
-///
 /// 为什么要把中文字符串收敛成常量：
 ///   `[Authorize(Roles = "管理员")]` 这种写法把角色名硬编码在 20 个控制器的 80 处标注里，
 ///   一旦角色名调整（例如「前台」改叫「门店前台」）就必须全局搜索替换，漏一处就是静默越权或误拒。
@@ -21,11 +20,9 @@ public static class RoleNames
 
 /// <summary>
 /// 授权策略名。
-///
 /// 策略内容 = 需求规格说明书 4.2.1「角色权限管理」与《唐荣强.docx》用况1~5 的角色分工：
 ///   用况1 注册登录、用况2 创建订单、用况3 归还结算、用况4 车辆与维保、用况5 统计报表。
 ///   策略只在既有角色组合上做**等价命名**，不新增角色、不改变任何接口的可访问范围。
-///
 /// 与直接写 `Roles = "管理员,前台"` 相比的收益：
 ///   ① 授权规则从「散落 80 处的字符串」变成「12 条具名规则」，一眼能看出全系统有几档权限；
 ///   ② 将来要加细粒度规则（例如「仅本人的订单」）时，只需在策略里加 <c>RequireAssertion</c>，
@@ -73,7 +70,6 @@ public static class Policies
 
 /// <summary>
 /// 授权策略注册。
-///
 /// 放在独立的静态类里而不是堆进 Program.cs：Program.cs 已承担启动编排，
 /// 授权规则属于「安全策略」这一单一职责，独立后便于对照需求文档逐条核对。
 /// </summary>

@@ -1,9 +1,7 @@
-﻿using System.Security.Claims;
-using ERental.DTOs;
+﻿using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
 using ERental.Authorization;
-using ERental.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,83 +10,55 @@ namespace ERental.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize(Policy = Policies.AnyAuthenticated)]
-public class ReportController(ReportService svc, SettlementService settleSvc) : ControllerBase
+public class ReportController(ReportService svc, SettlementService settleSvc, ILogger<ReportController> logger) : ControllerBase
 {
     private readonly ReportService _svc = svc;
     private readonly SettlementService _settleSvc = settleSvc;
-
-    private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
+    private readonly ILogger<ReportController> _logger = logger;
 
     /// <summary>首页核心数据看板：管理员 / 前台 / 财务 均可查看</summary>
     [HttpGet("dashboard")]
     [Authorize(Policy = Policies.AnyStaff)]
-    public async Task<IActionResult> Dashboard() => Ok(new ApiResponse<VisualReport> { Data = await _svc.GetDashboard() });
-
-    /// <summary>顶栏通知中心 + 首页预警提醒区数据（含当前用户的已读/未读状态）</summary>
-    [HttpGet("notifications")]
-    [Authorize(Policy = Policies.AnyStaff)]
-    public async Task<IActionResult> Notifications() => Ok(new ApiResponse<List<NotificationDto>> { Data = await _svc.GetNotifications(CurrentUserId) });
-
-    /// <summary>
-    /// 标记通知已读（用户在通知列表中点开某条后调用）。
-    /// 请求体 { ids: ["overdue-12", ...] }；ids 为空表示「全部标记已读」。
-    /// </summary>
-    [HttpPost("notifications/read")]
-    [Authorize(Policy = Policies.AnyStaff)]
-    [SkipAudit]   // 通知已读状态属个人阅读偏好，非业务数据变更；高频写日志会淹没真正的业务操作
-    public async Task<IActionResult> MarkRead([FromBody] NotificationReadRequest req)
+    public async Task<IActionResult> Dashboard()
     {
-        await _svc.MarkRead(CurrentUserId, req.Ids);
-        return Ok(new ApiResponse<object> { Message = "已标记为已读" });
+        try
+        {
+            var data = await DbConcurrency.RetryTransientAsync(() => _svc.GetDashboard(), _logger, "首页看板");
+            return Ok(new ApiResponse<VisualReport> { Data = data });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "首页看板查询失败（{ExType}）", ex.GetType().Name);
+            return StatusCode(500, new ApiResponse<VisualReport> { Code = 500, Success = false, Message = ErrorText.Safe(ex), Data = null });
+        }
     }
 
-    /// <summary>一键全部已读</summary>
-    [HttpPost("notifications/read-all")]
-    [Authorize(Policy = Policies.AnyStaff)]
-    [SkipAudit]   // 同 MarkRead：阅读偏好，不属业务数据变更
-    public async Task<IActionResult> MarkAllRead()
-    {
-        await _svc.MarkRead(CurrentUserId, null);
-        return Ok(new ApiResponse<object> { Message = "已全部标记为已读" });
-    }
+    // 通知中心（列表 / 已读 / 删除）已统一到 MessageController：
+    // 员工与顾客共用同一套接口，接收人类型由 Token 角色决定，这里只保留报表相关端点。
 
-    /// <summary>
-    /// 删除（忽略）通知：body 传 ids 删除指定通知；不传或空数组表示「清空全部」。
-    /// 员工预警是实时状态推导的（下次拉取会幂等重建），故删除 = 软删忽略：
-    /// 预警消失后标记随行清除，再次触发按新预警处理（与顾客侧硬删的分工见 MessageService）。
-    /// </summary>
-    [HttpPost("notifications/delete")]
-    [Authorize(Policy = Policies.AnyStaff)]
-    [SkipAudit]   // 通知忽略属个人阅读偏好，非业务数据变更；高频写日志会淹没真正的业务操作
-    public async Task<IActionResult> DeleteNotifications([FromBody] NotificationReadRequest? req)
-    {
-        var n = await _svc.Dismiss(CurrentUserId, req?.Ids);
-        return Ok(new ApiResponse<object> { Message = n > 0 ? $"已删除 {n} 条通知" : "没有可删除的通知" });
-    }
-
-    /// <summary>
-    /// 统计报表主接口（管理员 / 财务）。支持 from / to 时间段筛选：
-    /// 财务按任意区间看营收与订单，不传则沿用累计口径。
-    /// 角色口径：**财务看全部**（资金 + 运营指标），管理员只取运营指标
-    /// （使用率 / 租期 / 取消率等）——资金区块、下钻、对账、支付流水由前端按角色裁剪，
-    /// 且下钻 / 对账 / 支付流水接口本身仅对财务授权。
-    /// </summary>
+    /// <summary>统计报表主接口（管理员 / 财务）</summary>
     [HttpGet("summary")]
     [Authorize(Policy = Policies.AdminOrFinance)]
-    public async Task<IActionResult> Summary(DateTime? from, DateTime? to) => Ok(new ApiResponse<VisualReport> { Data = await _svc.GetDashboard(from, to) });
+    public async Task<IActionResult> QueryReport(DateTime? from, DateTime? to)
+    {
+        try
+        {
+            // 读接口对"连接层瞬时故障"整段重试：避免闲置后首次查询命中死连接直接 500
+            // （表现为「退款后首次提示服务器内部错误、二次才成功」）。
+            var data = await DbConcurrency.RetryTransientAsync(() => _svc.GetDashboard(from, to), _logger, "报表汇总");
+            return Ok(new ApiResponse<VisualReport> { Data = data });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "报表汇总查询失败（{ExType}）", ex.GetType().Name);
+            return StatusCode(500, new ApiResponse<VisualReport> { Code = 500, Success = false, Message = ErrorText.Safe(ex), Data = null });
+        }
+    }
 
-    /// <summary>
-    /// 车辆运营统计（需求 4.2.7）：每台车的累计租赁时长、累计营收、维保次数与维保费用，
-    /// 支持按车辆编号 / 品牌关键字与车辆状态筛选，用于识别高价值车辆与闲置车辆。
-    /// 权限口径与 summary 一致：管理员 + 财务。
-    /// </summary>
-    /// <param name="keyword">车辆编号 / 品牌模糊匹配</param>
-    /// <param name="status">车辆状态：空闲 / 在租 / 维保 / 报废</param>
-    /// <param name="from">统计起始日（含）；不传为累计口径</param>
-    /// <param name="to">统计截止日（含当天）</param>
+    /// <summary>车辆运营统计（需求 4</summary>
     [HttpGet("vehicles")]
     [Authorize(Policy = Policies.AdminOrFinance)]
-    public async Task<IActionResult> VehicleStats(string? keyword, string? status, DateTime? from, DateTime? to)
+    public async Task<IActionResult> QueryVehicleReport(string? keyword, string? status, DateTime? from, DateTime? to)
     {
         try
         {
@@ -101,15 +71,10 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
         }
     }
 
-    /// <summary>
-    /// 维保费用统计（需求 4.2.7）：月度维保总费用、故障类型费用分布、单台车辆维保费用排行。
-    /// 权限口径与 summary 一致：管理员 + 财务。
-    /// </summary>
-    /// <param name="from">统计起始日（含）；不传为累计口径</param>
-    /// <param name="to">统计截止日（含当天）</param>
+    /// <summary>维保费用统计（需求 4</summary>
     [HttpGet("maintenance")]
     [Authorize(Policy = Policies.AdminOrFinance)]
-    public async Task<IActionResult> MaintenanceStats(DateTime? from, DateTime? to)
+    public async Task<IActionResult> QueryMaintenanceReport(DateTime? from, DateTime? to)
     {
         try
         {
@@ -121,18 +86,10 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
         }
     }
 
-    /// <summary>
-    /// 财务下钻：按「时间 / 订单 / 商户（收单渠道）」拆开看逐笔明细与金额构成。
-    ///
-    /// 权限口径：**仅财务**。资金逐笔明细是财务的职责范围（财务查看范围 > 管理员）：
-    /// 管理员看运营口径（summary 的使用率 / 租期 / 取消率等），逐笔资金与对账归财务。
-    /// </summary>
-    /// <param name="dim">time（按日/月） / order（按订单） / merchant（按收单渠道）</param>
-    /// <param name="from">统计起始日（含）；不传表示不限制起点</param>
-    /// <param name="to">统计截止日（含当天）；不传表示不限制终点</param>
+    /// <summary>财务下钻：按「时间 / 订单 / 商户（收单渠道）」拆开看逐笔明细与金额构成</summary>
     [HttpGet("finance/drill")]
     [Authorize(Policy = Policies.FinanceOnly)]
-    public async Task<IActionResult> FinanceDrill(string dim = "time", DateTime? from = null, DateTime? to = null)
+    public async Task<IActionResult> DrillFinanceReport(string dim = "time", DateTime? from = null, DateTime? to = null)
     {
         try
         {
@@ -152,10 +109,10 @@ public class ReportController(ReportService svc, SettlementService settleSvc) : 
         }
     }
 
-    /// <summary>财务对账：按日期范围核对应收（订单租金+押金）与实收（支付记录），统计退款/补缴/结算笔数，财务每日打烊前核对账目。仅财务可用（资金核对职责）</summary>
+    /// <summary>财务对账：按日期范围核对应收（订单租金+押金）与实收（支付记录），统计退款/补缴/结算笔数，财务每日打烊前核对账目</summary>
     [HttpGet("reconcile")]
     [Authorize(Policy = Policies.FinanceOnly)]
-    public async Task<IActionResult> Reconcile(DateTime from, DateTime to)
+    public async Task<IActionResult> ReconcileFinance(DateTime from, DateTime to)
     {
         try { return Ok(new ApiResponse<object> { Data = await _settleSvc.Reconcile(from, to) }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }

@@ -1,8 +1,52 @@
-namespace ERental.DTOs;
+﻿namespace ERental.DTOs;
+
+/// <summary>
+/// 结算时补缴款的处置方式。
+/// 与「前台指定渠道」的区别：<see cref="CustomerChoice"/> 不在结算时锁死渠道，
+/// 只生成应收金额并通知顾客，顾客拿到结算单后自行选「在线支付」或「到店缴纳」。
+/// </summary>
+public static class SupplementPayMethods
+{
+    /// <summary>顾客自行选择：结算时不建支付单，等顾客在顾客端点「在线支付」或到店交现金</summary>
+    public const string CustomerChoice = "待顾客选择";
+    /// <summary>线下现金：结算不建支付单，前台收款时用「确认已收现金」落账</summary>
+    public const string Cash = "现金";
+}
+
+/// <summary>
+/// 顾客侧结算单视图：顾客只能看到自己订单的结算结果，
+/// 并据此决定「在线支付补缴」还是「到店缴纳」。
+/// </summary>
+public class MySettleDto
+{
+    public int SettleId { get; set; }
+    public int OrderId { get; set; }
+    public string OrderNo { get; set; } = "";
+    public string VehicleNo { get; set; } = "";
+    public DateTime SettleTime { get; set; }
+    /// <summary>实际租金（约定租期内）</summary>
+    public decimal ActualRent { get; set; }
+    /// <summary>逾期费（超出约定还车时间的租金部分）</summary>
+    public decimal OverdueFee { get; set; }
+    /// <summary>验车损坏费</summary>
+    public decimal DamageFee { get; set; }
+    /// <summary>应退押金/预付租金</summary>
+    public decimal RefundAmount { get; set; }
+    /// <summary>应补缴金额</summary>
+    public decimal SupplementAmount { get; set; }
+    /// <summary>已缴补缴</summary>
+    public decimal SupplementPaid { get; set; }
+    /// <summary>补缴是否已收清</summary>
+    public bool SupplementCollected { get; set; }
+    /// <summary>已收清的渠道（现金/支付宝/微信/银行卡）</summary>
+    public string? PaidChannel { get; set; }
+    /// <summary>仍待支付的线上补缴单（顾客可直接打开收银台）</summary>
+    public int? PendingPayId { get; set; }
+    public string? Remark { get; set; }
+}
 
 /// <summary>
 /// 结算记录列表行。
-///
 /// 扁平的列表投影，不直接返回 <see cref="Models.SettleRecord"/> 实体：
 /// 实体会把 <c>Include</c> 进来的整棵对象图（RentalOrder → Customer → 该客户的全部历史订单）
 /// 一并序列化，23 条记录就有 128KB，攒到几百条会变成几 MB 的无用负载。
@@ -42,13 +86,11 @@ public class SettleOrderBriefDto
 
 /// <summary>
 /// 补缴账单：一笔结算单产生的「未缴清补缴款」。
-///
 /// ── 为什么单独一个 DTO ──
 /// 前台需要的不是"结算单"本身，而是**这张单还欠多少钱、现在能不能收、怎么收**。
 /// 结算单里的 supplement_amount 只说明"应收"，收没收到必须看支付记录，
 /// 所以这里把「应收 / 已收 / 是否收清 / 最近渠道 / 待支付单号」一次给全，
 /// 前端据此决定显示「收款」还是「已收清」，不需要自己在两个接口之间拼状态。
-///
 /// ── 状态是派生的，不存列 ──
 /// 收清与否 = 已到账补缴合计 ≥ 应收补缴。这样现金收款、支付宝异步回调、
 /// 顾客端在线补缴、查单兜底四条路径都自动一致，不会出现"钱收了但状态没改"的脏数据。

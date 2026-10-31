@@ -276,7 +276,11 @@ export default function Reports() {
 
     const r: any = await paymentApi.refund(p.payId, amount)
     toast(r?.message || '退款已提交', 'success')
-    await load(range)
+    // 退款已成功（上面已是 200）。刷新列表/报表放在独立 try 中：
+    // 即便刷新因瞬时数据库抖动偶发失败，也不能把一次成功的退款误报成「服务器内部错误」
+    // —— 这正是「首次提示服务器内部错误、二次才成功」的前端根因之一。
+    try { await load(range) }
+    catch { /* load 自身已有兜底，这里仅防止冒泡到退款失败提示 */ }
   }).catch((e: any) => toast(errMessage(e, '退款失败'), 'error'))
 
   const handleExport = () => exportAct.run(async () => {

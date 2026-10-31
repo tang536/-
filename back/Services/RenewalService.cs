@@ -17,18 +17,10 @@ public class RenewalService(AppDbContext db, ILogger<RenewalService> logger)
         return await q.OrderByDescending(r => r.RenewalTime).ToListAsync();
     }
 
-    /// <summary>单次续租小时数上限（需求 4.2.4 订单续租：选择续租时长后核算费用）。</summary>
+    /// <summary>单次续租小时数上限（需求 4</summary>
     private const int MaxRenewalHours = 24 * 365;
 
-    /// <summary>
-    /// 续租。计算方式是「在原 lease_end 上累加」，属于典型的**读-改-写**：
-    /// 两个窗口同时给同一张单续 24 小时，原实现各自读到同一个旧 lease_end，
-    /// 后提交的一方把先提交的结果覆盖掉——顾客实际多用了 48 小时，系统只记 24 小时租金，
-    /// 而且两张续租记录的 new_end_time 还都是「旧值 + 24」，对账时看不出问题。
-    ///
-    /// 升级后：订单行锁把两个请求串起来，第二个拿到锁时读到的是**已加过 24 小时**的新值，
-    /// 再累加自己的 24 小时。两条续租记录首尾相接，账实一致。
-    /// </summary>
+    /// <summary>续租。计算方式是「在原 lease_end 上累加」，属于典型的读-改-写： 两个窗口同时给同一张单续 24 小时，…</summary>
     public async Task<RenewalRecord> Create(int orderId, int hours, int? operatorId = null)
         => await DbConcurrency.RunAsync(
             () => CreateOnce(orderId, hours, operatorId), _logger, "订单续租",

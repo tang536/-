@@ -8,25 +8,10 @@ using Microsoft.Extensions.Options;
 
 namespace ERental.Services;
 
-/// <summary>WS 推送的一次进度快照（Percent 0~99，100 留给完成态）。</summary>
+/// <summary>WS 推送的一次进度快照（Percent 0~99，100 留给完成态）</summary>
 public record ComfyProgress(int Percent, string Stage);
 
-/// <summary>
-/// ComfyUI HTTP API 的薄封装。只做「收发」：上传图片、提交工作流、收执行进度、
-/// 查历史、下载成品。工作流 JSON 的改写（打补丁）在 <see cref="AiImageService"/>，
-/// 两者刻意分开——客户端不关心图长什么样，服务不关心 HTTP 怎么发。
-///
-/// 接口清单（ComfyUI 官方 API，桌面版同样提供）：
-///  POST /upload/image        上传参考图，返回服务端文件名
-///  POST /prompt              提交工作流（prompt 即 API 格式的节点字典）
-///  GET  /history/{prompt_id} 查看任务结果（含各节点输出图片）
-///  GET  /view                按文件名下载输出图片
-///  GET  /system_stats        探活
-///  WS   /ws?clientId=xxx     实时进度（progress / executing / execution_* 消息）
-///
-/// 地址不写死：BaseUrl 由 <see cref="ComfyConfigService"/> 动态提供（系统配置页可改），
-/// 每次请求按当时生效值拼绝对地址，管理员改完最多 3 秒即生效。
-/// </summary>
+/// <summary>ComfyUI HTTP API 的薄封装</summary>
 public class ComfyUiClient
 {
     private readonly HttpClient _http;
@@ -46,10 +31,10 @@ public class ComfyUiClient
         _http.Timeout = TimeSpan.FromSeconds(Math.Max(30, _opt.TimeoutSeconds));
     }
 
-    /// <summary>当前生效的 ComfyUI 地址（配置页回显 / 离线提示用）。</summary>
+    /// <summary>当前生效的 ComfyUI 地址（配置页回显 / 离线提示用）</summary>
     public Task<string> EffectiveBaseUrlAsync(CancellationToken ct = default) => _cfg.GetBaseUrlAsync(ct);
 
-    /// <summary>探活：桌面版没启动时这里会抛异常，由上层翻译成「ComfyUI 未启动」。</summary>
+    /// <summary>探活：桌面版没启动时这里会抛异常，由上层翻译成「ComfyUI 未启动」</summary>
     public async Task<bool> IsOnlineAsync(CancellationToken ct = default)
     {
         try
@@ -60,7 +45,7 @@ public class ComfyUiClient
         catch { return false; }
     }
 
-    /// <summary>上传参考图（图生图用），返回 ComfyUI 侧的文件名。</summary>
+    /// <summary>上传参考图（图生图用），返回 ComfyUI 侧的文件名</summary>
     public async Task<string> UploadImageAsync(Stream content, string fileName, CancellationToken ct = default)
     {
         using var form = new MultipartFormDataContent();
@@ -80,11 +65,7 @@ public class ComfyUiClient
             ?? throw new Exception("ComfyUI 上传响应里没有文件名");
     }
 
-    /// <summary>
-    /// 提交工作流，返回 prompt_id（后续凭它查历史 / 收 WS 进度）。
-    /// <paramref name="clientId"/> 即 WS 连接用的 clientId——ComfyUI 只把执行消息
-    /// 推给携带同一 clientId 的 WebSocket 连接，两边必须一致。
-    /// </summary>
+    /// <summary>提交工作流，返回 prompt_id（后续凭它查历史 / 收 WS 进度）</summary>
     private async Task<string> SubmitPromptAsync(string promptJson, string? clientId = null, CancellationToken ct = default)
     {
         var payload = JsonSerializer.Serialize(new
@@ -103,16 +84,7 @@ public class ComfyUiClient
             ?? throw new Exception("ComfyUI 提交响应里没有 prompt_id");
     }
 
-    /// <summary>
-    /// 提交并等待执行完成，返回 prompt_id。执行期间的实时进度经
-    /// <paramref name="progress"/> 上报（前端进度条的数据来源）。
-    ///
-    /// 两条通道，自动择优：
-    ///  ① WebSocket（首选）：连 /ws?clientId= 收 progress / executing / execution_*，
-    ///     拿到「采样第几步、执行到哪个节点、失败原因」，进度细到每一步；
-    ///  ② HTTP 轮询（兜底）：WS 连不上（极老版本 / 被中间设备挡）时退回轮询
-    ///     /history/{id}，只有「执行中 → 完成」两态，进度条给粗估值。
-    /// </summary>
+    /// <summary>提交并等待执行完成，返回 prompt_id</summary>
     public async Task<string> ExecutePromptAsync(
         string promptJson, IProgress<ComfyProgress>? progress, TimeSpan timeout, CancellationToken ct = default)
     {
@@ -148,11 +120,7 @@ public class ComfyUiClient
         return promptId;
     }
 
-    /// <summary>
-    /// 连 WS 收本任务的执行消息。
-    /// 返回 true = 已收到 execution_success（或 executing(null) 收尾）；
-    /// 返回 false = WS 连不上 / 流中途断开，调用方应转 HTTP 轮询。
-    /// </summary>
+    /// <summary>连 WS 收本任务的执行消息</summary>
     private static async Task<bool> ListenProgressAsync(
         string baseUrl, string clientId, string promptId, IProgress<ComfyProgress>? progress, CancellationToken ct)
     {
@@ -253,7 +221,7 @@ public class ComfyUiClient
         return WsOutcome.Continue;
     }
 
-    /// <summary>把 ComfyUI 的 execution_error 数据翻成中文异常（节点定位 + 异常原文）。</summary>
+    /// <summary>把 ComfyUI 的 execution_error 数据翻成中文异常（节点定位 + 异常原文）</summary>
     private static Exception BuildExecutionError(JsonObject data)
     {
         var nodeId = data["node_id"]?.GetValue<string>() ?? "";
@@ -268,7 +236,7 @@ public class ComfyUiClient
         return new Exception(line);
     }
 
-    /// <summary>WS 不可用时的兜底：轮询历史直到出图（到点由 CancellationToken 抛出）。</summary>
+    /// <summary>WS 不可用时的兜底：轮询历史直到出图（到点由 CancellationToken 抛出）</summary>
     private async Task PollUntilDoneAsync(string promptId, IProgress<ComfyProgress>? progress, CancellationToken ct)
     {
         while (true)
@@ -283,13 +251,7 @@ public class ComfyUiClient
         }
     }
 
-    /// <summary>
-    /// 把 ComfyUI 的 400 校验错误翻译成中文。拒收时响应体形如：
-    /// {"error": {...}, "node_errors": {"28": {"errors": [{"type": "value_not_in_list",
-    ///  "message": "...", "details": "unet_name: 'x.safetensors' not in list",
-    ///  "extra_info": {"input_name": "unet_name"}}], "class_type": "UNETLoader"}}}
-    /// 逐节点译成「节点 28（UNETLoader）的 unet_name 取值不存在」这样的可执行信息。
-    /// </summary>
+    /// <summary>把 ComfyUI 的 400 校验错误翻译成中文</summary>
     private static string TranslateSubmitError(string body, int status)
     {
         try
@@ -348,12 +310,7 @@ public class ComfyUiClient
         return $"ComfyUI 拒绝工作流（HTTP {status}）：{Trim(body)}";
     }
 
-    /// <summary>
-    /// 拉取某节点类型的输入定义（object_info），供提交前预检与表单 schema 生成用。
-    /// 节点类型未安装时 ComfyUI 返回 404；老版本没有该端点时同样返回 null——
-    /// 返回 null 一律表示「查不到，跳过这项检查」，不当作错误。
-    /// 结果带进程内缓存（含 null 的负面缓存），避免同一模板被反复查询。
-    /// </summary>
+    /// <summary>拉取某节点类型的输入定义（object_info），供提交前预检与表单 schema 生成用</summary>
     public async Task<JsonElement?> GetNodeInfoAsync(string classType, CancellationToken ct = default)
     {
         if (_infoCache.TryGetValue(classType, out var cached)) return cached;
@@ -389,11 +346,7 @@ public class ComfyUiClient
         }
     }
 
-    /// <summary>
-    /// 查历史。已完成时返回该任务的输出图片清单（filename/subfolder/type）；
-    /// 未完成返回空列表。历史里还带执行状态（status.status == "success"），
-    /// 失败时能拿到 ComfyUI 自己的报错（缺模型 / 缺节点之类），直接抛给用户看。
-    /// </summary>
+    /// <summary>查历史。已完成时返回该任务的输出图片清单（filename/subfolder/type）</summary>
     public async Task<List<ComfyOutputImage>> GetOutputImagesAsync(string promptId, CancellationToken ct = default)
     {
         var resp = await _http.GetAsync($"{await _cfg.GetBaseUrlAsync(ct)}/history/{promptId}", ct);
@@ -444,7 +397,7 @@ public class ComfyUiClient
         return images;
     }
 
-    /// <summary>下载成品图（字节流）。</summary>
+    /// <summary>下载成品图（字节流）</summary>
     public async Task<byte[]> GetImageAsync(ComfyOutputImage img, CancellationToken ct = default)
     {
         var url = $"{await _cfg.GetBaseUrlAsync(ct)}/view?filename={Uri.EscapeDataString(img.Filename)}" +
@@ -455,7 +408,7 @@ public class ComfyUiClient
         return await resp.Content.ReadAsByteArrayAsync(ct);
     }
 
-    /// <summary>列出某加载器节点可选的模型（如 CheckpointLoaderSimple → ckpt_name 下拉）。</summary>
+    /// <summary>列出某加载器节点可选的模型（如 CheckpointLoaderSimple → ckpt_name 下拉）</summary>
     public async Task<List<string>> GetModelChoicesAsync(string nodeType, string field, CancellationToken ct = default)
     {
         try
@@ -480,7 +433,7 @@ public class ComfyUiClient
         catch { return []; }
     }
 
-    /// <summary>http/https 基址转 ws/wss（WebSocket 专用）。</summary>
+    /// <summary>http/https 基址转 ws/wss（WebSocket 专用）</summary>
     private static string ToWebSocketUri(string baseUrl)
     {
         var u = baseUrl.TrimEnd('/');
@@ -496,18 +449,18 @@ public class ComfyUiClient
     }
 }
 
-/// <summary>WS 消息处理后的动作。</summary>
+/// <summary>WS 消息处理后的动作</summary>
 internal enum WsOutcome
 {
-    /// <summary>继续收下一条。</summary>
+    /// <summary>继续收下一条</summary>
     Continue,
-    /// <summary>本任务已执行完成。</summary>
+    /// <summary>本任务已执行完成</summary>
     Done,
-    /// <summary>WS 流中断（连接关闭），转 HTTP 轮询兜底。</summary>
+    /// <summary>WS 流中断（连接关闭），转 HTTP 轮询兜底</summary>
     StreamEnded,
-    /// <summary>执行失败（异常已由具体 case 抛出，此值仅作枚举完整性占位）。</summary>
+    /// <summary>执行失败（异常已由具体 case 抛出，此值仅作枚举完整性占位）</summary>
     Failed
 }
 
-/// <summary>ComfyUI 历史里一张输出图的定位信息。</summary>
+/// <summary>ComfyUI 历史里一张输出图的定位信息</summary>
 public record ComfyOutputImage(string Filename, string Subfolder, string Type);

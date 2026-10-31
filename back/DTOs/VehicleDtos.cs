@@ -3,7 +3,6 @@
 /// <summary>
 /// 车辆专属二维码的扫码结果（用况4 步骤3 / 需求 4.2.2「支持为车辆生成专属二维码，
 /// 扫码可快速查看车辆档案与租赁记录」）。
-///
 /// 刻意做成 DTO 而不是直接返回 EF 实体：车辆与订单是双向导航，
 /// 一旦把 <c>Vehicle.RentalOrders</c> 和 <c>RentalOrder.Vehicle</c> 一起序列化就会形成环。
 /// </summary>
@@ -143,14 +142,12 @@ public class BatchVehicleUpdateDto
 
 /// <summary>
 /// 新增 / 编辑车辆档案的入参（用况4「车辆管理」）。
-///
 /// 为什么不直接收 <c>Vehicle</c> 实体：
 ///   1) **越权写入（overposting）**：实体上有 <c>VehicleId</c>、<c>QrCode</c>、两张关联表集合，
 ///      请求体一旦能写这些，客户端就能指定主键、伪造二维码码值、甚至顺带塞入关联对象；
 ///   2) **循环引用**：<c>Vehicle.RentalOrders</c> 与 <c>RentalOrder.Vehicle</c> 双向导航，
 ///      实体被整体回收并序列化时容易成环；
 ///   3) 表单上管理员真正能填的只有下面 9 个字段，多一个都不该被接收。
-///
 /// 二维码码值必须由服务端按自增主键生成（<c>BuildQrCode</c>），所以这里没有 QrCode。
 /// </summary>
 public class VehicleSaveDto

@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using ERental.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -8,7 +8,6 @@ namespace ERental.Filters;
 
 /// <summary>
 /// 标记「本接口不参与自动审计」。
-///
 /// 适用两类情况：
 ///  ① 已有更精细的手工审计（如 PaymentController 的 <c>AuditAsync</c>，会记录生效模式、
 ///     订单号、失败原因等上下文），再自动记一条只会重复；
@@ -19,7 +18,6 @@ public sealed class SkipAuditAttribute : Attribute;
 
 /// <summary>
 /// 关键写操作自动审计（需求规格说明书 4.2.1「日志管理」、7.1「数据不可删除、全流程可追溯」）。
-///
 /// 需求原文要求「系统**自动**记录全量用户登录、操作、数据修改、异常行为日志」。
 /// 改造前只有登录与支付两处手工写日志，订单/车辆/客户/结算等真正的数据变更全部没有留痕——
 /// 一旦出现「谁把订单取消了」「谁把这台车报废了」，无从追溯。这里用全局过滤器补齐：
@@ -29,7 +27,6 @@ public sealed class SkipAuditAttribute : Attribute;
 ///   · 不记录请求体：其中可能含密码、身份证号、支付凭据，`operate_content` 只有 200 字符，
 ///     也不适合塞参数快照；需要细节时按路径 + 时间回查业务表即可；
 ///   · 写日志失败绝不影响业务：审计是旁路动作，用独立作用域 + try/catch，失败只打警告。
-///
 /// 与表结构的关系：完全复用既有 <c>system_log</c> 七个字段
 /// （log_id / user_id / operate_content / operate_time / operate_result / operate_module / ip_address），
 /// **不新增列**，保持与《唐荣强.docx》图4-15 的 17 张表 134 字段一致。

@@ -4,17 +4,7 @@ using System.Text.Json.Serialization;
 
 namespace ERental.Models;
 
-/// <summary>
-/// 客户（租赁方）
-/// 注册阶段仅采集「登录用户名 + 密码」（最小必要原则，个人信息保护法）；
-/// 身份证号与手机号在租车下单环节强制采集。
-///
-/// 封装约定：所有数据成员的 setter 一律 private（EF Core 通过后备字段物化，不受影响），
-/// 外部只能通过领域方法改状态——这样「谁能改、什么时候改、改了要不要参与乐观并发」
-/// 都收口在实体内部，服务层无法绕过去直接赋值。
-/// 唯一的例外是 <see cref="MemberDiscount"/>：它是 [NotMapped] 的 API 输出字段，
-/// 不属于档案状态，由服务层按会员权益实时填值。
-/// </summary>
+/// <summary>客户（租赁方） 注册阶段仅采集「登录用户名 + 密码」（最小必要原则，个人信息保护法）</summary>
 [Table("customer")]
 public class Customer
 {
@@ -52,19 +42,11 @@ public class Customer
     [Column("member_level")]
     public string MemberLevel { get; private set; } = "普通会员";
 
-    /// <summary>
-    /// 会员折扣（3NF：不落库）。折扣唯一真源在 member_rights（customer → member_level → rights.discount
-    /// 是传递依赖，冗余存储会迫使类型改折扣时批量同步档案）。此属性仅为 API 输出保留，
-    /// 由服务层按等级关联权益表填值，缺等级时按不打折（1.00）处理。
-    /// </summary>
+    /// <summary>会员折扣（3NF：不落库）</summary>
     [NotMapped]
     public decimal MemberDiscount { get; set; } = 1.00m;
 
-    /// <summary>
-    /// 账号状态：正常 / 已注销。
-    /// 顾客自助注销时不物理删除记录——历史订单、结算、日志都要能追溯到本人
-    /// （需求 7.1：数据不可删除、不可篡改，全流程可追溯）。
-    /// </summary>
+    /// <summary>账号状态：正常 / 已注销</summary>
     [MaxLength(10)]
     [Column("account_status")]
     public string AccountStatus { get; private set; } = "正常";
@@ -72,11 +54,7 @@ public class Customer
     [Column("create_time")]
     public DateTime CreateTime { get; init; } = DateTime.Now;
 
-    /// <summary>
-    /// 乐观并发版本号：客户档案同时暴露给前台（客户管理）与管理员（会员调整/注销），
-    /// 编辑时以打开表单时看到的版本号为基准提交，基准对不上即拒绝写入——
-    /// 否则后提交方会悄悄覆盖先提交方的修改。所有写路径必须 Version++ 后再保存。
-    /// </summary>
+    /// <summary>乐观并发版本号：客户档案同时暴露给前台（客户管理）与管理员（会员调整/注销）， 编辑时以打开表单时看到的版本号为基准…</summary>
     [Column("version")]
     [ConcurrencyCheck]
     public int Version { get; private set; } = 1;
@@ -90,7 +68,7 @@ public class Customer
     public bool ProfileCompleted => !string.IsNullOrWhiteSpace(IdCard) && !string.IsNullOrWhiteSpace(ContactPhone);
 
     // ------------------------------------------------------------------ 工厂
-    /// <summary>顾客线上自助注册：只有登录名与密码，身份证/手机号留到租车环节采集。</summary>
+    /// <summary>顾客线上自助注册：只有登录名与密码，身份证/手机号留到租车环节采集</summary>
     public static Customer Register(string loginAccount, string? fullName, string? passwordHash) => new()
     {
         LoginAccount = loginAccount.Trim(),
@@ -101,7 +79,7 @@ public class Customer
         Version = 1,
     };
 
-    /// <summary>前台代客建档（线下客户没有线上账号，登录名与密码留空释放唯一索引）。</summary>
+    /// <summary>前台代客建档（线下客户没有线上账号，登录名与密码留空释放唯一索引）</summary>
     public static Customer WalkIn(string fullName, string idCard, string? contactPhone) => new()
     {
         LoginAccount = null,
@@ -115,7 +93,7 @@ public class Customer
     };
 
     // -------------------------------------------------------------- 领域方法
-    /// <summary>补全/修改实名资料：传空表示本次不修改该字段（与前端「只提交改过的项」一致）。</summary>
+    /// <summary>补全/修改实名资料：传空表示本次不修改该字段（与前端「只提交改过的项」一致）</summary>
     public void UpdateProfile(string? fullName, string? idCard, string? contactPhone)
     {
         if (!string.IsNullOrWhiteSpace(fullName)) FullName = fullName.Trim();
@@ -123,30 +101,27 @@ public class Customer
         if (!string.IsNullOrWhiteSpace(contactPhone)) ContactPhone = contactPhone.Trim();
     }
 
-    /// <summary>设置/释放登录用户名（null 或空串都落成 NULL，避免撞唯一索引）。</summary>
+    /// <summary>设置/释放登录用户名（null 或空串都落成 NULL，避免撞唯一索引）</summary>
     public void AssignLoginAccount(string? account) =>
         LoginAccount = string.IsNullOrWhiteSpace(account) ? null : account.Trim();
 
-    /// <summary>写入密码哈希；传 null 表示清除凭据（注销时用）。</summary>
+    /// <summary>写入密码哈希</summary>
     public void SetPasswordHash(string? hash) =>
         LoginPassword = string.IsNullOrWhiteSpace(hash) ? null : hash;
 
-    /// <summary>调整会员等级（折扣不落档案，等级名以权益表为准，由调用方先校验存在性）。</summary>
+    /// <summary>调整会员等级（折扣不落档案，等级名以权益表为准，由调用方先校验存在性）</summary>
     public void ChangeMemberLevel(string level)
     {
         if (!string.IsNullOrWhiteSpace(level)) MemberLevel = level.Trim();
     }
 
-    /// <summary>乐观并发自增（在自身当前版本上前进一格）。</summary>
+    /// <summary>乐观并发自增（在自身当前版本上前进一格）</summary>
     public void BumpVersion() => Version++;
 
-    /// <summary>以提交方看到的版本号为基准自增：基准对不上时 EF 的并发校验会拒绝写入。</summary>
+    /// <summary>以提交方看到的版本号为基准自增：基准对不上时 EF 的并发校验会拒绝写入</summary>
     public void BumpVersion(int submittedVersion) => Version = submittedVersion + 1;
 
-    /// <summary>
-    /// 顾客自主注销：置「已注销」并释放用户名与实名信息（这些字段参与全局唯一性校验，
-    /// 不清空会导致本人注销后无法重新实名）。档案与历史订单保留，仍可按「已注销用户#ID」追溯。
-    /// </summary>
+    /// <summary>顾客自主注销：置「已注销」并释放用户名与实名信息（这些字段参与全局唯一性校验， 不清空会导致本人注销后无法重新实名）</summary>
     public void DeactivateAccount()
     {
         AccountStatus = "已注销";

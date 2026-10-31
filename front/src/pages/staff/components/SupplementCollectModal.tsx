@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Icon from '@/components/Icon'
 import CopyText from '@/components/CopyText'
 import { useUI } from '@/components/UIProvider'
-import { settleApi } from '@/api'
+import { supplementApi } from '@/api'
 import { PAY_CHANNEL_META } from '@/utils/payChannels'
 import { qrSvg } from '@/utils/qrcode'
 
@@ -78,7 +78,7 @@ export default function SupplementCollectModal({ settleId, preview, onClose, onC
   const loadStatus = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
     try {
-      const res: any = await settleApi.supplementStatus(settleId)
+      const res: any = await supplementApi.statusBySettle(settleId)
       const d = res.data
       if (d) {
         setBill(d)
@@ -124,7 +124,7 @@ export default function SupplementCollectModal({ settleId, preview, onClose, onC
         return
       }
       try {
-        const res: any = await settleApi.supplementStatus(settleId)
+        const res: any = await supplementApi.statusBySettle(settleId)
         const d = res.data
         if (d?.collected) {
           paidRef.current = true
@@ -145,7 +145,7 @@ export default function SupplementCollectModal({ settleId, preview, onClose, onC
   const handleCollect = async () => {
     setBusy(true)
     try {
-      const res: any = await settleApi.collectSupplement(settleId, channel)
+      const res: any = await supplementApi.collect(settleId, channel)
       const d = res.data
       toast(res?.message || d?.message || '已发起收款', 'success')
       if (d?.paid) {

@@ -145,8 +145,17 @@ export default function PayResult() {
   // 已停轮询但仍在确认中：不再显示次数提示，改为引导用户去订单页
   const pollStopped = status === 'pending' && pollCount >= MAX_POLL
 
-  // 会员购买（HY 交易号）与租车订单共用本回跳页，仅文案与引导跳转不同
-  const isMemberPay = orderNo.startsWith('HY')
+  // 回跳后只知道交易号：HY 是会员购买，SP- 是补缴单，其余是租车订单。
+  // 轮询拿到状态后再以服务端返回的 bizType 为准（后端对三类业务都走同一张结果页）。
+  const bizType = orderInfo?.bizType
+    || (orderNo.startsWith('HY') ? 'member' : orderNo.startsWith('SP-') ? 'supplement' : 'order')
+  const isMemberPay = bizType === 'member'
+  const isSupplement = bizType === 'supplement'
+  /** 补缴单主键：结果页「返回补缴单」要用，URL 里没有，只能从查单结果拿 */
+  const supplementPayId = orderInfo?.payId ? String(orderInfo.payId) : ''
+  /** 三类业务在结果页上的称谓，正文/明细行共用，避免文案各写一套 */
+  const subjectLabel = isMemberPay ? '会员购买' : isSupplement ? '补缴单' : '订单'
+  const noLabel = isMemberPay ? '交易编号' : isSupplement ? '补缴单号' : '订单编号'
 
   return (
     <div className="pay-result-wrap">
@@ -169,12 +178,18 @@ export default function PayResult() {
           </span>
           <h3>{meta.title}</h3>
           <p className="pay-result-hero-sub">
-            {status === 'checking' && `正在向系统核对${isMemberPay ? '会员购买' : '订单'}状态，请稍候…`}
-            {status === 'paid' && (isMemberPay ? `会员购买 ${orderNo} 已完成支付，等级已生效` : `订单 ${orderNo} 已完成支付`)}
+            {status === 'checking' && `正在向系统核对${subjectLabel}状态，请稍候…`}
+            {status === 'paid' && (isMemberPay
+              ? `会员购买 ${orderNo} 已完成支付，等级已生效`
+              : `${subjectLabel} ${orderNo} 已完成支付`)}
             {status === 'pending' && (pollStopped
-              ? (isMemberPay ? '长时间未确认到结果，可返回会员中心查看' : '长时间未确认到结果，可前往「我的订单」查看，或返回支付页重新发起')
+              ? (isMemberPay
+                ? '长时间未确认到结果，可返回会员中心查看'
+                : isSupplement
+                  ? '长时间未确认到结果，可前往「我的订单 → 待补缴」查看'
+                  : '长时间未确认到结果，可前往「我的订单」查看，或返回支付页重新发起')
               : `若您已在${payType}完成付款，系统正在确认回调，页面会自动刷新`)}
-            {status === 'failed' && (orderNo ? (isMemberPay ? '会员购买未完成' : '订单已取消或支付未完成') : '支付回跳未携带交易号，无法确认支付结果')}
+            {status === 'failed' && (orderNo ? `${subjectLabel}未完成支付` : '支付回跳未携带交易号，无法确认支付结果')}
           </p>
           {/* 轮询进行中给出可感知的进度，避免「卡死」错觉 */}
           {status === 'pending' && !pollStopped && (
@@ -189,13 +204,13 @@ export default function PayResult() {
         {status === 'paid' && amount && <div className="pay-result-amount">¥{amount}</div>}
 
         <div className="pay-result-detail">
-          <div className="pay-result-row"><span>{isMemberPay ? '交易编号' : '订单编号'}</span><strong>{orderNo || '—'}</strong></div>
+          <div className="pay-result-row"><span>{noLabel}</span><strong>{orderNo || '—'}</strong></div>
           {(tradeNo || orderInfo?.transactionNo) && (
             <div className="pay-result-row"><span>{tradeNoLabel(payType)}</span><strong>{tradeNo || orderInfo.transactionNo}</strong></div>
           )}
           {amount && <div className="pay-result-row"><span>支付金额</span><strong>¥{amount}</strong></div>}
           {orderInfo?.orderStatus && (
-            <div className="pay-result-row"><span>{isMemberPay ? '购买状态' : '订单状态'}</span><strong>{orderInfo.orderStatus}</strong></div>
+            <div className="pay-result-row"><span>{isMemberPay ? '购买状态' : isSupplement ? '补缴状态' : '订单状态'}</span><strong>{orderInfo.orderStatus}</strong></div>
           )}
         </div>
 
@@ -205,10 +220,16 @@ export default function PayResult() {
               {isMemberPay ? '返回会员中心' : '查看我的订单'}
             </button>
           )}
-          {status === 'paid' && !isMemberPay && (
+          {status === 'paid' && !isMemberPay && !isSupplement && (
             <button className="pay-result-btn is-ghost" onClick={() => navigate('/rent')}>继续租车</button>
           )}
-          {(status === 'pending' || status === 'failed') && !isMemberPay && orderNo && (
+          {/* 补缴单还没付成功时，回补缴页可以换通道再付一次（结果页本身不发起支付） */}
+          {isSupplement && status !== 'paid' && supplementPayId && (
+            <button className="pay-result-btn is-ghost" onClick={() => navigate(`/supplement-pay/${supplementPayId}`)}>
+              返回补缴单
+            </button>
+          )}
+          {(status === 'pending' || status === 'failed') && !isMemberPay && !isSupplement && orderNo && (
             <button className="pay-result-btn is-ghost" onClick={() => navigate(`/pay/${encodeURIComponent(orderNo)}`)}>
               {status === 'pending' ? '返回支付页' : '重新支付'}
             </button>

@@ -13,19 +13,17 @@ namespace ERental.Controllers;
 // 订单查询：工作人员查全店，顾客只能读自己的（Service 内按 Token 中的 ID 过滤）。
 // 开单 / 取消属用况2，发起者为前台。
 [Authorize(Policy = Policies.AdminOrReceptionOrCustomer)]
-public class OrderController(OrderService svc) : ControllerBase
+public class OrderController(OrderService svc, SettlementService settlement) : ControllerBase
 {
     private readonly OrderService _svc = svc;
+    private readonly SettlementService _settlement = settlement;
 
     private bool IsCustomer => User.IsInRole(AuthService.RoleCustomer);
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
-    /// <summary>
-    /// 订单列表。顾客角色只能看到自己的订单（后端强隔离，不依赖前端传参）。
-    /// 传 <c>pageSize&gt;0</c> 返回分页结构，不传返回全量数组（顾客端"我的订单"等调用不受影响）。
-    /// </summary>
+    /// <summary>订单列表</summary>
     [HttpGet]
-    public async Task<IActionResult> GetAll(string? status, string? keyword, DateTime? dateFrom = null, DateTime? dateTo = null, string? sortBy = null, bool sortDesc = true, int page = 0, int pageSize = 0)
+    public async Task<IActionResult> QueryOrderInfo(string? status, string? keyword, DateTime? dateFrom = null, DateTime? dateTo = null, string? sortBy = null, bool sortDesc = true, int page = 0, int pageSize = 0)
     {
         var customerId = IsCustomer ? CurrentUserId : (int?)null;
         if (pageSize > 0)
@@ -41,8 +39,14 @@ public class OrderController(OrderService svc) : ControllerBase
         });
     }
 
+    /// <summary>待还车订单（前台归还台）</summary>
+    [HttpGet("wait-return")]
+    [Authorize(Policy = Policies.AdminOrReception)]
+    public Task<IActionResult> GetWaitReturnOrder(string? keyword, DateTime? dateFrom = null, DateTime? dateTo = null, string? sortBy = null, bool sortDesc = true, int page = 0, int pageSize = 0)
+        => QueryOrderInfo("已支付", keyword, dateFrom, dateTo, sortBy, sortDesc, page, pageSize);
+
     [HttpGet("{id:int}")]
-    public async Task<IActionResult> GetById(int id)
+    public async Task<IActionResult> QueryOrderInfoById(int id)
     {
         try
         {
@@ -54,10 +58,10 @@ public class OrderController(OrderService svc) : ControllerBase
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>线下开单。客户信息系统中不存在时，服务端自动建档再生成订单</summary>
+    /// <summary>线下开单</summary>
     [HttpPost]
     [Authorize(Policy = Policies.ReceptionOnly)]
-    public async Task<IActionResult> Create([FromBody] CreateOrderDto dto)
+    public async Task<IActionResult> ConfirmOrderAndPay([FromBody] CreateOrderDto dto)
     {
         try
         {
@@ -67,10 +71,15 @@ public class OrderController(OrderService svc) : ControllerBase
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>线上下单（仅顾客）：必须先完成实名认证；客户身份取自 Token，忽略前端传入的 ID</summary>
+    /// <summary>柜台开单并当场收款</summary>
+    [HttpPost("staff")]
+    [Authorize(Policy = Policies.ReceptionOnly)]
+    public Task<IActionResult> CreateStaffOrder([FromBody] CreateOrderDto dto) => ConfirmOrderAndPay(dto);
+
+    /// <summary>线上下单（仅顾客）：必须先完成实名认证</summary>
     [HttpPost("online")]
     [Authorize(Policy = Policies.CustomerOnly)]
-    public async Task<IActionResult> CreateOnline([FromBody] OnlineOrderDto dto)
+    public async Task<IActionResult> CreateOnlineOrder([FromBody] OnlineOrderDto dto)
     {
         try
         {
@@ -83,25 +92,21 @@ public class OrderController(OrderService svc) : ControllerBase
     /// <summary>线上可租车辆（仅顾客）：只返回空闲车辆的窄字段，不暴露经营数据</summary>
     [HttpGet("available-vehicles")]
     [Authorize(Policy = Policies.CustomerOnly)]
-    public async Task<IActionResult> AvailableVehicles() => Ok(new ApiResponse<List<RentableVehicleDto>> { Data = await _svc.GetRentableVehicles() });
+    public async Task<IActionResult> SelectCarAndLeaseTime() => Ok(new ApiResponse<List<RentableVehicleDto>> { Data = await _svc.GetRentableVehicles() });
 
-    /// <summary>线上试算：按所选车辆取价，折扣取本人会员等级。vehicleId 可选，未选车时按系统默认价预估</summary>
+    /// <summary>线上试算：按所选车辆取价，折扣取本人会员等级</summary>
     [HttpGet("estimate")]
     [Authorize(Policy = Policies.CustomerOnly)]
-    public async Task<IActionResult> Estimate(DateTime leaseStart, DateTime leaseEnd, int? vehicleId)
+    public async Task<IActionResult> GetOrderEstimate(DateTime leaseStart, DateTime leaseEnd, int? vehicleId)
     {
         try { return Ok(new ApiResponse<RentEstimateDto> { Data = await _svc.Estimate(CurrentUserId, leaseStart, leaseEnd, vehicleId) }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>
-    /// 线下开单试算：前台为指定客户按其会员等级取折扣。
-    /// 必须与服务端下单共用同一套口径（此前前端硬编码 days×30×discount、deposit=500，
-    /// 与按小时、按车辆定价的真实计费不符，默认配置恰好是 30/500 才没暴露）。
-    /// </summary>
+    /// <summary>线下开单试算：前台为指定客户按其会员等级取折扣</summary>
     [HttpGet("staff-estimate")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> StaffEstimate(int customerId, DateTime leaseStart, DateTime leaseEnd, int? vehicleId)
+    public async Task<IActionResult> StaffGetOrderEstimate(int customerId, DateTime leaseStart, DateTime leaseEnd, int? vehicleId)
     {
         try { return Ok(new ApiResponse<RentEstimateDto> { Data = await _svc.Estimate(customerId, leaseStart, leaseEnd, vehicleId) }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
@@ -109,20 +114,16 @@ public class OrderController(OrderService svc) : ControllerBase
 
     [HttpPut("{id:int}/cancel")]
     [Authorize(Policy = Policies.ReceptionOnly)]
-    public async Task<IActionResult> Cancel(int id, [FromBody] string reason)
+    public async Task<IActionResult> CancelOrder(int id, [FromBody] string reason)
     {
         try { await _svc.Cancel(id, reason); return Ok(new ApiResponse<object> { Message = "订单已取消" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>
-    /// 顾客自助取消自己的「待支付」订单，立即释放车辆。
-    /// 为什么要单独开这个接口：顾客点开收银台后反悔/支付失败，若不能自己取消，
-    /// 就只能干等超时自动释放，车辆在这段时间被无意义占用。已支付的订单不允许自助取消。
-    /// </summary>
+    /// <summary>顾客自助取消自己的「待支付」订单，立即释放车辆</summary>
     [HttpPost("{id:int}/cancel-pending")]
     [Authorize(Policy = Policies.CustomerOnly)]
-    public async Task<IActionResult> CancelPending(int id)
+    public async Task<IActionResult> CancelPendingOrder(int id)
     {
         try
         {
@@ -132,7 +133,7 @@ public class OrderController(OrderService svc) : ControllerBase
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>顾客申请还车（无论是否到期）。审核留给前台：顾客自己点就把钱退了，门店对车况与费用会失去控制</summary>
+    /// <summary>顾客申请还车（无论是否到期）</summary>
     [HttpPost("{id:int}/early-return")]
     [Authorize(Policy = Policies.CustomerOnly)]
     public async Task<IActionResult> RequestEarlyReturn(int id)
@@ -145,17 +146,55 @@ public class OrderController(OrderService svc) : ControllerBase
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>前台审核还车申请：approve=true 通过（随后走归还结算，超时费按倍数自动计），false 驳回。</summary>
+    /// <summary>前台审核还车申请</summary>
     [HttpPost("{id:int}/early-return/review")]
     [Authorize(Policy = Policies.ReceptionOnly)]
     public async Task<IActionResult> ReviewEarlyReturn(int id, [FromBody] EarlyReturnReviewDto dto)
     {
         try
         {
-            await _svc.ReviewEarlyReturn(id, dto.Approve, dto.RejectReason);
+            if (!dto.Approve)
+            {
+                await _svc.ReviewEarlyReturn(id, false, dto.RejectReason);
+                return Ok(new ApiResponse<object> { Message = "已驳回该还车申请" });
+            }
+
+            if (dto.DamageFee < 0)
+                return BadRequest(new ApiResponse<object> { Code = 400, Message = "损坏费不能为负数", Success = false });
+            if (!await _svc.HasPendingEarlyReturn(id))
+                return BadRequest(new ApiResponse<object>
+                {
+                    Code = 400,
+                    Message = "该订单没有待审核的还车申请；如需直接收车结算，请走「归还结算」",
+                    Success = false
+                });
+
+            // 审核通过后立即结算，不再让前台「审核一次、再点一次结算」：
+            // 结算事务内部会把仍处于「待审核」的申请单一并关闭；若退款网关不可用导致结算失败，
+            // 整笔回滚、申请单仍是「待审核」，前台修好配置后可重试，不会出现"审核过了却没有结算单"。
+            // 补缴渠道固定为「待顾客选择」——线下现金还是在线支付，由顾客拿到结算单后自己决定。
+            var opId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
+            var result = await _settlement.Settle(new SettleOrderDto
+            {
+                OrderId = id,
+                DamageFee = dto.DamageFee,
+                Remark = dto.Remark,
+                SupplementPayMethod = SupplementPayMethods.CustomerChoice,
+            }, opId);
+
             return Ok(new ApiResponse<object>
             {
-                Message = dto.Approve ? "已通过还车申请，请完成归还结算" : "已驳回该还车申请"
+                Data = new
+                {
+                    result.Record.SettleId,
+                    result.Record.ActualRent,
+                    result.Record.OverdueFee,
+                    result.Record.DamageFee,
+                    result.Record.RefundAmount,
+                    result.Record.SupplementAmount,
+                    NeedCollect = result.Record.SupplementAmount > 0,
+                },
+                Message = result.Message
             });
         }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
@@ -177,5 +216,5 @@ public class OrderController(OrderService svc) : ControllerBase
     /// <summary>订单到期预警：返回即将到期（默认3天内）和已逾期的在租订单，前台工作台置顶提醒</summary>
     [HttpGet("warnings")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> Warnings(int warnDays = 3) => Ok(new ApiResponse<object> { Data = await _svc.GetWarnings(warnDays) });
+    public async Task<IActionResult> GetOrderWarnings(int warnDays = 3) => Ok(new ApiResponse<object> { Data = await _svc.GetWarnings(warnDays) });
 }

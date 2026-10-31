@@ -41,11 +41,7 @@ public class MaintenanceOrder
     [Column("fault_description")]
     public string? FaultDescription { get; private set; }
 
-    /// <summary>
-    /// 故障现场照片的相对访问路径（多张以英文逗号分隔），如 /uploads/maintenance/20260929_xxx.jpg。
-    /// 用途：上报时拍照**锁定维保位置与故障现场状态**，作为后续定责与追溯的凭证。
-    /// 工单创建后没有修改接口，因此照片一旦随工单落库即被锁定存档、不可篡改。
-    /// </summary>
+    /// <summary>故障现场照片的相对访问路径（多张以英文逗号分隔），如 /uploads/maintenance/20260929_x…</summary>
     [MaxLength(500)]
     [Column("fault_image")]
     public string? FaultImage { get; private set; }
@@ -54,11 +50,7 @@ public class MaintenanceOrder
     public int? OperatorId { get; init; }
 
     // ------------------------------------------------------------------ 工厂
-    /// <summary>
-    /// 上报故障并开工单（用况4 步骤8 / 用况4 扩展1）：工单号由服务层按当日流水生成，
-    /// 维修费从 0 起（维修完成时才知道实际花费），状态从「待处理」起。
-    /// 现场照片随工单一次性落库，工单没有修改接口，故照片不可被篡改。
-    /// </summary>
+    /// <summary>上报故障并开工单（用况4 步骤8 / 用况4 扩展1）：工单号由服务层按当日流水生成， 维修费从 0 起（维修完成时…</summary>
     public static MaintenanceOrder Report(string workOrderNo, int vehicleId, string? faultType,
         string? faultDescription, string? faultImage, int? operatorId) => new()
         {
@@ -73,10 +65,10 @@ public class MaintenanceOrder
         };
 
     // -------------------------------------------------------------- 领域方法
-    /// <summary>状态迁移（待处理 → 维修中 → 已完成 / 已撤回）。</summary>
+    /// <summary>状态迁移（待处理 → 维修中 → 已完成 / 已撤回）</summary>
     public void ChangeStatus(string status) => Status = status;
 
-    /// <summary>完工：写维修费与完工时间并置「已完成」——三者必须同时落库，否则会留下「已完成但没费用」的脏工单。</summary>
+    /// <summary>完工：写维修费与完工时间并置「已完成」——三者必须同时落库，否则会留下「已完成但没费用」的脏工单</summary>
     public void Complete(decimal maintainFee, DateTime finishTime)
     {
         MaintainFee = maintainFee;
@@ -84,6 +76,6 @@ public class MaintenanceOrder
         Status = "已完成";
     }
 
-    /// <summary>撤回工单：终态「已撤回」，车辆是否放回空闲由服务层按同车其它工单判定。</summary>
+    /// <summary>撤回工单：终态「已撤回」，车辆是否放回空闲由服务层按同车其它工单判定</summary>
     public void Withdraw() => Status = "已撤回";
 }

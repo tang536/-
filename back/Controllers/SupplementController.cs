@@ -1,200 +1,98 @@
 using System.Security.Claims;
 using ERental.Authorization;
-using ERental.Data;
 using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Controllers;
 
-/// <summary>
-/// 线上补缴（逾期/损坏费用）支付与查询。
-///
-/// 背景：结算时若顾客不想当场交补缴款，门店选「线上补缴」会生成一张独立的待支付支付记录
-/// （biz_type='supplement' + 全局唯一 out_trade_no）。本控制器让顾客回到顾客自助端后，
-/// 用与原首付款一致的真实通道完成这笔补缴，并查询支付状态（含通道查单兜底）。
-///
-/// 安全：所有接口仅对顾客开放，且按 Token 内的 customerId 二次校验订单归属，不信任前端传参。
-/// </summary>
+/// <summary>补缴（逾期/损坏费用）统一入口：顾客自助端 + 门店收银端合并到同一控制器， 按角色策略分发（与消息中心 Messa…</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Policy = Policies.CustomerOnly)]
-public class SupplementController(AppDbContext db, AlipayService alipay, WechatPayService wechat, BankPayService bank, PayConfigService payConfig, ILogger<SupplementController> logger) : ControllerBase
+public class SupplementController(SupplementService svc) : ControllerBase
 {
-    private readonly AppDbContext _db = db;
-    private readonly AlipayService _alipay = alipay;
-    private readonly WechatPayService _wechat = wechat;
-    private readonly BankPayService _bank = bank;
-    private readonly PayConfigService _payConfig = payConfig;
-    private readonly ILogger<SupplementController> _logger = logger;
+    private readonly SupplementService _svc = svc;
 
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
-    /// <summary>
-    /// 浏览器此刻的地址栏源（X-Client-Origin，缺失时退回 Referer），用于生成支付回跳地址。
-    /// </summary>
-    private string? ClientOrigin => PayConfigService.ResolveClientOrigin(Request.Headers["X-Client-Origin"].ToString(), Request.Headers.Referer.ToString());
+    // ───────── 顾客自助端 ─────────
 
-    /// <summary>为某张待支付补缴单发起支付，复用支付宝/微信/银行卡三通道，返回收银台地址或二维码。</summary>
-    [HttpPost("{payId:int}/pay")]
-    public async Task<IActionResult> Pay(int payId, [FromBody] string? payTypeRaw)
-    {
-        try
-        {
-            var rec = await _db.PaymentRecords.FirstOrDefaultAsync(p => p.PayId == payId && p.BizType == "supplement");
-            if (rec == null) return NotFound(new ApiResponse<object> { Code = 404, Message = "补缴单不存在", Success = false });
-
-            var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderId == rec.OrderId);
-            if (order == null) return NotFound(new ApiResponse<object> { Code = 404, Message = "关联订单不存在", Success = false });
-            if (order.CustomerId != CurrentUserId)
-                return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权操作该补缴单", Success = false });
-            if (rec.PayStatus != "待支付")
-                return BadRequest(new ApiResponse<object> { Code = 400, Message = "该补缴单已支付，无需重复支付", Success = false });
-
-            var payType = string.IsNullOrWhiteSpace(payTypeRaw) ? "支付宝" : payTypeRaw!.Trim();
-            // 顾客选定渠道后写入记录（付款完成前门店侧也能看到真实意向）
-            rec.SetChannel(payType);
-            await _db.SaveChangesAsync();
-
-            var rt = await _payConfig.ResolveAsync();
-            var real = rt is { IsReal: true, CredentialsComplete: true };
-
-            string payUrl = "", qrCode = "", payMode = "";
-            bool realPay;
-            switch (payType)
-            {
-                case "支付宝":
-                    payUrl = await _alipay.CreatePagePayAsync(
-                        rec.OutTradeNo!, $"电动车租赁补缴 {order.OrderNo}", rec.PayAmount,
-                        await BuildReturnUrl(rec.PayId),
-                        await _payConfig.BuildNotifyUrlAsync(ClientOrigin, "api/payment/alipay/notify"));
-                    realPay = real;
-                    break;
-                case "微信":
-                {
-                    var wx = await _wechat.CreatePayAsync(rec.OutTradeNo!, $"电动车租赁补缴 {order.OrderNo}", rec.PayAmount, await BuildReturnUrl(rec.PayId));
-                    payUrl = wx.PayUrl;
-                    qrCode = wx.QrCode;
-                    payMode = wx.PayMode;
-                    realPay = wx.Real;
-                    break;
-                }
-                case "银行卡":
-                    (payUrl, realPay) = await _bank.CreatePayAsync(
-                        rec.OutTradeNo!, $"电动车租赁补缴 {order.OrderNo}", rec.PayAmount);
-                    break;
-                default:
-                    throw new Exception($"不支持的支付方式「{payType}」");
-            }
-
-            return Ok(new ApiResponse<CreatePayResultDto>
-            {
-                Data = new CreatePayResultDto
-                {
-                    OrderNo = order.OrderNo,
-                    PayType = payType,
-                    Amount = rec.PayAmount,
-                    PayUrl = payUrl,
-                    QrCode = qrCode,
-                    PayMode = payMode,
-                    RealPay = realPay
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
-        }
-    }
-
-    /// <summary>顾客查询自己的补缴单列表（含待支付/已支付），用于「我的订单 → 待补缴」展示。</summary>
+    /// <summary>顾客查询自己的补缴单列表（含待支付/已支付），用于「我的订单 → 待补缴」展示</summary>
     [HttpGet("mine")]
-    public async Task<IActionResult> Mine()
+    [Authorize(Policy = Policies.CustomerOnly)]
+    public async Task<IActionResult> GetMySupplementBills()
+    {
+        try { return Ok(new ApiResponse<object> { Data = await _svc.GetMineAsync(CurrentUserId) }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
+    }
+
+    /// <summary>为某张待支付补缴单发起支付，复用支付宝/微信/银行卡三通道，返回收银台地址或二维码</summary>
+    [HttpPost("{payId:int}/pay")]
+    [Authorize(Policy = Policies.CustomerOnly)]
+    public async Task<IActionResult> PaySupplement(int payId, [FromBody] string? payTypeRaw)
     {
         try
         {
-            var items = await _db.PaymentRecords
-                .Where(p => p.BizType == "supplement"
-                            && _db.RentalOrders.Any(o => o.OrderId == p.OrderId && o.CustomerId == CurrentUserId))
-                .OrderByDescending(p => p.PayId)
-                .Select(p => new
-                {
-                    p.PayId,
-                    p.OrderId,
-                    OrderNo = _db.RentalOrders.Where(o => o.OrderId == p.OrderId).Select(o => o.OrderNo).FirstOrDefault() ?? "",
-                    p.PayAmount,
-                    p.PayType,
-                    p.PayStatus,
-                    p.PayTime,
-                    p.TransactionNo
-                })
-                .ToListAsync();
-            return Ok(new ApiResponse<object> { Data = items });
+            var data = await _svc.PayAsync(payId, CurrentUserId, payTypeRaw);
+            return Ok(new ApiResponse<CreatePayResultDto> { Data = data });
         }
-        catch (Exception ex)
-        {
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
-        }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>
-    /// 查询某张补缴单支付状态：若仍为待支付，按所选通道主动查单兜底（应对回调延迟/丢包）；
-    /// 返回 Paid 供前端轮询终止。
-    /// </summary>
+    /// <summary>查询某张补缴单支付状态（含通道查单兜底），Paid=true 表示已入账</summary>
     [HttpGet("{payId:int}/status")]
-    public async Task<IActionResult> Status(int payId)
+    [Authorize(Policy = Policies.CustomerOnly)]
+    public async Task<IActionResult> GetSupplementPayStatus(int payId)
+    {
+        try { return Ok(new ApiResponse<object> { Data = await _svc.GetStatusAsync(payId, CurrentUserId) }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
+    }
+
+    // ───────── 门店收银端 ─────────
+
+    /// <summary>待收款补缴账单（前台入口）</summary>
+    [HttpGet("bills")]
+    [Authorize(Policy = Policies.ReceptionOnly)]
+    public async Task<IActionResult> ListSupplementBills([FromQuery] bool outstanding = true)
+    {
+        try { return Ok(new ApiResponse<object> { Data = await _svc.GetBillsAsync(outstanding) }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
+    }
+
+    /// <summary>补缴收款：现金当场确认落账</summary>
+    [HttpPost("settle/{settleId:int}/collect")]
+    [Authorize(Policy = Policies.ReceptionOnly)]
+    public async Task<IActionResult> CollectSupplement(int settleId, [FromBody] SupplementCollectDto dto)
     {
         try
         {
-            var rec = await _db.PaymentRecords.FirstOrDefaultAsync(p => p.PayId == payId && p.BizType == "supplement");
-            if (rec == null) return NotFound(new ApiResponse<object> { Code = 404, Message = "补缴单不存在", Success = false });
-
-            var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderId == rec.OrderId);
-            if (order == null) return NotFound(new ApiResponse<object> { Code = 404, Message = "关联订单不存在", Success = false });
-            if (order.CustomerId != CurrentUserId)
-                return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权查看该补缴单", Success = false });
-
-            if (rec.PayStatus == "待支付")
-            {
-                var type = rec.PayType ?? "支付宝";
-                try
-                {
-                    if (type == "微信") await _wechat.QueryTradeStatusAsync(rec.OutTradeNo!);
-                    else await _alipay.QueryTradeStatusAsync(rec.OutTradeNo!);
-                    await _db.Entry(rec).ReloadAsync();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "补缴单 {PayId} 查单兜底失败，回退本地状态", payId);
-                }
-            }
-
-            return Ok(new ApiResponse<object>
-            {
-                Data = new
-                {
-                    rec.PayId,
-                    order.OrderNo,
-                    rec.PayAmount,
-                    rec.PayType,
-                    rec.PayStatus,
-                    Paid = rec.PayStatus == "已支付"
-                }
-            });
+            var r = await _svc.CollectAsync(settleId, dto.Channel);
+            return Ok(new ApiResponse<SupplementCollectResultDto> { Data = r, Message = r.Message });
         }
-        catch (Exception ex)
-        {
-            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
-        }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>
-    /// 构建支付完成后回跳的前端地址（支付宝 return_url / 微信 H5 redirect_url），带上补缴单号。
-    /// 优先用「顾客当前访问源」，缺失时退回配置值兜底——理由见
-    /// <see cref="PayConfigService.BuildReturnUrlAsync"/>。
-    /// </summary>
-    private Task<string> BuildReturnUrl(int payId) => _payConfig.BuildReturnUrlAsync(ClientOrigin, $"supplement-pay/{payId}");
+    /// <summary>查询某张结算单的补缴收款状态（前台轮询</summary>
+    [HttpGet("settle/{settleId:int}/status")]
+    [Authorize(Policy = Policies.ReceptionOnly)]
+    public async Task<IActionResult> GetCollectStatus(int settleId)
+    {
+        try { return Ok(new ApiResponse<SupplementBillDto> { Data = await _svc.GetStatusBySettleAsync(settleId) }); }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
+    }
+
+    /// <summary>催缴：提醒顾客还有补缴款未缴清</summary>
+    [HttpPost("settle/{settleId:int}/remind")]
+    [Authorize(Policy = Policies.ReceptionOnly)]
+    public async Task<IActionResult> RemindSupplement(int settleId)
+    {
+        try
+        {
+            var amount = await _svc.RemindAsync(settleId);
+            return Ok(new ApiResponse<object> { Message = $"已提醒顾客补缴 ¥{amount:0.00}，顾客端消息中心会立刻出现未读提醒" });
+        }
+        catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
+    }
 }

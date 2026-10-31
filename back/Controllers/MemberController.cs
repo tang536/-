@@ -20,24 +20,23 @@ public class MemberController(MemberService svc, AlipayService alipay, PayConfig
 
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
+    /// <summary>浏览器此刻的访问源：优先前端拦截器注入的 X-Client-Origin，缺失时退回 Referer</summary>
+    private string? ClientOrigin =>
+        PayConfigService.ResolveClientOrigin(Request.Headers["X-Client-Origin"].ToString(), Request.Headers.Referer.ToString());
+
     /// <summary>会员中心：当前等级 + 可购买项 + 本人购买记录（顾客本人）</summary>
     [HttpGet("center")]
     [Authorize(Policy = Policies.CustomerOnly)]
-    public async Task<IActionResult> Center()
+    public async Task<IActionResult> GetMemberCenter()
     {
         try { return Ok(new ApiResponse<MemberCenterDto> { Data = await _svc.GetCenter(CurrentUserId) }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>
-    /// 发起会员购买支付：与租车订单同一套支付链路（支付宝/微信/银行卡）。
-    /// 生成 HY 开头交易号并暂存购买意向，返回收银台地址——
-    /// 支付宝配置齐全时跳官方收银台，否则（含微信/银行卡）走内置模拟收银台。
-    /// 真正的升级发生在支付入账时（回调/查单兜底，见 AlipayService.ApplyTradeResultAsync 的 HY 分支）。
-    /// </summary>
+    /// <summary>发起会员购买支付：与租车订单同一套支付链路（支付宝/微信/银行卡）</summary>
     [HttpPost("pay/create")]
     [Authorize(Policy = Policies.CustomerOnly)]
-    public async Task<IActionResult> CreatePay([FromBody] MemberBuyRequest dto)
+    public async Task<IActionResult> CreateMemberPay([FromBody] MemberBuyRequest dto)
     {
         try
         {
@@ -49,8 +48,12 @@ public class MemberController(MemberService svc, AlipayService alipay, PayConfig
             string payUrl;
             if (payType == "支付宝")
             {
+                // 回跳地址按顾客此刻的访问源生成（与订单/补缴同一口径）：
+                // 不传就只能用配置里的 pay.return_url，换 IP 或局域网访问时会被甩到另一个地址。
+                var returnUrl = await _payConfig.BuildReturnUrlAsync(ClientOrigin, "pay-result");
+                var notifyUrl = await _payConfig.BuildNotifyUrlAsync(ClientOrigin, "api/payment/alipay/notify");
                 // CreatePagePayAsync 内部自带三级降级：凭证不全时自动返回模拟收银台地址
-                payUrl = await _alipay.CreatePagePayAsync(tradeNo, $"会员购买 {dto.MemberLevel}", price);
+                payUrl = await _alipay.CreatePagePayAsync(tradeNo, $"会员购买 {dto.MemberLevel}", price, returnUrl, notifyUrl);
             }
             else
             {
@@ -74,15 +77,10 @@ public class MemberController(MemberService svc, AlipayService alipay, PayConfig
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>
-    /// 会员类型列表（管理员/前台）：member_rights 全量 + 每类型客户数。
-    /// 「会员管理」页只维护类型本身；顾客的等级调整在「客户管理」页进行——
-    /// 客户管理页对前台开放，其等级下拉依赖本接口做只读查找，因此这里必须放行前台
-    /// （类型的新增/编辑仍仅管理员，见下方 POST/PUT）。
-    /// </summary>
+    /// <summary>会员类型列表（管理员/前台）：member_rights 全量 + 每类型客户数</summary>
     [HttpGet("rights")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> Rights()
+    public async Task<IActionResult> QueryMemberRights()
     {
         try { return Ok(new ApiResponse<List<MemberRightsDto>> { Data = await _svc.GetRights() }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
@@ -91,7 +89,7 @@ public class MemberController(MemberService svc, AlipayService alipay, PayConfig
     /// <summary>新增会员类型（管理员）</summary>
     [HttpPost("rights")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> CreateRight([FromBody] MemberRightSaveRequest dto)
+    public async Task<IActionResult> AddMemberRight([FromBody] MemberRightSaveRequest dto)
     {
         try
         {
@@ -104,7 +102,7 @@ public class MemberController(MemberService svc, AlipayService alipay, PayConfig
     /// <summary>编辑会员类型（管理员）：3NF——折扣/购买价即改即生效，客户档案不存折扣、无需同步</summary>
     [HttpPut("rights/{id:int}")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> UpdateRight(int id, [FromBody] MemberRightSaveRequest dto)
+    public async Task<IActionResult> UpdateMemberRight(int id, [FromBody] MemberRightSaveRequest dto)
     {
         try
         {
@@ -117,10 +115,10 @@ public class MemberController(MemberService svc, AlipayService alipay, PayConfig
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>某客户的会员购买 / 调整记录（工作人员查看，来自操作日志；已注销客户同样可查）</summary>
+    /// <summary>某客户的会员购买 / 调整记录（工作人员查看，来自操作日志</summary>
     [HttpGet("history/{customerId:int}")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> History(int customerId)
+    public async Task<IActionResult> GetMemberHistory(int customerId)
     {
         try { return Ok(new ApiResponse<List<MemberPurchaseDto>> { Data = await _svc.GetMemberHistory(customerId) }); }
         catch (Exception ex) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }

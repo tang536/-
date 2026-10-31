@@ -26,13 +26,10 @@ public class PrintController(
     private bool IsCustomer => User.IsInRole(AuthService.RoleCustomer);
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
-    /// <summary>
-    /// 订单小票：随开单使用 → 管理员 / 前台（用况2、用况3）；
-    /// 顾客亦可自助打印**本人**订单小票（租车成功后自主打印），越权访问他人订单返回 403。
-    /// </summary>
+    /// <summary>订单小票：随开单使用 → 管理员 / 前台（用况2、用况3）</summary>
     [HttpGet("order/{orderId:int}")]
     [Authorize(Policy = Policies.AdminOrReceptionOrCustomer)]
-    public async Task<IActionResult> OrderReceipt(int orderId)
+    public async Task<IActionResult> PrintOrderReceipt(int orderId)
     {
         try
         {
@@ -48,10 +45,10 @@ public class PrintController(
         catch (Exception ex) { return BadRequest(new { message = ErrorText.Safe(ex) }); }
     }
 
-    /// <summary>结算单小票：随归还结算使用 → 前台 / 财务（图2-10 #13；管理员不参与资金办理）</summary>
+    /// <summary>结算单小票：随归还结算使用 → 前台 / 财务（图2-10 #13</summary>
     [HttpGet("settle/{settleId:int}")]
     [Authorize(Policy = Policies.ReceptionOrFinance)]
-    public async Task<IActionResult> SettleReceipt(int settleId)
+    public async Task<IActionResult> PrintSettleReceipt(int settleId)
     {
         try
         {
@@ -64,7 +61,7 @@ public class PrintController(
     /// <summary>营收报表导出：统计报表模块 → 仅财务（营收属资金口径，财务查看范围 > 管理员）</summary>
     [HttpGet("export/revenue")]
     [Authorize(Policy = Policies.FinanceOnly)]
-    public async Task<IActionResult> ExportRevenueCsv(DateTime? from, DateTime? to)
+    public async Task<IActionResult> ExportReport(DateTime? from, DateTime? to)
     {
         var dashboard = await _reportSvc.GetDashboard(from, to);
         var sb = new StringBuilder();
@@ -83,10 +80,10 @@ public class PrintController(
         return CsvFile(sb.ToString(), "营收报表");
     }
 
-    /// <summary>报表打印视图（系统操作 #25 printReport）：管理员 / 财务，返回带打印样式的 HTML。</summary>
+    /// <summary>报表打印视图（系统操作 #25 printReport）：管理员 / 财务，返回带打印样式的 HTML</summary>
     [HttpGet("report-view")]
     [Authorize(Policy = Policies.AdminOrFinance)]
-    public async Task<IActionResult> ReportView(DateTime? from = null, DateTime? to = null) =>
+    public async Task<IActionResult> PrintReport(DateTime? from = null, DateTime? to = null) =>
         Content(await _svc.ReportHtml(from, to), "text/html; charset=utf-8");
 
     /// <summary>订单明细导出：订单查询与打印 → 管理员 / 前台（用况2、用况3）</summary>

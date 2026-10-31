@@ -23,12 +23,12 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
     /// <summary>维保工单列表（管理员 / 前台）</summary>
     [HttpGet]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> GetAll(string? status) => Ok(new ApiResponse { Data = await _svc.GetAll(status) });
+    public async Task<IActionResult> QueryMaintenanceOrders(string? status) => Ok(new ApiResponse { Data = await _svc.GetAll(status) });
 
     /// <summary>创建维保工单：入参走 DTO，工单号由服务端生成</summary>
     [HttpPost]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> Create([FromBody] CreateReq req)
+    public async Task<IActionResult> CreateMaintainOrder([FromBody] CreateReq req)
     {
         try
         {
@@ -38,14 +38,10 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
         catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>
-    /// 上传故障现场照片（multipart/form-data，字段名 file）。
-    /// 返回 { url }，前端把它放进新建工单的 faultImage 字段即可随工单锁定存档。
-    /// 管理员与前台都可上传（前台上报故障时需要拍照定位）。
-    /// </summary>
+    /// <summary>上传故障现场照片（multipart/form-data，字段名 file）</summary>
     [HttpPost("upload")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> UploadImage(IFormFile? file)
+    public async Task<IActionResult> UploadMaintainImage(IFormFile? file)
     {
         try
         {
@@ -58,7 +54,7 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
     /// <summary>完成维保：入参为 { fee } 对象，避免裸数字绑定失败</summary>
     [HttpPut("{id:int}/complete")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> Complete(int id, [FromBody] CompleteReq req)
+    public async Task<IActionResult> CompleteMaintenance(int id, [FromBody] CompleteReq req)
     {
         try { await _svc.Complete(id, req.Fee); return Ok(new ApiResponse { Message = "工单已完成" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
@@ -67,16 +63,16 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
     /// <summary>编辑维保工单内容（故障类型 / 描述 / 现场照片），前台与管理员均可操作，已完 workpiece 工单不可编辑</summary>
     [HttpPut("{id:int}")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> Update(int id, [FromBody] UpdateReq req)
+    public async Task<IActionResult> UpdateMaintainOrder(int id, [FromBody] UpdateReq req)
     {
         try { await _svc.Update(id, req); return Ok(new ApiResponse { Message = "工单已更新" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
-    /// <summary>撤回维保工单：撤销该工单并释放车辆（仅当无其它未完成工单时置空闲）。前台与管理员均可操作。</summary>
+    /// <summary>撤回维保工单：撤销该工单并释放车辆（仅当无其它未完成工单时置空闲）</summary>
     [HttpPost("{id:int}/withdraw")]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> Withdraw(int id)
+    public async Task<IActionResult> WithdrawMaintenance(int id)
     {
         try { await _svc.Withdraw(id); return Ok(new ApiResponse { Message = "工单已撤回，车辆已释放" }); }
         catch (Exception ex) { return BadRequest(new ApiResponse { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
@@ -85,12 +81,12 @@ public class MaintenanceController(MaintenanceService svc) : ControllerBase
     /// <summary>报废记录（管理员 / 前台可查）</summary>
     [HttpGet("scraps")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> GetScraps() => Ok(new ApiResponse { Data = await _svc.GetScraps() });
+    public async Task<IActionResult> QueryScrapRecords() => Ok(new ApiResponse { Data = await _svc.GetScraps() });
 
     /// <summary>车辆报废：资产处置，仅管理员</summary>
     [HttpPost("scrap")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> Scrap([FromBody] ScrapRequest req)
+    public async Task<IActionResult> ScrapCar([FromBody] ScrapRequest req)
     {
         try
         {

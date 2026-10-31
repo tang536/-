@@ -6,21 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-/// <summary>
-/// 跨进程/跨实例的互斥锁，基于 MySQL 的 <c>GET_LOCK</c>。
-///
-/// 为什么需要它：定时任务（每日备份、待支付超时回收）是进程内计时器，
-/// 部署两台以上机器时每台都会各跑一遍，出现「同一时刻两份备份」「重复回收同一批订单」。
-/// 引入 Redis/ZooKeeper 对门店规模是过度设计，MySQL 命名锁是零新增组件的最小方案：
-/// 锁随连接存在，进程崩溃或连接断开时数据库自动释放，不存在死锁残留。
-///
-/// ⚠ 用一个**独占连接**取锁，而不是复用 EF 的连接池连接。
-/// 池化连接被「关闭」时只是还池，物理 TCP 还在，锁就跟着那条连接留在池里——
-/// 表现为「锁没人用却一直显示被占用，下一次抢锁永远失败」：线上备份任务每次都判定
-/// 「已由其他实例执行」直接跳过，`/var/backups/erental` 里一份 .erbk 都没有。
-/// 这里的做法是：锁连接强制 <c>Pooling=false</c>，用完销毁物理连接，服务端必然回收锁；
-/// 即使 RELEASE_LOCK 因网络问题没生效，断开连接也能兜住。
-/// </summary>
+/// <summary>跨进程/跨实例的互斥锁，基于 MySQL 的 GET_LOCK</summary>
 public partial class DbLockService(AppDbContext db, ILogger<DbLockService> logger)
 {
     private readonly AppDbContext _db = db;
@@ -30,13 +16,7 @@ public partial class DbLockService(AppDbContext db, ILogger<DbLockService> logge
     [GeneratedRegex("^[A-Za-z0-9_]{1,64}$")]
     private static partial Regex LockNamePattern();
 
-    /// <summary>
-    /// 尝试获取命名锁。
-    /// </summary>
-    /// <param name="name">锁名，仅允许字母数字下划线，如 <c>erental_backup</c></param>
-    /// <param name="wait">等待时长；传 <see cref="TimeSpan.Zero"/> 表示拿不到就立即返回</param>
-    /// <param name="ct">取消令牌（仅作用于建连与取锁本身，不影响锁的生命周期）</param>
-    /// <returns>拿到返回句柄（Dispose 时释放），拿不到返回 <c>null</c>（不是异常，正常的多实例让位）</returns>
+    /// <summary>尝试获取命名锁</summary>
     public async Task<DbLockHandle?> TryAcquireAsync(string name, TimeSpan wait, CancellationToken ct = default)
     {
         if (!LockNamePattern().IsMatch(name))
@@ -81,16 +61,7 @@ public partial class DbLockService(AppDbContext db, ILogger<DbLockService> logge
         }
     }
 
-    /// <summary>
-    /// 建一条**专供取锁**的连接：复制应用连接串，强制关掉连接池。
-    ///
-    /// 关池是关键——池化连接 Dispose 时只是还池，物理连接与它持有的命名锁都留在池里，
-    /// 于是锁被一条没人使用的连接长期占住（线上实测：备份每次判定「其他实例在执行」，备份文件一个都没生成）。
-    /// 关池后 Dispose 会真正断开 TCP，MySQL 随之释放该连接上的全部命名锁。
-    ///
-    /// 反射创建同类型连接是为了不在业务代码里强引用具体驱动（历史上有过 Pomelo → Oracle 的整体替换）；
-    /// 反射失败时退回 EF 的连接串与原连接，锁仍可用，但「释放后残留」只能靠 ReleaseAsync 里的强制断连兜底。
-    /// </summary>
+    /// <summary>建一条专供取锁的连接：复制应用连接串，强制关掉连接池</summary>
     private DbConnection CreateLockConnection()
     {
         var cs = _db.Database.GetConnectionString();
@@ -131,28 +102,14 @@ public partial class DbLockService(AppDbContext db, ILogger<DbLockService> logge
         return await cmd.ExecuteScalarAsync(ct);
     }
 
-    /// <summary>关连接但不让异常盖住原始错误；Pooling=false 时 Dispose 会真正断开 TCP</summary>
+    /// <summary>关连接但不让异常盖住原始错误</summary>
     private static async Task SafeCloseAsync(DbConnection conn)
     {
         try { await conn.CloseAsync(); } catch { /* 连接可能已断 */ }
         try { conn.Dispose(); } catch { /* 同上 */ }
     }
 
-    /// <summary>
-    /// 自检：这把锁此刻是否**仍由这条连接持有**。
-    ///
-    /// ── 为什么要这个（GET_LOCK 的固有短板）──
-    /// <c>GET_LOCK</c> 的生命周期绑在物理连接上，连接一断锁就自动释放。这是它「不会死锁」的优点，
-    /// 但反过来也意味着：长任务跑到中途，若连接被 MySQL 以 <c>wait_timeout</c> 掐掉，
-    /// 锁会在**持有者毫不知情**的情况下消失，另一个实例随即拿到锁、
-    /// 两个进程同时认为自己是主——正是「分布式锁依赖数据库连接」这条风险的落点。
-    /// 无法改掉这个语义（换了 Redis 也一样有租约过期的同类问题），能做的是让持有者
-    /// **主动发现**锁已丢失，而不是等到数据写重了才回头查。
-    ///
-    /// 判定用 <c>IS_USED_LOCK()</c> 返回的持有者连接 id 与本连接的
-    /// <c>CONNECTION_ID()</c> 比对：只判断「有没有人持有」是不够的，
-    /// 别人持有也是「有」，那种情况必须算丢失。
-    /// </summary>
+    /// <summary>自检：这把锁此刻是否仍由这条连接持有</summary>
     internal async Task<bool> StillHeldAsync(DbConnection conn, string name)
     {
         try
@@ -172,13 +129,7 @@ public partial class DbLockService(AppDbContext db, ILogger<DbLockService> logge
         }
     }
 
-    /// <summary>
-    /// 释放锁。
-    ///
-    /// 两道都要：先 RELEASE_LOCK 做干净归还（计数可能大于 1，循环减到 0），
-    /// 再销毁连接（<c>Pooling=false</c>，Dispose 即断开 TCP，MySQL 立刻回收该连接上的全部命名锁）。
-    /// 只做后者也能释放，但日志里分不清是正常归还还是异常兜底；只做前者则扛不住网络抖动。
-    /// </summary>
+    /// <summary>释放锁。 两道都要：先 RELEASE_LOCK 做干净归还（计数可能大于 1，循环减到 0）， 再销毁连接（Poo…</summary>
     internal async Task ReleaseAsync(DbConnection conn, string name)
     {
         try
@@ -210,10 +161,7 @@ public partial class DbLockService(AppDbContext db, ILogger<DbLockService> logge
     }
 }
 
-/// <summary>
-/// 持锁句柄：Dispose 即释放，配合 <c>await using</c> 使用。
-/// 句柄独占一条 <c>Pooling=false</c> 的连接，不会被连接池复用，也不会把锁遗留在池里。
-/// </summary>
+/// <summary>持锁句柄：Dispose 即释放，配合 await using 使用</summary>
 public sealed class DbLockHandle(DbLockService owner, DbConnection conn, string name)
     : IAsyncDisposable, IDisposable
 {
@@ -224,14 +172,7 @@ public sealed class DbLockHandle(DbLockService owner, DbConnection conn, string 
     /// <summary>锁名，便于日志标注</summary>
     public string Name { get; } = name;
 
-    /// <summary>
-    /// 自检：锁是否仍由本句柄的连接持有。
-    ///
-    /// 供**长任务**在关键节点（写库前、循环每一轮）调用。返回 false 说明连接已断、
-    /// 锁已被服务端释放并可能被另一实例取走，此时必须停止写库并让位——
-    /// 继续写就会出现两个实例同时处理同一批数据的局面。
-    /// 短任务（毫秒级）不必调用，句柄的 Dispose 已经做了释放校验。
-    /// </summary>
+    /// <summary>自检：锁是否仍由本句柄的连接持有</summary>
     public async Task<bool> IsHeldAsync()
     {
         if (_released) return false;

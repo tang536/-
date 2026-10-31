@@ -8,20 +8,7 @@ using Microsoft.Extensions.Options;
 
 namespace ERental.Services;
 
-/// <summary>
-/// AI 生图服务：把用户在页面里填的参数，「打补丁」到他自己的 ComfyUI 工作流模板上，
-/// 提交给本机 ComfyUI 桌面版执行，再把成品图下载落盘。
-///
-/// 设计要点：
-///  ① 模板即用户在桌面版里手工调好的工作流（Save 为 API Format 后放进
-///     back/ComfyWorkflows/*.json）——模型、采样器、放大、保存节点全部尊重用户原稿，
-///     本服务只按 class_type 精准改几个输入框，不重排图、不删节点；
-///  ② 补丁规则全部按 class_type 识别（CLIPTextEncode / EmptyLatentImage / KSampler /
-///     CheckpointLoaderSimple / UNETLoader / LoadImage），兼容 SD1.5 / SDXL / Flux /
-///     GGUF 各类主流图，不猜节点 id、不依赖特定模板；
-///  ③ 生成是长任务（本地 4GB 显卡一张图几十秒到几分钟），轮询 + 总体超时，
-///     失败时把 ComfyUI 自己的报错（缺模型/缺节点/OOM）原样带给用户。
-/// </summary>
+/// <summary>AI 生图服务：把用户在页面里填的参数，「打补丁」到他自己的 ComfyUI 工作流模板上， 提交给本机 Comfy…</summary>
 public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<AiImageOptions> opt, AiProgressTracker tracker, ILogger<AiImageService> logger)
 {
     private readonly ComfyUiClient _comfy = comfy;
@@ -31,10 +18,10 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
 
     private readonly AiImageOptions _opt = opt.Value;
 
-    /// <summary>模板目录绝对路径（不存在则返回配置值拼出的路径，由调用方判在否）。</summary>
+    /// <summary>模板目录绝对路径（不存在则返回配置值拼出的路径，由调用方判在否）</summary>
     private string TemplatesDir => Path.IsPathRooted(_opt.WorkflowsDir) ? _opt.WorkflowsDir : Path.Combine(Directory.GetCurrentDirectory(), _opt.WorkflowsDir);
 
-    /// <summary>可用模板名（.json 文件名不含扩展名，按名称排序）。</summary>
+    /// <summary>可用模板名（</summary>
     public List<string> ListTemplates()
     {
         var dir = TemplatesDir;
@@ -61,17 +48,12 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return status;
     }
 
-    /// <summary>
-    /// 生成模板的表单 schema：遍历模板里的每个节点，对照 ComfyUI object_info 的输入定义，
-    /// 把「可填的输入」逐个暴露成表单字段——模型、LoRA、步数、CFG、宽高、多区提示词、
-    /// shift、batch_size……工作流里有什么就填什么，与节点 id 无关。
-    /// ComfyUI 离线时 object_info 拿不到：字段仍在（默认值来自模板），只是下拉选项为空。
-    /// </summary>
+    /// <summary>生成模板的表单 schema：遍历模板里的每个节点，对照 ComfyUI object_info 的输入定义， 把「…</summary>
     public async Task<AiTemplateSchema> BuildSchemaAsync(string template, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(template)) throw new Exception("请选择工作流模板");
         var templatePath = Path.Combine(TemplatesDir, template + ".json");
-        if (!File.Exists(templatePath)) 
+        if (!File.Exists(templatePath))
             throw new Exception($"模板不存在：{template}.json（应放在 back/ComfyWorkflows/ 目录）");
 
         var graphNode = LoadTemplate(templatePath);
@@ -100,7 +82,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
 
             foreach (var section in new[] { "required", "optional" })
             {
-                if (!inputDef.TryGetProperty(section, out var sectionDef) || sectionDef.ValueKind != JsonValueKind.Object) 
+                if (!inputDef.TryGetProperty(section, out var sectionDef) || sectionDef.ValueKind != JsonValueKind.Object)
                     continue;
 
                 foreach (var prop in sectionDef.EnumerateObject())
@@ -203,14 +185,14 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return schema;
     }
 
-    /// <summary>字段标签：优先用用户给节点起的标题（「正向提示词」），否则「类名 · 输入名」。</summary>
+    /// <summary>字段标签：优先用用户给节点起的标题（「正向提示词」），否则「类名 · 输入名」</summary>
     private static string BuildLabel(string title, string classType, string field)
     {
         var baseName = !string.IsNullOrWhiteSpace(title) && title != classType ? title : classType;
         return $"{baseName} · {field}";
     }
 
-    /// <summary>按输入名归类（下拉按类名前缀归一化），前端按组分区渲染。</summary>
+    /// <summary>按输入名归类（下拉按类名前缀归一化），前端按组分区渲染</summary>
     private static string GroupOf(string classType, string field)
     {
         var f = field.ToLowerInvariant();
@@ -228,7 +210,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return f is "filename_prefix" ? "output" : "other";
     }
 
-    /// <summary>图里是否存在指定 class_type 的节点。</summary>
+    /// <summary>图里是否存在指定 class_type 的节点</summary>
     private static bool HasNodeType(JsonObject graph, string classType)
     {
         foreach (var (_, value) in graph)
@@ -238,7 +220,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return false;
     }
 
-    /// <summary>找第一个指定 class_type 的节点（同类多个时取图里顺序第一个）。</summary>
+    /// <summary>找第一个指定 class_type 的节点（同类多个时取图里顺序第一个）</summary>
     private static JsonObject? FindNode(JsonObject graph, string classType)
     {
         foreach (var (_, value) in graph)
@@ -248,11 +230,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return null;
     }
 
-    /// <summary>
-    /// 通用补丁通道：按 schema 的「节点id.输入名」键精准覆写模板输入值。
-    /// 类型按模板里该输入的现值推断（数字写数字、字符串写字符串、布尔写布尔），
-    /// 连线型输入（数组占位）不碰。前端把所有非空字段一次性放进 Inputs 字典。
-    /// </summary>
+    /// <summary>通用补丁通道：按 schema 的「节点id</summary>
     private static void ApplyInputs(JsonObject root, Dictionary<string, object?> inputs)
     {
         foreach (var (key, value) in inputs)
@@ -270,7 +248,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         }
     }
 
-    /// <summary>把页面传来的字符串/数字/JsonElement 转成与模板输入类型一致的 JSON 值。</summary>
+    /// <summary>把页面传来的字符串/数字/JsonElement 转成与模板输入类型一致的 JSON 值</summary>
     private static JsonNode? ConvertToJsonValue(object? value, JsonNode? current)
     {
         var s = value switch
@@ -317,7 +295,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return s;
     }
 
-    /// <summary>种子填 -1 = 随机：覆写后统一替换所有采样器的 seed/noise_seed。</summary>
+    /// <summary>种子填 -1 = 随机：覆写后统一替换所有采样器的 seed/noise_seed</summary>
     private static void RandomizeSeedIfRequested(JsonObject root)
     {
         foreach (var (_, value) in root)
@@ -332,7 +310,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         }
     }
 
-    /// <summary>补丁后回读（生效种子, 宽, 高）供结果回显——读图里的真实值，不猜。</summary>
+    /// <summary>补丁后回读（生效种子, 宽, 高）供结果回显——读图里的真实值，不猜</summary>
     private static (long seed, int width, int height) ReadBackPatchResults(JsonObject root)
     {
         var seed = Random.Shared.NextInt64(0, 2_000_000_000);
@@ -364,7 +342,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return (seed, width, height);
     }
 
-    /// <summary>从 JSON 值读整数（补丁写入的可能是 long/double，逐个尝试）。</summary>
+    /// <summary>从 JSON 值读整数（补丁写入的可能是 long/double，逐个尝试）</summary>
     private static int ReadInt(JsonNode? node)
     {
         if (node is JsonValue v)
@@ -376,9 +354,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return 0;
     }
 
-    /// <summary>
-    /// 生成入口。imgStream != null 时为图生图（先上传参考图，再补丁 LoadImage 节点）。
-    /// </summary>
+    /// <summary>生成入口</summary>
     public async Task<AiImageResult> GenerateAsync(AiImageRequest req, Stream? imgStream, string? imgFileName, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(req.Template)) throw new Exception("请选择工作流模板");
@@ -470,7 +446,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return new AiImageResult { Url = url, Seed = seed, Width = width, Height = height, ElapsedMs = sw.ElapsedMilliseconds };
     }
 
-    /// <summary>读取模板文件为可改写的 JSON 图。</summary>
+    /// <summary>读取模板文件为可改写的 JSON 图</summary>
     private static JsonNode LoadTemplate(string path)
     {
         var text = File.ReadAllText(path);
@@ -480,11 +456,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
             : node;
     }
 
-    /// <summary>
-    /// 按 class_type 打补丁，返回（生效种子, 宽, 高）。
-    /// 只改输入值，不动节点连接与拓扑——用户模板里接的放大、ControlNet、
-    /// 保存节点都会原样生效。
-    /// </summary>
+    /// <summary>按 class_type 打补丁，返回（生效种子, 宽, 高）</summary>
     private static (long seed, int width, int height) PatchGraph(JsonNode graph, AiImageRequest req, string? uploadedImage)
     {
         if (graph is not JsonObject root) throw new Exception("工作流图结构异常");
@@ -595,11 +567,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         return (Random.Shared.NextInt64(0, 2_000_000_000), finalW, finalH);
     }
 
-    /// <summary>
-    /// ① 模板格式体检（同步、无网络）：确认是 Save (API Format) 导出的工作流。
-    /// UI 格式导出带 nodes/links 数组，或节点带 widgets_values/pos 等界面字段；
-    /// 合法 API 格式的根就是 { 节点id: { class_type, inputs } }。
-    /// </summary>
+    /// <summary>① 模板格式体检（同步、无网络）：确认是 Save (API Format) 导出的工作流</summary>
     private static void ValidateTemplateShape(JsonNode graphNode)
     {
         if (graphNode is not JsonObject graph) throw new Exception("工作流图结构异常");
@@ -616,11 +584,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
         }
     }
 
-    /// <summary>
-    /// ② 节点注册检查：模板里每个 class_type 都要能在 ComfyUI 的 object_info 里查到，
-    /// 否则是缺自定义节点（ComfyUI 对这种情况同样 400）。查不到 class_type 时报中文提示；
-    /// object_info 端点整体不可用（老版本 ComfyUI）时静默跳过。
-    /// </summary>
+    /// <summary>② 节点注册检查：模板里每个 class_type 都要能在 ComfyUI 的 object_info 里查到， …</summary>
     private async Task CheckNodeTypesAsync(JsonObject graph, Dictionary<string, JsonElement?> infos, CancellationToken ct)
     {
         if (await _comfy.GetNodeInfoAsync("KSampler", ct) is null) return;
@@ -643,12 +607,7 @@ public class AiImageService(ComfyUiClient comfy, ImageStorage images, IOptions<A
                 "这些是 ComfyUI 自定义节点，请先在 ComfyUI Manager 中安装对应插件并重启 ComfyUI");
     }
 
-    /// <summary>
-    /// ③ 输入与取值预检（打补丁之后）：对照 object_info 的 required 定义，把 ComfyUI
-    /// 会在 400 里抱怨的问题提前用中文说清楚——必填输入缺失、下拉类输入取值不在
-    /// 可选列表（模型文件名写错/没下载，ComfyUI 报 value_not_in_list，最常见 400）。
-    /// 与 <see cref="CheckNodeTypesAsync"/> 共用 object_info 缓存，不重复请求。
-    /// </summary>
+    /// <summary>③ 输入与取值预检（打补丁之后）：对照 object_info 的 required 定义，把 ComfyUI 会在…</summary>
     private async Task PreflightAsync(JsonObject graph, Dictionary<string, JsonElement?> infos,
         HashSet<string>? trustedFiles, CancellationToken ct)
     {

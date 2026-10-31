@@ -2,17 +2,13 @@
 
 namespace ERental.Services;
 
-/// <summary>
-/// 三步都是幂等的：<c>EnsureCreated</c> 只在库不存在时建表，<c>EnsureSchemaUpgrades</c> 按索引/约束名
-/// 判断是否已存在，<c>Seed</c> 按主键/唯一键逐个补种。因此重复执行不会产生重复数据，也不会覆盖
-/// 管理员已经改过的配置项。
-/// </summary>
+/// <summary>三步都是幂等的：EnsureCreated 只在库不存在时建表，EnsureSchemaUpgrades 按索引/约…</summary>
 public sealed class SystemStartupService(
     AppDbContext db,
     IConfiguration config,
     ILogger<SystemStartupService> logger)
 {
-    /// <summary>执行启动序列，返回本次启动后的规模快照（用于日志与健康检查）。</summary>
+    /// <summary>执行启动序列，返回本次启动后的规模快照（用于日志与健康检查）</summary>
     public StartupReport Startup()
     {
         var tableCount = db.Model.GetEntityTypes().Count();
@@ -35,5 +31,5 @@ public sealed class SystemStartupService(
     }
 }
 
-/// <summary>startup() 的输出：本次启动后系统应具备的规模基线。</summary>
+/// <summary>startup() 的输出：本次启动后系统应具备的规模基线</summary>
 public sealed record StartupReport(int TableCount, int ConfigCount, int AccountCount, int MemberLevelCount);

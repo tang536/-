@@ -6,12 +6,10 @@ namespace ERental.Middleware;
 
 /// <summary>
 /// 单点登录校验（同一账号不允许同时登录）。
-///
 /// 位置很关键：必须挂在 <c>UseAuthentication()</c> **之后**、<c>UseAuthorization()</c> **之前**。
 ///   · 之前——JWT 中间件还没把 token 解析成 ClaimsPrincipal，读不到 sid 声明；
 ///   · 授权之前——本中间件对所有受保护接口统一生效，16 个控制器无需逐个改造，
 ///     将来新增的控制器也自动受保护，不会出现「新加的接口忘了加单点登录校验」的漏洞。
-///
 /// 判定规则：已通过 JWT 认证的请求，其 sid 必须是该账号在 <see cref="SessionRegistry"/> 里的
 /// 当前会话，否则返回 401（前端据此清理登录态并提示「已在其他设备登录」）。
 /// 匿名请求（登录、注册、支付回跳页、静态资源）没有 ClaimsPrincipal，直接放行。

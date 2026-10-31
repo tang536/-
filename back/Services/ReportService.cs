@@ -5,12 +5,12 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-public class ReportService(AppDbContext db, MessageService messages)
+public class ReportService(AppDbContext db, MessageService messages) : INotificationSource
 {
     private readonly AppDbContext _db = db;
     private readonly MessageService _messages = messages;
 
-    /// <summary>统计看板。from/to 为可选时间段：传了只统计区间内，不传统计全部（累计口径）</summary>
+    /// <summary>统计看板</summary>
     public async Task<VisualReport> GetDashboard(DateTime? from = null, DateTime? to = null)
     {
         var today = DateTime.Now.Date;
@@ -109,12 +109,7 @@ public class ReportService(AppDbContext db, MessageService messages)
         };
     }
 
-    /// <summary>
-    /// 计算管理员端专属的运营指标。
-    ///
-    /// 与财务指标的边界：这里只回答「车队转得动不动、订单来不来得及」，
-    /// 不涉及金额归属、应收应付、对账差异——那些归财务端。
-    /// </summary>
+    /// <summary>计算管理员端专属的运营指标</summary>
     private static async Task<OperationMetrics> ComputeOperationMetrics(IQueryable<RentalOrder> orderQ, VisualReport report)
     {
         // ⚠️ 必须取回内存再算：DateTime 相减在 EF 里翻译不了，
@@ -170,19 +165,7 @@ public class ReportService(AppDbContext db, MessageService messages)
     public const string DimOrder = "order";
     public const string DimMerchant = "merchant";
 
-    /// <summary>
-    /// 财务下钻：按「时间 / 订单 / 商户」三个维度拆开看金额构成与逐笔明细。
-    ///
-    /// 为什么财务需要它：原来的报表只给到「区间营收 ¥X」这一个合计数，
-    /// 财务发现账不平（对账差异 ≠ 0）时无法定位差在哪一天、哪一单、哪个收单渠道。
-    /// 下钻把合计数还原成可核对的明细行，对账差异才能落到具体对象上。
-    ///
-    /// ⚠️ EF Core 铁律（本项目踩过）：DateTime 分组 / DateTime 相减**不能写进 LINQ**，
-    /// 会抛 No coercion operator... 直接 500。故统一先 ToListAsync() 取回内存再分组。
-    /// </summary>
-    /// <param name="from">统计起始日（含）；传 null 表示不限制起点</param>
-    /// <param name="to">统计截止日（含当天）；右端点取次日 00:00，避免漏掉截止日当天</param>
-    /// <param name="dim">time=按日 / order=按订单 / merchant=按收单渠道</param>
+    /// <summary>财务下钻：按「时间 / 订单 / 商户」三个维度拆开看金额构成与逐笔明细</summary>
     public async Task<FinanceDrillDto> GetFinanceDrillAsync(DateTime? from, DateTime? to, string? dim)
     {
         var dimension = (dim ?? DimTime).Trim().ToLowerInvariant();
@@ -341,22 +324,19 @@ public class ReportService(AppDbContext db, MessageService messages)
         return dto;
     }
 
-    /// <summary>某笔订单的收款聚合。仅为避免在 Dictionary 里用元组（元组元素名会退化）。</summary>
+    /// <summary>某笔订单的收款聚合</summary>
     private sealed class PayAgg
     {
         public decimal Received { get; init; }
         public decimal Refund { get; init; }
     }
 
-    /// <summary>
-    /// 通知中心数据（需求 4.2.4 / 6.1）。
-    ///
-    /// 先把实时预警幂等落库到通用 message 表（receiver_type='staff'），
-    /// 再从 message 表读取该员工的全部消息（含历史已读、以及删除后的结果），
-    /// 已读状态直接落在消息行，与顾客消息共用同一张表、同一套已读语义。
-    /// </summary>
-    public async Task<List<NotificationDto>> GetNotifications(int userId)
+    /// <summary>把员工侧的实时预警同步进通用 message 表（需求 4</summary>
+    public async Task SyncAsync(string receiverType, int receiverId)
     {
+        // 实时预警只对员工有意义：顾客消息来自业务事件（退款 / 补缴），不靠状态推导
+        if (receiverType != "staff") return;
+
         // ① 实时预警 → 幂等 upsert 进通用消息表（同一条业务预警对同一员工只保留一行）
         var alerts = await BuildNotifications();
         var liveGlobal = new HashSet<string>();
@@ -367,7 +347,7 @@ public class ReportService(AppDbContext db, MessageService messages)
             if (GlobalAlertTypes.Contains(refType)) liveGlobal.Add(refType);
             // keepReadStateOnChange: 实时预警的标题含「已逾期 N 小时」这类会自己走的时长，
             // 不能让文案一变就把员工刚读过的通知重新标成未读。
-            await _messages.SendAsync("staff", userId, refType, refId,
+            await _messages.SendAsync("staff", receiverId, refType, refId,
                 a.Title, a.Description, a.Level, a.Link, keepReadStateOnChange: true);
         }
 
@@ -381,7 +361,7 @@ public class ReportService(AppDbContext db, MessageService messages)
         //    只取主键与业务键两列：清理只需要判定「哪些行已经没有对应预警」，
         //    把整行（含 content 正文）读进来再丢掉是白搬一趟。
         var realtimeRows = await _db.Messages.AsNoTracking()
-            .Where(m => m.ReceiverType == "staff" && m.ReceiverId == userId
+            .Where(m => m.ReceiverType == "staff" && m.ReceiverId == receiverId
                         && RealtimeAlertTypes.Contains(m.RefType!))
             .Select(m => new { m.MessageId, m.RefType, m.RefId })
             .ToListAsync();
@@ -396,63 +376,15 @@ public class ReportService(AppDbContext db, MessageService messages)
             // 一条 DELETE ... IN (...) 结束，不再逐条挂到跟踪器上再 SaveChanges
             await _db.Messages.Where(m => deadIds.Contains(m.MessageId)).ExecuteDeleteAsync();
         }
-
-        // ③ 从 message 表读取（含历史已读状态），按时间倒序。
-        //    已忽略（软删）的行不返回——员工「删除」通知走 dismissed_at，原因见 MessageService.DismissAsync。
-        //
-        //    Take 上限：通知面板每 60 秒被轮询一次，而这张表只增不减（已读行留着、软删行留着），
-        //    没有上限的话单次响应会随经营时间线性变胖。200 条已远超一个员工需要回看的范围，
-        //    真要找更早的走关键词检索，而不是把整表铺在首屏。
-        //    Category 由本地方法推导，无法进 SQL，所以先投影列、再在内存里组装 DTO。
-        var rows = await _db.Messages.AsNoTracking()
-            .Where(m => m.ReceiverType == "staff" && m.ReceiverId == userId && m.DismissedAt == null)
-            .OrderByDescending(m => m.CreatedAt)
-            .Take(MaxNotifications)
-            .Select(m => new
-            {
-                m.MessageId,
-                m.RefType,
-                m.RefId,
-                m.Level,
-                m.Title,
-                m.Content,
-                m.CreatedAt,
-                m.Link,
-                m.IsRead,
-                m.ReadAt
-            })
-            .ToListAsync();
-
-        return rows.Select(m => new NotificationDto
-        {
-            MessageId = m.MessageId,
-            Id = string.IsNullOrEmpty(m.RefId) ? m.RefType : $"{m.RefType}-{m.RefId}",
-            Level = m.Level ?? "info",
-            Category = CategoryOf(m.RefType),
-            Title = m.Title,
-            Description = m.Content,
-            Time = m.CreatedAt,
-            Link = m.Link,
-            IsRead = m.IsRead,
-            ReadTime = m.ReadAt
-        }).ToList();
     }
 
-    /// <summary>全局聚合类预警的 ref_id 固定值（不能为空：唯一索引里 NULL 互不相等，会反复插新行）。</summary>
+    /// <summary>全局聚合类预警的 ref_id 固定值（不能为空：唯一索引里 NULL 互不相等，会反复插新行）</summary>
     private const string GlobalRefId = "global";
 
-    /// <summary>通知面板单次最多返回的条数，理由见 <see cref="GetNotifications"/> 第 ③ 步。</summary>
-    private const int MaxNotifications = 200;
-
-    /// <summary>message 行业务键：与前端拿到的 Id（ref_type-ref_id）保持同一套拼法。</summary>
+    /// <summary>message 行业务键：与前端拿到的 Id（ref_type-ref_id）保持同一套拼法</summary>
     private static string AlertKey(string? refType, string? refId) => $"{refType}-{refId ?? string.Empty}";
 
-    /// <summary>
-    /// 本轮「应当存在」的实时预警键集合。
-    ///
-    /// 单独查一次，而不是复用 <see cref="BuildNotifications"/> 的结果：后者为了界面性能做了 Take(20)，
-    /// 拿它当清理依据会把第 21 条之后的预警每轮删掉再重建（未读状态来回跳）。
-    /// </summary>
+    /// <summary>本轮「应当存在」的实时预警键集合</summary>
     private async Task<HashSet<string>> AlertLiveKeysAsync(HashSet<string> liveGlobal)
     {
         var now = DateTime.Now;
@@ -478,38 +410,11 @@ public class ReportService(AppDbContext db, MessageService messages)
 
     private static readonly HashSet<string> GlobalAlertTypes = ["maintenance", "maintain_due", "profile_incomplete"];
 
-    /// <summary>由实时状态推导的预警类型：都随业务状态变化而失效，需要按轮次清理。</summary>
+    /// <summary>由实时状态推导的预警类型：都随业务状态变化而失效，需要按轮次清理</summary>
     private static readonly HashSet<string> RealtimeAlertTypes =
         ["overdue", "expiring", "pending", "maintenance", "maintain_due", "profile_incomplete"];
 
-    /// <summary>
-    /// 标记已读：ids 为消息主键（message_id）列表；为空表示「全部标记已读」。
-    /// 直接更新 message 表中的 is_read / read_at，按 (staff, userId) 限定归属。
-    /// </summary>
-    public async Task MarkRead(int userId, List<int>? ids)
-    {
-        var q = _db.Messages.Where(m => m.ReceiverType == "staff"
-                                       && m.ReceiverId == userId
-                                       && !m.IsRead);
-        if (ids != null && ids.Count > 0)
-            q = q.Where(m => ids.Contains(m.MessageId));
-
-        // 与 MessageService.MarkReadAsync 同一条路径：单条 UPDATE，不把行（含正文）读进内存
-        var now = DateTime.Now;
-        await q.ExecuteUpdateAsync(s => s
-            .SetProperty(m => m.IsRead, true)
-            .SetProperty(m => m.ReadAt, now));
-    }
-
-    /// <summary>
-    /// 删除（忽略）通知：ids 为空表示「忽略全部」。返回实际忽略条数。
-    /// 员工预警由实时状态推导、每次查询都幂等重建，硬删会被下一次拉取复活，
-    /// 因此软删（dismissed_at）；读取端过滤已忽略行，预警失效时行被硬删、标记清除。
-    /// </summary>
-    public async Task<int> Dismiss(int userId, List<int>? ids) =>
-        await _messages.DismissAsync("staff", userId, ids);
-
-    /// <summary>把预警的稳定字符串 ID（overdue-12 / maintain-due 等）拆成 (ref_type, ref_id)。</summary>
+    /// <summary>把预警的稳定字符串 ID（overdue-12 / maintain-due 等）拆成 (ref_type, ref…</summary>
     private static (string RefType, string RefId) SplitAlertId(string id) => id switch
     {
         /*
@@ -533,22 +438,7 @@ public class ReportService(AppDbContext db, MessageService messages)
         return i > 0 ? (id[..i], id[(i + 1)..]) : (id, "");
     }
 
-    /// <summary>ref_type → 前端展示用的分类名（message 表不重复存中文分类）。</summary>
-    private static string CategoryOf(string refType) => refType switch
-    {
-        "overdue" => "逾期预警",
-        "expiring" => "到期提醒",
-        "pending" => "待支付",
-        "maintenance" => "维保提醒",
-        "profile_incomplete" => "资料待完善",
-        "maintain_due" => "保养提醒",
-        "refund" => "退款通知",
-        "supplement" => "补缴通知",
-        "supplement_paid" => "补缴成功",
-        _ => "通知"
-    };
-
-    /// <summary>实时计算通知条目（不含已读状态，已读由 GetNotifications 合并）</summary>
+    /// <summary>实时计算通知条目（不含已读状态，已读由 MessageService 读表时合并）</summary>
     private async Task<List<NotificationDto>> BuildNotifications()
     {
         var list = new List<NotificationDto>();
@@ -685,15 +575,10 @@ public class ReportService(AppDbContext db, MessageService messages)
         return [.. list.OrderByDescending(n => n.Time)];
     }
 
-    /// <summary>
-    /// 保养到期车辆清单（需求 4.2.6）。口径：以每台车「最近一次已完成维保」为基准，
-    /// 从未维保过的以购入时间为基准，达到 maintain_cycle_days（默认 90，设为 0 关闭）即列入。
-    /// </summary>
-    /// <remarks>
+    /// <summary>保养到期车辆清单（需求 4</summary>
     /// 工作台预警卡要的是「有几台」，通知列表要的是「哪几台」——同一套判定逻辑抽在这里，
     /// 两处调用同一个方法，避免卡片上是 3 台、点进列表只剩 2 台的打脸情况。
     /// 报废车辆不参与保养巡检。
-    /// </remarks>
     private async Task<List<(string VehicleNo, int Days)>> GetMaintenanceDueAsync(DateTime now)
     {
         var cycle = ConfigValue.Int(await _db.SystemConfigs.ToListAsync(), "maintain_cycle_days", 90);
@@ -720,16 +605,7 @@ public class ReportService(AppDbContext db, MessageService messages)
 
     // ===== 车辆运营统计 / 维保费用统计（需求 4.2.7）=====
 
-    /// <summary>
-    /// 车辆运营统计（需求 4.2.7）：每台车的累计租赁时长、累计营收、维保次数与维保费用，
-    /// 用来识别高价值车辆与闲置车辆。支持按车辆编号 / 品牌关键字与车辆状态筛选。
-    ///
-    /// 与报表其余部分同一条铁律：DateTime 相减在 EF 里翻译不了，必须先取回内存再算。
-    /// </summary>
-    /// <param name="from">统计起始日（含）；不传表示不限制起点（累计口径）</param>
-    /// <param name="to">统计截止日（含当天）；右端点取次日 00:00，避免漏掉截止日当天</param>
-    /// <param name="keyword">车辆编号 / 品牌模糊匹配；为空表示不限</param>
-    /// <param name="status">车辆状态精确匹配（空闲 / 在租 / 维保 / 报废）；为空表示不限</param>
+    /// <summary>车辆运营统计（需求 4</summary>
     public async Task<VehicleStatDto> GetVehicleStatsAsync(DateTime? from, DateTime? to, string? keyword, string? status)
     {
         var rangeFrom = from?.Date;
@@ -824,14 +700,7 @@ public class ReportService(AppDbContext db, MessageService messages)
         };
     }
 
-    /// <summary>
-    /// 维保费用统计（需求 4.2.7）：月度维保总费用、故障类型费用分布、单台车辆维保费用排行。
-    ///
-    /// 费用一律只统计「已完成」工单——未完工工单的费用还没定，先计入会让月度趋势先虚高再回落；
-    /// 工单条数则按全部状态计，因为「这类毛病正在发生」本身就是要看的信号。
-    /// </summary>
-    /// <param name="from">统计起始日（含）；不传表示不限制起点</param>
-    /// <param name="to">统计截止日（含当天）；右端点取次日 00:00</param>
+    /// <summary>维保费用统计（需求 4</summary>
     public async Task<MaintenanceStatDto> GetMaintenanceStatsAsync(DateTime? from, DateTime? to)
     {
         var rangeFrom = from?.Date;
@@ -918,11 +787,7 @@ public class ReportService(AppDbContext db, MessageService messages)
         };
     }
 
-    /// <summary>
-    /// 按天铺满营收 / 订单趋势：**两条 GROUP BY 查询**覆盖整个区间，
-    /// 而不是「循环每一天各查一次」（31 天区间原本要 62 条 SQL）。
-    /// 聚合在库里完成，返回的日期集合再与区间对齐补 0——没有数据的日期仍要有点，否则折线会把缺口连起来。
-    /// </summary>
+    /// <summary>按天铺满营收 / 订单趋势：两条 GROUP BY 查询覆盖整个区间， 而不是「循环每一天各查一次」（31 天区间原…</summary>
     private async Task FillDailyTrendAsync(
         DateTime start, DateTime end,
         Dictionary<string, decimal> revenue, Dictionary<string, int> orders)
@@ -950,9 +815,7 @@ public class ReportService(AppDbContext db, MessageService messages)
         }
     }
 
-    /// <summary>
-    /// 按月铺满趋势（长区间用）：同样只用两条 GROUP BY，按 (年, 月) 分组后在内存里对齐到月份序列。
-    /// </summary>
+    /// <summary>按月铺满趋势（长区间用）：同样只用两条 GROUP BY，按 (年, 月) 分组后在内存里对齐到月份序列</summary>
     private async Task FillMonthlyTrendAsync(
         DateTime start, DateTime end,
         Dictionary<string, decimal> revenue, Dictionary<string, int> orders)

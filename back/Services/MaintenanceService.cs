@@ -143,11 +143,7 @@ public class MaintenanceService(AppDbContext db, ImageStorage images)
         }
     }
 
-    /// <summary>
-    /// 编辑维保工单内容（故障类型 / 描述 / 现场照片）。
-    /// 已完成的工单不可再编辑——维修费与完工时间已在结算凭据里固化为追溯依据。
-    /// 用一条带条件 UPDATE 保证「已完结」工单即便被并发点中也不会被改掉。
-    /// </summary>
+    /// <summary>编辑维保工单内容（故障类型 / 描述 / 现场照片）</summary>
     public async Task Update(int id, UpdateMaintenanceRequest req)
     {
         var m = await _db.MaintenanceOrders.AsNoTracking()
@@ -169,11 +165,7 @@ public class MaintenanceService(AppDbContext db, ImageStorage images)
         if (changed == 0) throw new Exception("该工单已不可编辑");
     }
 
-    /// <summary>
-    /// 撤回维保工单：把工单置为「已撤回」终态，并在「该车辆没有其它未完成工单」时把车从「维保」释放回「空闲」。
-    /// 与完工放行共用同一套并发闸门（TryReleaseAfterMaintenanceAsync 会排除当前工单自身），
-    /// 避免「撤回一张、却把同车另一张在修工单的车也误放回可租」。
-    /// </summary>
+    /// <summary>撤回维保工单：把工单置为「已撤回」终态，并在「该车辆没有其它未完成工单」时把车从「维保」释放回「空闲」</summary>
     public async Task Withdraw(int id)
     {
         var m = await _db.MaintenanceOrders.AsNoTracking()

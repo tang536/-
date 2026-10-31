@@ -10,7 +10,7 @@ public class UserService(AppDbContext db, SessionRegistry sessions)
     private readonly AppDbContext _db = db;
     private readonly SessionRegistry _sessions = sessions;
 
-    /// <summary>密码长度上限：与登录列 VARCHAR(100) 保持足够余量。</summary>
+    /// <summary>密码长度上限：与登录列 VARCHAR(100) 保持足够余量</summary>
     private const int MaxPasswordLength = 50;
 
     public async Task<List<UserDto>> GetAllStaff()
@@ -27,7 +27,6 @@ public class UserService(AppDbContext db, SessionRegistry sessions)
                 LoginFailCount = u.LoginFailCount
             }).ToListAsync();
     }
-
 
     public async Task<UserDto> CreateStaff(CreateUserDto dto)
     {
@@ -95,14 +94,7 @@ public class UserService(AppDbContext db, SessionRegistry sessions)
         await _sessions.RevokeAllAsync(user.UserType, id, "账号已被删除，登录状态已失效");
     }
 
-    /// <summary>
-    /// 最后一名管理员保护（《唐荣强》3.8「系统中的最后一名管理员不允许注销」）。
-    ///
-    /// 为什么需要它：管理员账号不出现在「账号管理」列表里（<see cref="GetAllStaff"/> 过滤掉管理员），
-    /// 前端也没有创建管理员的入口，正常情况下管理员既删不掉也停不了；但接口本身没有拦，
-    /// 直接 PUT /api/user/1 {"userStatus":0} 就能把唯一的管理员停用——系统随即再没有人能进后台，
-    /// 只能改库恢复。这里把「启用中的管理员只剩一名」作为硬闸门，删除与停用都要过。
-    /// </summary>
+    /// <summary>最后一名管理员保护（《唐荣强》3</summary>
     private async Task EnsureNotLastActiveAdmin(SystemUser user, string action)
     {
         var roleName = await _db.Roles.Where(r => r.RoleId == user.RoleId)

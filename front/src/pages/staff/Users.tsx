@@ -80,7 +80,10 @@ export default function Users() {
 
   const handleToggle = async (u: StaffUser) => {
     try {
-      await userApi.update(u.userId, { userStatus: u.userStatus === 1 ? 0 : 1 })
+      // 停用走专用端点（系统操作「停用员工账号」）：后端会顺手吊销该账号在线会话；
+      // 启用仍复用编辑端点，只把状态位改回 1。
+      if (u.userStatus === 1) await userApi.disable(u.userId)
+      else await userApi.update(u.userId, { userStatus: 1 })
       toast(`账号 ${u.loginAccount} 已${u.userStatus === 1 ? '禁用' : '启用'}`, 'success')
       load()
     } catch (e: any) { toast(e?.message || '操作失败', 'error') }

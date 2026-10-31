@@ -7,20 +7,10 @@ namespace ERental.Data;
 
 public static class DbInitializer
 {
-    /// <summary>
-    /// 建表：库不存在时按实体映射一次性建好全部表；库已存在则原样返回，不删表、不改已有结构。
-    /// 后续的结构演进交给 <see cref="EnsureSchemaUpgrades"/>，两者都不依赖数据库里是否已有数据。
-    /// </summary>
+    /// <summary>建表：库不存在时按实体映射一次性建好全部表</summary>
     public static void EnsureDatabase(AppDbContext db) => db.Database.EnsureCreated();
 
-    /// <summary>
-    /// 幂等的结构升级：保证「老数据库」也能平滑支持新功能。
-    ///
-    /// ⚠️ 必须「先做完所有结构变更(DDL)，再做数据回填(EF 查询)」，顺序错了后端会启动失败：
-    /// EF 查询按实体模型投影出**全部列**，老库只要缺其中一列就抛
-    /// "Unknown column 'c.xxx' in 'field list'"，而本方法跑在 Program.cs 启动路径上。
-    /// 新增升级项时请按这个两阶段划分对号入座。
-    /// </summary>
+    /// <summary>幂等的结构升级：保证「老数据库」也能平滑支持新功能</summary>
     public static void EnsureSchemaUpgrades(AppDbContext db)
     {
         // ── 第一阶段：结构变更（DDL）。全段不经过 EF 查询，
@@ -165,7 +155,6 @@ public static class DbInitializer
         // 无条件幂等：只补 NULL/空串，不动已有值
         db.Database.ExecuteSqlRaw("UPDATE `vehicle` SET `qr_code` = CONCAT('ERENTAL:VEHICLE:', `vehicle_id`) " + "WHERE `qr_code` IS NULL OR `qr_code` = '';");
 
-
         // 支付记录业务类型 + 独立交易号：支持「逾期线上补缴」——补缴单是同一订单上的第二条
         // 支付记录（biz_type='supplement'），且必须拥有全局唯一的 out_trade_no（通道拒绝重复订单号）。
         if (!ColumnExists(db, "payment_record", "biz_type"))
@@ -238,7 +227,7 @@ public static class DbInitializer
             db.SaveChanges();
         }
         db.SaveChanges();
-        
+
         EnsureIndex(db, "rental_order", "idx_create_time", "`create_time`");
         EnsureIndex(db, "rental_order", "idx_lease_end", "`lease_end`");
         EnsureIndex(db, "rental_order", "idx_order_status", "`order_status`");
@@ -251,11 +240,11 @@ public static class DbInitializer
 
         // ── 并发控制：数据库层的第二道防线（应用层行锁见 Services/DbRowLock.cs）──
         EnsureConcurrencyConstraints(db);
-        
+
         EnsureSchemaIndexes(db);
     }
 
-    
+
     private static void EnsureSchemaIndexes(AppDbContext db)
     {
         // ① 唯一键：与 database/schema.sql 的声明逐条对应
@@ -269,7 +258,7 @@ public static class DbInitializer
         EnsureUniqueIndex(db, "check_report", "uk_report_no", "`report_no`", "盘点报表号唯一");
 
         // ② 复合索引：归还/占用的核心 SQL 都是「按车 + 按状态」二维过滤
-        
+
         EnsureCompositeIndex(db, "rental_order", "idx_vehicle_status", "`vehicle_id`, `order_status`", "车辆占用/归还判定：按车 + 按状态");
         // 维保完工放行同理：WHERE vehicle_id=? AND work_order_id<>? AND status<>'已完成'
         EnsureCompositeIndex(db, "maintenance_order", "idx_vehicle_status", "`vehicle_id`, `status`", "维保放行判定：按车 + 按工单状态");
@@ -284,7 +273,7 @@ public static class DbInitializer
         //    关键字是 LIKE '%kw%'，内置索引一概帮不上，那种查询只能靠限制时间范围。
         EnsureCompositeIndex(db, "system_log", "idx_log_module_time", "`operate_module`, `operate_time`", "操作日志：按模块 + 时间倒序");
     }
-    
+
     private static void EnsureMessageContentWidth(AppDbContext db)
     {
         if (!TableExists(db, "message")) return;
@@ -303,7 +292,7 @@ public static class DbInitializer
         db.Database.ExecuteSqlRaw("ALTER TABLE `message` MODIFY COLUMN `content` VARCHAR(500) NOT NULL COMMENT '消息正文';");
         Console.WriteLine($"[schema] message.content 已由 {current} 收窄为 varchar(500)（现有最长 {longest} 字）");
     }
-    
+
     /// 高并发场景的数据库约束（幂等，可反复执行）。
     private static void EnsureConcurrencyConstraints(AppDbContext db)
     {
@@ -322,17 +311,13 @@ public static class DbInitializer
         EnsureCompositeIndex(db, "payment_record", "idx_order_status", "`order_id`, `pay_status`", purpose: "支付回调定位本次支付记录");
     }
 
-    /// <summary>MySQL 标识符引号（反引号）。用转义写法，源码里不出现裸反引号字符。</summary>
+    /// <summary>MySQL 标识符引号（反引号）</summary>
     private const string Tick = "\u0060";
 
-    /// <summary>把表名/索引名/约束名/列名包成 MySQL 反引号标识符。</summary>
+    /// <summary>把表名/索引名/约束名/列名包成 MySQL 反引号标识符</summary>
     private static string Q(string identifier) => string.Concat(Tick, identifier, Tick);
 
-    /// <summary>
-    /// 建唯一索引；若存量数据已有重复，跳过并打印冲突明细。
-    /// 为什么不是先清洗数据再建：重复的结算单意味着历史账目已经出问题，
-    /// 删哪一条都是财务决策，必须交给人看，程序不能替用户选择。
-    /// </summary>
+    /// <summary>建唯一索引</summary>
     private static void EnsureUniqueIndex(
         AppDbContext db, string table, string index, string columns, string purpose)
     {
@@ -359,7 +344,7 @@ public static class DbInitializer
         }
     }
 
-    /// <summary>建复合索引（普通索引，幂等）。</summary>
+    /// <summary>建复合索引（普通索引，幂等）</summary>
     private static void EnsureCompositeIndex(
         AppDbContext db, string table, string index, string columns, string purpose)
     {
@@ -377,10 +362,7 @@ public static class DbInitializer
         }
     }
 
-    /// <summary>
-    /// 建 CHECK 约束。MySQL 8.0.16 起才真正强制执行（更早版本语法接受但忽略），
-    /// 故先探测版本；约束已存在则不重复添加。
-    /// </summary>
+    /// <summary>建 CHECK 约束</summary>
     private static void EnsureCheckConstraint(AppDbContext db, string table, string name, string expression)
     {
         if (!TableExists(db, table)) return;
@@ -400,7 +382,7 @@ public static class DbInitializer
         }
     }
 
-    /// <summary>MySQL 8.0.16+ 才真正强制执行 CHECK 约束。</summary>
+    /// <summary>MySQL 8</summary>
     private static bool SupportsCheckConstraint(AppDbContext db)
     {
         try
@@ -417,14 +399,14 @@ public static class DbInitializer
         }
     }
 
-    /// <summary>把 "8.4.6-log" / "8.0.16" 之类的版本串裁成可解析形式。</summary>
+    /// <summary>把 "8</summary>
     private static string CleanVersion(string raw)
     {
         var cut = raw.IndexOfAny(['-', '+', ' ']);
         return cut > 0 ? raw[..cut] : raw;
     }
 
-    /// <summary>执行一条返回单值的 SQL（用于存在性/重复性探测）。</summary>
+    /// <summary>执行一条返回单值的 SQL（用于存在性/重复性探测）</summary>
     private static object? Scalar(AppDbContext db, string sql)
     {
         using var cmd = db.Database.GetDbConnection().CreateCommand();
@@ -446,7 +428,7 @@ public static class DbInitializer
         return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
     }
 
-    /// <summary>索引不存在时才建（幂等）；失败只跳过，不让一次 DDL 把服务起不来</summary>
+    /// <summary>索引不存在时才建（幂等）</summary>
     private static void EnsureIndex(AppDbContext db, string table, string index, string columns)
     {
         if (!TableExists(db, table) || IndexExists(db, table, index)) return;
@@ -491,7 +473,7 @@ public static class DbInitializer
         return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
     }
 
-    /// <summary>读某列的 COLUMN_TYPE（如 varchar(500) / text）；列不存在时返回空串。</summary>
+    /// <summary>读某列的 COLUMN_TYPE（如 varchar(500) / text）</summary>
     private static string ColumnType(AppDbContext db, string table, string column)
     {
         using var cmd = db.Database.GetDbConnection().CreateCommand();
@@ -599,7 +581,7 @@ public static class DbInitializer
 
         MigrateAlipayConfigToDb(db, config);
     }
-    
+
     private static void MigrateAlipayConfigToDb(AppDbContext db, IConfiguration? config)
     {
         if (config == null) return;

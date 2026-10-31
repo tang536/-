@@ -4,17 +4,10 @@ using System.Net.Sockets;
 
 namespace ERental.Services;
 
-/// <summary>
-/// 局域网地址探测：把「本机在局域网里的 IP」找出来，供启动脚本与回调地址兜底使用。
-///
-/// 为什么不用 Dns.GetHostAddresses(Dns.GetHostName()) —— 依赖主机名解析，
-/// 在多网卡（虚拟网卡 / VPN / WSL / Docker）机器上会返回一堆无用地址，
-/// 且顺序不保证。这里改为遍历真实在用的网卡，按「无线 > 有线」优先级挑第一个
-/// 已启用、非回环、非链路本地的 IPv4，更贴近"用户实际从哪台设备访问我"。
-/// </summary>
+/// <summary>局域网地址探测：把「本机在局域网里的 IP」找出来，供启动脚本与回调地址兜底使用</summary>
 public static class NetworkHelper
 {
-    /// <summary>取本机最佳局域网 IPv4；找不到时返回 null。</summary>
+    /// <summary>取本机最佳局域网 IPv4</summary>
     public static string? ResolveLanIp()
     {
         var candidates = new List<(int Priority, string Ip)>();

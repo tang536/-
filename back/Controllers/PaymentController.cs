@@ -33,29 +33,15 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
     private bool IsCustomer => User.IsInRole(AuthService.RoleCustomer);
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
-    /// <summary>
-    /// 匿名端点（支付回调）取不到操作人。
-    /// 这里**不能**沿用 CurrentUserId——它对匿名请求会拿 null 再 int.Parse 直接抛
-    /// NullReferenceException（新增 mock/notify 端点时踩过）。
-    /// system_log.user_id 本就可空，故安全返回 null 即可。
-    /// </summary>
+    /// <summary>匿名端点（支付回调）取不到操作人</summary>
     private int? CurrentUserIdOrNull => int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
 
     private string? ClientIp => HttpContext.Connection.RemoteIpAddress?.ToString();
 
-    /// <summary>
-    /// 浏览器此刻的地址栏源：优先 X-Client-Origin（前端拦截器注入），
-    /// 缺失时退回浏览器自动发送的 Referer，见 <see cref="PayConfigService.ResolveClientOrigin"/>。
-    /// 用于生成支付回跳地址：从哪个地址来就回哪个地址，而不是让服务端猜网卡 IP。
-    /// 取值合法性由 <see cref="PayConfigService.BuildReturnUrlAsync"/> 统一校验。
-    /// </summary>
+    /// <summary>浏览器此刻的地址栏源：优先 X-Client-Origin（前端拦截器注入）， 缺失时退回浏览器自动发送的 Refe…</summary>
     private string? ClientOrigin => PayConfigService.ResolveClientOrigin(Request.Headers["X-Client-Origin"].ToString(), Request.Headers.Referer.ToString());
 
-    /// <summary>
-    /// 支付完成后引导用户返回的前端地址（微信 H5 的 redirect_url、支付宝 return_url 等）。
-    /// 优先用「用户当前访问源」，缺失时退回配置里的 return_url 兜底逻辑（局域网模式换本机 IP）。
-    /// 并带上订单号与渠道，让 /pay-result 能按渠道渲染。
-    /// </summary>
+    /// <summary>支付完成后引导用户返回的前端地址（微信 H5 的 redirect_url、支付宝 return_url 等）</summary>
     private async Task<string> BuildReturnUrl(string orderNo, string payType)
     {
         var baseUrl = await _payConfig.BuildReturnUrlAsync(ClientOrigin, "pay-result");
@@ -65,29 +51,17 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         return $"{baseUrl}{(baseUrl.Contains('?') ? "&" : "?")}orderNo={Uri.EscapeDataString(orderNo)}&payType={Uri.EscapeDataString(payType)}";
     }
 
-    /// <summary>
-    /// 管理员操作审计：记录「谁、何时、调了哪个接口、结果如何」（需求 4.2.1 操作留痕）。
-    /// 与业务日志共用 system_log 表，模块统一为「支付管理」便于按模块检索。
-    /// 注意：审计内容**只记动作与结果，不记任何凭证值**。
-    /// </summary>
-    /// <param name="action">动作描述（如「发起微信支付」）</param>
-    /// <param name="ok">操作结果是否成功（决定日志结果的「成功 / 失败」）</param>
-    /// <param name="detail">补充说明（可为 null，仅记业务信息，不记凭证值）</param>
-    /// <param name="actorId">操作人；匿名回调传 null（<see cref="CurrentUserIdOrNull"/>）</param>
+    /// <summary>管理员操作审计：记录「谁、何时、调了哪个接口、结果如何」（需求 4</summary>
     private Task AuditAsync(string action, bool ok, string? detail = null, int? actorId = null)
     {
         var content = detail == null ? action : $"{action}（{detail}）";
         return _logs.WriteLog(actorId ?? CurrentUserIdOrNull, content, "支付管理", ok ? "成功" : "失败", ClientIp);
     }
 
-    /// <summary>
-    /// 支付宝接线自检：一键判断当前配置能否联通。
-    /// 典型用途——报 isv.invalid-signature 时，调它拿到「本地私钥对应的应用公钥」，
-    /// 去开放平台核对/重新上传，避免靠"下单失败"反复试错。
-    /// </summary>
+    /// <summary>支付宝接线自检：一键判断当前配置能否联通</summary>
     [HttpGet("alipay/selfcheck")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> AlipaySelfCheck()
+    public async Task<IActionResult> CheckPayChannel()
     {
         try
         {
@@ -106,12 +80,10 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         }
     }
 
-    /// <summary>
-    /// 微信支付接线自检：向网关发一次最小查询，判断签名/证书是否配对（详见 WechatPayService.SelfCheckAsync）。
-    /// </summary>
+    /// <summary>微信支付接线自检：向网关发一次最小查询，判断签名/证书是否配对（详见 WechatPayService</summary>
     [HttpGet("wechat/selfcheck")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> WechatSelfCheck()
+    public async Task<IActionResult> CheckWechatChannel()
     {
         try
         {
@@ -131,12 +103,10 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         }
     }
 
-    /// <summary>
-    /// 银行卡支付接线自检：向收单网关发一次同构签名探测，判断签名是否被接受（详见 BankPayService.SelfCheckAsync）。
-    /// </summary>
+    /// <summary>银行卡支付接线自检：向收单网关发一次同构签名探测，判断签名是否被接受（详见 BankPayService</summary>
     [HttpGet("bank/selfcheck")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> BankSelfCheck()
+    public async Task<IActionResult> CheckBankChannel()
     {
         try
         {
@@ -156,28 +126,16 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         }
     }
 
-    /// <summary>
-    /// 三条通道（支付宝/微信/银行卡）的接线状态汇总。
-    /// 前端用同一张表渲染三条通道的「已配置 / 未接入」状态，避免每个通道各写一份状态逻辑。
-    /// </summary>
+    /// <summary>三条通道（支付宝/微信/银行卡）的接线状态汇总</summary>
     [HttpGet("channels")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> Channels() =>
+    public async Task<IActionResult> GetPayChannels() =>
         Ok(new ApiResponse<PaymentChannelsDto> { Data = await _payConfig.GetChannelsAsync() });
 
-    /// <summary>
-    /// 账户余额：企业支付宝 + 微信支付商户，并附本地账目对照。
-    ///
-    /// 安全与稳定性：
-    ///  - **仅管理员**（`[Authorize(Roles="管理员")]`）；
-    ///  - 写入操作审计日志（操作人 / 时间 / 接口 / 结果）；
-    ///  - 查询带 8 秒超时、2 次重试、5 分钟缓存与降级兜底（见 <see cref="BalanceService"/>），
-    ///    因此本接口**不会因官方接口抖动而抛异常**，永远返回可渲染的结构。
-    /// </summary>
-    /// <param name="force">true = 跳过缓存强制刷新（管理员点「刷新余额」时用）</param>
+    /// <summary>账户余额：企业支付宝 + 微信支付商户，并附本地账目对照</summary>
     [HttpGet("balances")]
     [Authorize(Policy = Policies.AdminOnly)]
-    public async Task<IActionResult> Balances([FromQuery] bool force = false)
+    public async Task<IActionResult> GetPayBalances([FromQuery] bool force = false)
     {
         try
         {
@@ -200,21 +158,12 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         }
     }
 
-
-    /// <summary>
-    /// 读取支付配置（管理员端回显）。密钥类字段一律脱敏，绝不把明文私钥下发到浏览器。
-    /// </summary>
+    /// <summary>读取支付配置（管理员端回显）</summary>
     [HttpGet("config")]
     [Authorize(Policy = Policies.AdminOnly)]
     public async Task<IActionResult> GetPayConfig() => Ok(new ApiResponse<PayConfigViewDto> { Data = await _payConfig.GetViewAsync() });
 
-    /// <summary>
-    /// 按需读取**单个**密钥的明文：管理端「支付配置」弹窗里点「显示」时调用。
-    ///
-    /// 正常情况下配置接口只回脱敏值（绝不整包下发私钥）。但管理员确实需要
-    /// 「先看看现在配的是什么、再在此基础上改」，所以留一个显式的单字段入口：
-    /// 一次只取一项，且字段名走白名单；审计只记字段名，不记值。
-    /// </summary>
+    /// <summary>按需读取单个密钥的明文：管理端「支付配置」弹窗里点「显示」时调用</summary>
     [HttpGet("config/secret")]
     [Authorize(Policy = Policies.AdminOnly)]
     [SkipAudit]
@@ -227,10 +176,7 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         return Ok(new ApiResponse<object> { Data = new { field, value } });
     }
 
-    /// <summary>
-    /// 保存支付配置。管理员填写生产/沙箱凭证与回调地址，保存后立即生效（无需重启）。
-    /// 密钥字段留空表示"保持不变"；填 CLEAR 表示清空。
-    /// </summary>
+    /// <summary>保存支付配置</summary>
     [HttpPut("config")]
     [Authorize(Policy = Policies.AdminOnly)]
     [SkipAudit]   // 本方法内已有 AuditAsync，会记录生效模式；自动审计再记一条属重复
@@ -263,17 +209,28 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         }
     }
 
-    /// <summary>支付记录列表：可按状态 + 时间段（from/to，闭区间）筛选，供报表页区间统计使用。仅财务（资金流水属财务职责范围）</summary>
+    /// <summary>支付记录列表：可按状态 + 时间段（from/to，闭区间）筛选，供报表页区间统计使用</summary>
     [HttpGet]
     [Authorize(Policy = Policies.FinanceOnly)]
-    public async Task<IActionResult> GetAll(string? status, DateTime? from, DateTime? to) => Ok(new ApiResponse<List<PaymentDto>> { Data = await _svc.GetAll(status, from, to) });
+    public async Task<IActionResult> QueryPaymentRecords(string? status, DateTime? from, DateTime? to)
+    {
+        try
+        {
+            // 读接口对"连接层瞬时故障"整段重试：避免闲置后首次查询命中死连接直接 500
+            // （表现为「退款后首次提示服务器内部错误、二次才成功」）。
+            var data = await DbConcurrency.RetryTransientAsync(() => _svc.GetAll(status, from, to), _logger, "支付流水列表");
+            return Ok(new ApiResponse<List<PaymentDto>> { Data = data });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "支付流水列表查询失败（{ExType}）", ex.GetType().Name);
+            return StatusCode(500, new ApiResponse<List<PaymentDto>> { Code = 500, Success = false, Message = ErrorText.Safe(ex), Data = null });
+        }
+    }
 
-    /// <summary>
-    /// 发起支付：为订单创建支付并返回收银台地址。
-    /// 已配好支付宝沙箱密钥且 Enabled=true 时返回官方收银台链接；否则返回内置模拟收银台。
-    /// </summary>
+    /// <summary>发起支付：为订单创建支付并返回收银台地址</summary>
     [HttpPost("create")]
-    public async Task<IActionResult> Create([FromBody] CreatePayDto dto)
+    public async Task<IActionResult> CreatePayment([FromBody] CreatePayDto dto)
     {
         try
         {
@@ -379,10 +336,7 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         }
     }
 
-    /// <summary>
-    /// 支付宝异步回调。支付宝服务器 POST 表单过来，我方验签通过才把订单置为已支付。
-    /// 返回纯文本 "success"/"failure"（不是 JSON —— 支付宝只认这两个词）。
-    /// </summary>
+    /// <summary>支付宝异步回调</summary>
     [HttpPost("alipay/notify")]
     [AllowAnonymous]   // 回调来自支付宝服务器，无我方 JWT，必须匿名 + 靠验签保真
     public async Task<IActionResult> AlipayNotify()
@@ -402,14 +356,7 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         }
     }
 
-    /// <summary>
-    /// 内置模拟收银台（/mock-pay）的支付通知入口。
-    ///
-    /// 与 alipay/notify 的区别（这是修「微信/银行卡提示通知未受理」的关键）：
-    ///   · alipay/notify —— 真实支付宝回调，**必须验签**，只回文本 success/failure；
-    ///   · mock/notify   —— 模拟收银台专用，按"当前是否生产模式"判定，返回 JSON + 具体原因。
-    /// 模拟通知天生没有签名，若混进真实回调通道必然被验签拒绝，故必须分家。
-    /// </summary>
+    /// <summary>内置模拟收银台（/mock-pay）的支付通知入口</summary>
     [HttpPost("mock/notify")]
     [AllowAnonymous]
     public async Task<IActionResult> MockNotify()
@@ -445,11 +392,7 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         }
     }
 
-    /// <summary>
-    /// 微信支付异步回调（APIv3，正式通道）。
-    /// 微信以 JSON 报文 POST 过来，签名放在 Wechat-* 请求头里；验签 + AES-GCM 解密通过才入账。
-    /// 微信对非 2xx 响应按策略重推：受理成功回 200，验签/入账失败回 4xx 让它重试。
-    /// </summary>
+    /// <summary>微信支付异步回调（APIv3，正式通道）</summary>
     [HttpPost("wechat/notify")]
     [AllowAnonymous]   // 回调来自微信支付服务器，无我方 JWT，必须匿名 + 靠验签保真
     public async Task<IActionResult> WechatNotify()
@@ -478,11 +421,7 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         }
     }
 
-    /// <summary>
-    /// 银行卡收银网关异步回调（正式通道）。
-    /// 网关以表单 POST 过来，按同一套 HMAC-SHA256 规则验签后入账。
-    /// 返回纯文本 "success"/"failure"（业内网关普遍认这两个词，与支付宝回调同约定）。
-    /// </summary>
+    /// <summary>银行卡收银网关异步回调（正式通道）</summary>
     [HttpPost("bank/notify")]
     [AllowAnonymous]
     public async Task<IActionResult> BankNotify()
@@ -503,21 +442,28 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
     }
 
     /// <summary>查询支付状态：前端支付页轮询，或从支付渠道回跳后确认最终状态</summary>
-    /// <remarks>
     /// 匿名可访问：支付宝同步回跳时用户可能没有我方登录态（回跳页路由即为免登录设计），
     /// 订单号本身是不可猜测的临时凭证，且响应只含状态/金额/交易号，不含客户隐私。
     /// 已登录顾客仍校验订单归属；匿名请求靠订单号定位，无法枚举越权。
     /// HY 开头为会员购买交易号，走会员分支（无租赁订单）。
-    /// </remarks>
     [HttpGet("{orderNo}/status")]
     [AllowAnonymous]
-    public async Task<IActionResult> Status(string orderNo)
+    public async Task<IActionResult> GetPayStatus(string orderNo)
     {
         // ── 会员购买（HY 交易号）：查单兜底 + 幂等入账，口径与订单一致 ──
         if (orderNo.StartsWith("HY")) return await MemberPayStatus(orderNo);
 
         var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderNo == orderNo);
-        if (order == null) return NotFound(new ApiResponse<object> { Code = 404, Message = "订单不存在", Success = false });
+        // 补缴单（out_trade_no 为 SP- 前缀）没有租赁订单号，不能在订单表里找不到就报 404——
+        // 那会让「补缴付完跳结果页」变成永远查不到状态，所以先转补缴分支再判定不存在。
+        if (order == null)
+        {
+            var supplement = await _db.PaymentRecords.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.OutTradeNo == orderNo && p.BizType == "supplement");
+            if (supplement == null)
+                return NotFound(new ApiResponse<object> { Code = 404, Message = "订单不存在（补缴单亦无此交易号）", Success = false });
+            return await SupplementPayStatus(supplement.PayId);
+        }
 
         if (IsCustomer && order.CustomerId != CurrentUserId) return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权查看该订单", Success = false });
 
@@ -574,11 +520,49 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         });
     }
 
-    /// <summary>
-    /// 会员购买状态查询（HY 交易号）：读取 memberpay.* 暂存意向；仍待支付且为真实模式时
-    /// 主动向支付宝查单，确认成功当场入账（与订单查单兜底同思路——沙箱环境 notify 进不来）。
-    /// 已完成标记 / 过期 / 不存在分别返回对应状态，轮询端按 paid 判定终止。
-    /// </summary>
+    /// <summary>补缴单状态查询（SP- 交易号）：口径与订单一致，待支付时按所选通道查单兜底</summary>
+    private async Task<IActionResult> SupplementPayStatus(int payId)
+    {
+        var rec = await _db.PaymentRecords.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.PayId == payId && p.BizType == "supplement");
+        if (rec == null) return NotFound(new ApiResponse<object> { Code = 404, Message = "补缴单不存在", Success = false });
+
+        if (IsCustomer)
+        {
+            var own = await _db.RentalOrders.AnyAsync(o => o.OrderId == rec.OrderId && o.CustomerId == CurrentUserId);
+            if (!own) return StatusCode(403, new ApiResponse<object> { Code = 403, Message = "无权查看该补缴单", Success = false });
+        }
+
+        // 本地仍待支付时向渠道查一次（沙箱/开发环境异步回调常打不进本机），
+        // 查单成功会当场幂等入账，这里必须重读记录，否则回跳页拿到的还是旧状态。
+        if (rec.PayStatus == "待支付" && rec.OutTradeNo is { Length: > 0 } tradeNo)
+        {
+            if (rec.PayType == "微信") await _wechat.QueryTradeStatusAsync(tradeNo);
+            else if (rec.PayType == "银行卡") await _bank.QueryTradeStatusAsync(tradeNo);
+            else if (rec.PayType == "支付宝") await _alipay.QueryTradeStatusAsync(tradeNo);
+
+            rec = await _db.PaymentRecords.AsNoTracking().FirstOrDefaultAsync(p => p.PayId == payId) ?? rec;
+        }
+
+        var paid = PayStatuses.IsMoneyArrived(rec.PayStatus);
+
+        return Ok(new ApiResponse<PayStatusDto>
+        {
+            Data = new PayStatusDto
+            {
+                OrderNo = rec.OutTradeNo ?? "",
+                OrderId = rec.OrderId,
+                OrderStatus = paid ? "已支付" : rec.PayStatus,
+                Paid = paid,
+                Amount = rec.PayAmount,
+                TransactionNo = rec.TransactionNo ?? "",
+                BizType = "supplement",
+                PayId = rec.PayId
+            }
+        });
+    }
+
+    /// <summary>会员购买状态查询（HY 交易号）：读取 memberpay</summary>
     private async Task<IActionResult> MemberPayStatus(string tradeNo)
     {
         var view = await _member.GetPurchaseView(tradeNo);
@@ -620,14 +604,15 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
                 OrderStatus = statusText,
                 Paid = paid,
                 Amount = view.Amount,
-                TransactionNo = alipayNo
+                TransactionNo = alipayNo,
+                BizType = "member"
             }
         });
     }
 
     [HttpPut("{id:int}/refund")]
     [Authorize(Policy = Policies.ReceptionOrFinance)]
-    public async Task<IActionResult> Refund(int id, [FromBody] decimal amount)
+    public async Task<IActionResult> RefundPayment(int id, [FromBody] decimal amount)
     {
         try
         {

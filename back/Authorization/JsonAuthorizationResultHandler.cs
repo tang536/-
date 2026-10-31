@@ -1,4 +1,4 @@
-using ERental.Models;
+﻿using ERental.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Policy;
 
@@ -6,12 +6,10 @@ namespace ERental.Authorization;
 
 /// <summary>
 /// 授权失败的统一响应体（401 / 403 都返回和业务接口一致的 <see cref="ApiResponse{T}"/> 结构）。
-///
 ///   策略校验失败时，AuthorizationMiddleware 默认只置状态码、body 为空。
 ///   前端拦截器读不到 message，只能显示「当前角色无权执行该操作」这类通用兜底文案，
 ///   用户不知道自己到底是没登录、登录过期，还是角色不够——三种情况处理动作完全不同。
 ///   统一成 JSON 后，前端可以原样展示后端给的原因，也便于排查越权请求。
-///
 /// 两种失败的语义区分（沿用 ASP.NET Core 的定义）：
 ///   · <c>Challenged</c>：没有任何有效身份 → 401，前端应走「续期或重新登录」；
 ///   · <c>Forbidden</c>：身份有效但策略不满足 → 403，重新登录也没用，属于权限配置问题。

@@ -192,6 +192,8 @@ export const userApi = {
   list: () => api.get('/user'),
   create: (data: any) => api.post('/user', data),
   update: (id: number, data: any) => api.put(`/user/${id}`, data),
+  /** 停用账号（系统操作「停用员工账号」）：后端同时吊销该账号全部在线会话 */
+  disable: (id: number) => api.put(`/user/${id}/disable`),
   remove: (id: number) => api.delete(`/user/${id}`)
 }
 
@@ -347,8 +349,16 @@ export const orderApi = {
     page: number; pageSize: number
   }) => api.get('/order', { params }),
   get: (id: number) => api.get(`/order/${id}`),
-  /** 客户不存在时后端自动建档 */
-  create: (data: any) => api.post('/order', data),
+  /**
+   * 柜台开单（系统操作「线下开单」）：后端建档 + 置车在租 + 当场收款同一步完成。
+   * 客户不存在时后端自动建档。
+   */
+  createStaff: (data: any) => api.post('/order/staff', data),
+  /** 待还车订单（前台归还台）：后端固定按「已支付」筛选，免去前端重复传状态 */
+  waitReturn: (params?: {
+    keyword?: string; dateFrom?: string; dateTo?: string
+    sortBy?: string; sortDesc?: boolean; page?: number; pageSize?: number
+  }) => api.get('/order/wait-return', { params }),
   /** 后端强制校验实名认证 */
   // 线上下单不选支付方式（付款时在支付页再选）；payType 字段保留兼容旧调用
   createOnline: (data: { vehicleId: number; leaseStart: string; leaseEnd: string; payType?: string }) =>
@@ -365,9 +375,9 @@ export const orderApi = {
   cancelPending: (id: number) => api.post(`/order/${id}/cancel-pending`),
   /** 需前台审核 */
   requestEarlyReturn: (id: number) => api.post(`/order/${id}/early-return`),
-  /** approve=true 通过（随后结算），false 驳回并填原因 */
-  reviewEarlyReturn: (id: number, approve: boolean, rejectReason?: string) =>
-    api.post(`/order/${id}/early-return/review`, { approve, rejectReason }),
+  /** 需前台审核。通过时填写验车损坏费，后端当场生成结算单；false 驳回并填原因 */
+  reviewEarlyReturn: (id: number, approve: boolean, rejectReason?: string, damageFee = 0, remark?: string) =>
+    api.post(`/order/${id}/early-return/review`, { approve, rejectReason, damageFee, remark }),
   /**
    * 订单到期预警（系统操作 #6）：返回 { total, overdueCount, soonCount, warnDays, items[] }，
    * items 里每条含 orderId / orderNo / customerName / contactPhone / vehicleNo / leaseEnd /
@@ -392,7 +402,7 @@ export const memberApi = {
   history: (customerId: number) => api.get(`/member/history/${customerId}`),
 }
 
-// 结算
+// 结算（仅结算本身；补缴相关的顾客自助/收银入口统一走 supplementApi）
 export const settleApi = {
   list: () => api.get('/settlement'),
   /**
@@ -401,18 +411,13 @@ export const settleApi = {
    */
   preview: (orderId: number) => api.get(`/settlement/preview/${orderId}`),
   settle: (data: any) => api.post('/settlement/settle', data),
-  /** 催缴：重新提醒顾客支付该结算单产生的待支付线上补缴单 */
-  remindSupplement: (settleId: number) => api.post(`/settlement/${settleId}/remind-supplement`),
-  /**
-   * 待收款补缴账单：只返回**未收清**的结算单。
-   * 前端入口的显示条件直接吃这个列表——列表空 = 没有入口，不需要另算一遍业务条件。
-   */
-  supplementBills: (outstanding = true) => api.get('/settlement/supplement/bills', { params: { outstanding } }),
-  /** 补缴收款：现金当场落账；支付宝/微信/银行卡返回收银台地址或二维码 */
-  collectSupplement: (settleId: number, channel: string) =>
-    api.post(`/settlement/${settleId}/supplement/collect`, { channel }),
-  /** 补缴收款状态（轮询用；待支付时后端会按通道查单兜底） */
-  supplementStatus: (settleId: number) => api.get(`/settlement/${settleId}/supplement/status`)
+  /** 顾客本人的结算单（前台审核还车后生成）：含租金构成 / 逾期费 / 损坏费 / 应退应补 */
+  mine: () => api.get('/settlement/mine'),
+  /** 顾客选择在线支付结算单的补缴款，返回收银台地址或二维码 */
+  payOnline: (settleId: number, channel: string) =>
+    api.post(`/settlement/${settleId}/pay-online`, JSON.stringify(channel), {
+      headers: { 'Content-Type': 'application/json' },
+    }),
 }
 
 // 维保（列表/工单均为 DTO，字段：workOrderNo、vehicleNo、faultDescription、maintainFee、status、faultImage）
@@ -437,14 +442,9 @@ export const maintenanceApi = {
   scrap: (data: { vehicleId: number; reason: string }) => api.post('/maintenance/scrap', data)
 }
 
-// 报表 / 看板 / 通知
+// 报表 / 看板（通知已并入 messageApi，由 Token 角色决定看 staff 还是 customer 队列）
 export const reportApi = {
   dashboard: () => api.get('/report/dashboard'),
-  notifications: () => api.get('/report/notifications'),
-  markRead: (ids: number[]) => api.post('/report/notifications/read', { ids }),
-  markAllRead: () => api.post('/report/notifications/read-all'),
-  /** 删除（忽略）通知：ids 为空表示清空全部。员工预警会随业务状态重建，删除是软删忽略 */
-  deleteNotifications: (ids: number[] = []) => api.post('/report/notifications/delete', { ids }),
   /** from/to 为可选统计时间段（YYYY-MM-DD，闭区间），不传沿用累计口径 */
   summary: (from?: string, to?: string) => api.get('/report/summary', { params: { from, to } }),
   /** 财务对账：按日期范围核对应收与实收，from/to 必填（YYYY-MM-DD） */
@@ -553,7 +553,7 @@ export const logApi = {
   restore: (fileName: string) => api.post('/log/restore', { fileName, confirm: 'RESTORE' })
 }
 
-// 线上补缴（逾期 / 损坏费用）：顾客回到顾客端在线支付
+// 补缴（逾期 / 损坏费用）：顾客自助端 + 门店收银端统一入口（后端 SupplementController 按角色分发）
 export const supplementApi = {
   /** 顾客本人的补缴单列表（含待支付 / 已支付） */
   mine: () => api.get('/supplement/mine'),
@@ -568,16 +568,28 @@ export const supplementApi = {
     }),
   /** 查询补缴支付状态（含通道查单兜底），paid=true 表示已入账 */
   status: (payId: number) => api.get(`/supplement/${payId}/status`),
+  /** 待收款补缴账单（收银端）：只返回未收清的结算单 */
+  bills: (outstanding = true) => api.get('/supplement/bills', { params: { outstanding } }),
+  /** 补缴收款：现金当场落账；支付宝/微信/银行卡返回收银台地址或二维码 */
+  collect: (settleId: number, channel: string) =>
+    api.post(`/supplement/settle/${settleId}/collect`, { channel }),
+  /** 补缴收款状态（收银端轮询用；待支付时后端会按通道查单兜底） */
+  statusBySettle: (settleId: number) => api.get(`/supplement/settle/${settleId}/status`),
+  /** 催缴：重新提醒顾客支付该结算单产生的待支付线上补缴单 */
+  remind: (settleId: number) => api.post(`/supplement/settle/${settleId}/remind`),
 }
 
-// 顾客消息中心（统一走通用 message 表：退款去向 / 逾期线上补缴单 / 补缴成功回执）
+// 消息中心：员工通知与顾客消息共用。后端按 Token 里的角色决定读哪一侧队列，
+// 前端不传 receiverType，也就不存在读别人消息的可能。
 export const messageApi = {
-  /** 顾客消息列表 + 未读计数 */
-  list: () => api.get('/message/customer'),
+  /** 消息列表（倒序分页）+ 未读计数；员工侧会先同步实时预警 */
+  list: (page = 1, pageSize = 50) => api.get('/message/list', { params: { page, pageSize } }),
   /** 标记已读：ids 为消息主键，空数组 = 全部已读 */
-  markRead: (ids: number[] = []) => api.post('/message/customer/read', { ids }),
-  /** 删除消息：ids 为消息主键，空数组 = 清空全部 */
-  delete: (ids: number[] = []) => api.post('/message/customer/delete', { ids }),
+  markRead: (ids: number[] = []) => api.post('/message/read', { ids }),
+  /** 一键全部已读 */
+  markAllRead: () => api.post('/message/read-all'),
+  /** 删除（忽略）消息：ids 为消息主键，空数组 = 清空全部 */
+  remove: (ids: number[] = []) => api.post('/message/delete', { ids }),
 }
 
 // 续租

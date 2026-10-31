@@ -18,15 +18,12 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
     private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
     private string? ClientIp => HttpContext.Connection.RemoteIpAddress?.ToString();
 
-    /// <summary>耗时文案：小库常在 1 秒内，写 0.0s 会让人以为没测；不足 1 秒直接给毫秒</summary>
+    /// <summary>耗时文案：小库常在 1 秒内，写 0</summary>
     private static string Elapsed(long ms) => ms < 1000 ? $"{ms}ms" : $"{ms / 1000.0:0.0}s";
 
-    /// <summary>
-    /// 操作日志查询（需求 4.2.1）：按用户、时间、操作类型（模块/结果）+ 内容关键字组合筛选。
-    /// 日志只读——本控制器不提供任何删除或修改入口，保证「不可删除、不可篡改」。
-    /// </summary>
+    /// <summary>操作日志查询（需求 4</summary>
     [HttpGet]
-    public async Task<IActionResult> GetAll(
+    public async Task<IActionResult> GetOperationLogs(
         int page = 1, int size = 20, int? userId = null,
         DateTime? from = null, DateTime? to = null,
         string? module = null, string? result = null, string? keyword = null)
@@ -37,14 +34,11 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
 
     /// <summary>日志里实际出现过的操作模块（筛选下拉选项，避免前端硬编码模块名）</summary>
     [HttpGet("modules")]
-    public async Task<IActionResult> GetModules() => Ok(new ApiResponse<List<string>> { Data = await _svc.GetModules() });
+    public async Task<IActionResult> GetLogModules() => Ok(new ApiResponse<List<string>> { Data = await _svc.GetModules() });
 
-    /// <summary>
-    /// 数据库备份（需求 4.2.1 / 6.4）：导出 17 张业务表，AES-256-GCM 加密后落盘。
-    /// 返回 fileName / sizeKB / tableCount 三个字段，前端据此提示备份结果。
-    /// </summary>
+    /// <summary>数据库备份（需求 4</summary>
     [HttpPost("backup")]
-    public async Task<IActionResult> Backup()
+    public async Task<IActionResult> BackupDatabase()
     {
         try
         {
@@ -73,11 +67,11 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
 
     /// <summary>备份文件列表（新的在前），供管理员下载或选择恢复点</summary>
     [HttpGet("backups")]
-    public IActionResult GetBackups() => Ok(new ApiResponse<object> { Data = _backup.ListFiles() });
+    public IActionResult GetBackupFiles() => Ok(new ApiResponse<object> { Data = _backup.ListFiles() });
 
-    /// <summary>下载备份文件（加密后的二进制；解密密钥只在服务端，下载件泄露也读不出内容）</summary>
+    /// <summary>下载备份文件（加密后的二进制</summary>
     [HttpGet("backups/{fileName}/download")]
-    public async Task<IActionResult> Download(string fileName)
+    public async Task<IActionResult> DownloadBackupFile(string fileName)
     {
         try
         {
@@ -91,14 +85,9 @@ public class LogController(LogService svc, BackupService backup) : ControllerBas
         }
     }
 
-    /// <summary>
-    /// 用备份恢复数据库（需求 6.4「一键恢复」）。
-    ///
-    /// 二次确认不是前端弹窗那种"软确认"——必须把 confirm 字段写成 RESTORE，
-    /// 避免误点/脚本调用直接把生产数据覆盖掉。恢复前系统会自动做一份快照。
-    /// </summary>
+    /// <summary>用备份恢复数据库（需求 6</summary>
     [HttpPost("restore")]
-    public async Task<IActionResult> Restore([FromBody] RestoreRequest req)
+    public async Task<IActionResult> RestoreDatabase([FromBody] RestoreRequest req)
     {
         if (!string.Equals(req.Confirm, "RESTORE", StringComparison.Ordinal))
             return BadRequest(new ApiResponse<object>

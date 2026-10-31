@@ -10,26 +10,13 @@ namespace ERental.Services;
 /// <summary>备份文件摘要（供管理员端列表展示）</summary>
 public sealed record BackupFileInfo(string FileName, long SizeBytes, DateTime CreatedAt, bool Encrypted);
 
-/// <summary>备份结果（ElapsedMs 对应需求 5.2.5 的「备份 ≤10 秒」，随接口返回，便于随时实测）</summary>
+/// <summary>备份结果（ElapsedMs 对应需求 5</summary>
 public sealed record BackupResult(string FileName, long SizeBytes, int TableCount, bool Encrypted, long ElapsedMs);
 
-/// <summary>恢复结果（ElapsedMs 含恢复前快照，即用户实际等待的时长；需求 5.2.5 要求 ≤15 秒）</summary>
+/// <summary>恢复结果（ElapsedMs 含恢复前快照，即用户实际等待的时长</summary>
 public sealed record RestoreResult(string FileName, int TableCount, long Rows, string SafetyBackup, long ElapsedMs);
 
-/// <summary>
-/// 数据库备份 / 恢复（需求 4.2.1 备份、6.4 故障处理、7.1 数据安全）。
-///
-/// 四个设计要点：
-///   ① **加密**：AES-256-GCM，文件结构 `ERBK1 | nonce(12) | tag(16) | ciphertext`。
-///      备份里含身份证号与 BCrypt 哈希，明文落盘等于把客户档案复制一份到磁盘任意角落；
-///   ② **可恢复**：先自动做一次"恢复前快照"，再按外键顺序清空并逐行 INSERT（保留原始主键），
-///      整个过程在一个事务里，失败自动回滚，不会留下半套数据；
-///   ③ **定时**：<see cref="BackupSchedulerService"/> 每天定点备份并按保留数清理旧文件；
-///   ④ **路径可配置**：`Backup:Directory`，生产上指向独立数据盘/挂载点即可做异地副本。
-///
-/// 密钥来源：`Backup:Key`（Base64 的 32 字节）；未配置时由 `Jwt:Key` 经 SHA-256 派生。
-/// **换 JWT 密钥会导致旧备份无法解密**——生产环境请显式配置 `Backup:Key` 并单独保管。
-/// </summary>
+/// <summary>数据库备份 / 恢复（需求 4</summary>
 public class BackupService(AppDbContext db, IConfiguration config, ILogger<BackupService> logger)
 {
     private readonly AppDbContext _db = db;
@@ -42,10 +29,7 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
     private const string FilePrefix = "backup_";
     private const string SafetyPrefix = "auto-before-restore_";
 
-    /// <summary>
-    /// 17 张表，**父表在前**。恢复时按此顺序插入、按反序删除，
-    /// 即使外键检查被临时关闭，也不会出现"子表先插、父表后插"的悬空引用。
-    /// </summary>
+    /// <summary>17 张表，父表在前</summary>
     private static readonly string[] Tables =
     [
         "role", "permission", "system_user", "customer", "member_rights", "vehicle",
@@ -73,16 +57,12 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
         }
     }
 
-    /// <summary>保留份数（默认 14）；超过后按时间从旧到新删除</summary>
+    /// <summary>保留份数（默认 14）</summary>
     private int KeepCount => int.TryParse(_cfg["Backup:Keep"], out var n) && n > 0 ? n : 14;
 
     // ───────────────────────────── 备份 ─────────────────────────────
 
-    /// <summary>
-    /// 生成一份加密备份。读取 17 张表的**全部列**（含 TPH 判别列 `user_type` 这类
-    /// 没有 CLR 属性的影子列，因此用 SELECT * 而不是序列化实体）。
-    /// </summary>
-    /// <param name="prefix">文件名前缀：手动/定时用 backup_，恢复前快照用 auto-before-restore_</param>
+    /// <summary>生成一份加密备份</summary>
     public async Task<BackupResult> CreateAsync(string prefix = FilePrefix)
     {
         // 计时口径 = 读库 + 序列化 + 加密 + 落盘 + 清理旧文件，也就是用户点下按钮后实际等待的时长
@@ -152,7 +132,7 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
         return new BackupResult(fileName, size, Tables.Length, true, sw.ElapsedMilliseconds);
     }
 
-    /// <summary>备份文件列表（新的在前）；只列 .erbk 加密备份，明文 .json 不参与恢复</summary>
+    /// <summary>备份文件列表（新的在前）</summary>
     public List<BackupFileInfo> ListFiles()
     {
         if (!System.IO.Directory.Exists(Directory)) return [];
@@ -163,7 +143,7 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
             .ToList();
     }
 
-    /// <summary>读取备份文件字节（供管理员下载；文件名先做白名单校验，杜绝路径穿越）</summary>
+    /// <summary>读取备份文件字节（供管理员下载</summary>
     public async Task<(string FileName, byte[] Content)> ReadAsync(string fileName)
     {
         var path = ResolvePath(fileName);
@@ -172,16 +152,7 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
 
     // ───────────────────────────── 恢复 ─────────────────────────────
 
-    /// <summary>
-    /// 用备份覆盖当前库。
-    ///
-    /// 顺序（任何一步失败整体回滚）：
-    ///   ① 先做一份"恢复前快照"——恢复错了还能回到操作前；
-    ///   ② 关闭外键检查 → 按子表到父表的反序清空；
-    ///   ③ 按父表到子表顺序逐行 INSERT，**显式写入原主键**（否则订单与支付记录的关联会全部错位）；
-    ///   ④ 恢复外键检查 → 提交。
-    /// 清空 + 重新插入的代价是"恢复期间全表短暂为空"，因此本操作只允许管理员在停业时段执行。
-    /// </summary>
+    /// <summary>用备份覆盖当前库</summary>
     public async Task<RestoreResult> RestoreAsync(string fileName)
     {
         // 计时含「恢复前快照」：快照同样在用户等待期间发生，不计进去会好看但失真
@@ -427,11 +398,7 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
     }
 }
 
-/// <summary>
-/// 每日定时备份（需求 4.2.1「数据库备份」、6.4「自动定时备份」）。
-/// 时间取 `Backup:DailyAt`（HH:mm，默认 02:30，门店打烊后）；
-/// 与手动备份共用 <see cref="BackupService.CreateAsync"/>，加密与保留策略完全一致。
-/// </summary>
+/// <summary>每日定时备份（需求 4</summary>
 public class BackupSchedulerService(
     IServiceScopeFactory scopeFactory, IConfiguration config, ILogger<BackupSchedulerService> logger)
     : BackgroundService
@@ -493,7 +460,7 @@ public class BackupSchedulerService(
         }
     }
 
-    /// <summary>计算下一个执行时刻；配置写错时回退 02:30，不让一句配置把备份彻底关掉</summary>
+    /// <summary>计算下一个执行时刻</summary>
     private DateTime NextRun(DateTime now)
     {
         var raw = config["Backup:DailyAt"];

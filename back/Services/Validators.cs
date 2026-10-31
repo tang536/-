@@ -2,13 +2,7 @@
 
 namespace ERental.Services;
 
-/// <summary>
-/// 业务字段格式校验的唯一入口。
-///
-/// 采用 .NET 源生成正则（<see cref="GeneratedRegexAttribute"/>）：正则状态机在**编译期**生成，
-/// 运行期不再解析表达式、不再查正则缓存，且同一规则在多处引用时不会再出现写法漂移
-/// （此前身份证 / 手机号 / 用户名三条规则在 Auth、Customer、Order 三个服务里各写了一遍）。
-/// </summary>
+/// <summary>业务字段格式校验的唯一入口</summary>
 public static partial class Validators
 {
     /// <summary>身份证号：18 位数字，末位可为 X / x</summary>
@@ -39,12 +33,7 @@ public static partial class Validators
     public static bool IsLoginAccount(string? value) =>
         !string.IsNullOrEmpty(value) && LoginAccountPattern().IsMatch(value);
 
-    /// <summary>
-    /// 密码复杂度：至少 8 位，且必须同时包含字母与数字。
-    /// 需求文档 4.2.1 写的「复杂度校验」此前一直没有实现（注册只查长度 ≥6），
-    /// 这里作为**统一规则**落在唯一校验入口：注册（顾客）、建号/重置（工作人员）三处共用。
-    /// 注意**不**要求定期修改——那种策略在课设/门店场景只会逼员工把密码贴在显示器上。
-    /// </summary>
+    /// <summary>密码复杂度：至少 8 位，且必须同时包含字母与数字</summary>
     public static bool IsStrongPassword(string? value) =>
         !string.IsNullOrEmpty(value) && value.Length >= 8
         && value.Any(char.IsLetter) && value.Any(char.IsDigit);

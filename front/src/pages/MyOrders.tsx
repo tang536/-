@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { orderApi, printApi, customerApi, supplementApi } from '@/api'
+import { orderApi, printApi, customerApi, supplementApi, settleApi } from '@/api'
 import { useUI } from '@/components/UIProvider'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
@@ -34,6 +34,8 @@ export default function MyOrders() {
   const [now, setNow] = useState(Date.now())
   // 线上补缴单（门店结算选「线上补缴」生成），顾客在此去支付
   const [supplements, setSupplements] = useState<SupplementPayItem[]>([])
+  /** 门店审核还车后生成的结算单：租金构成 / 逾期费 / 损坏费 / 应退应补，顾客据此决定怎么付 */
+  const [settles, setSettles] = useState<any[]>([])
 
   const load = () => {
     setLoading(true)
@@ -44,6 +46,9 @@ export default function MyOrders() {
     // 补缴列表失败不影响订单主流程
     supplementApi.mine()
       .then((res: any) => setSupplements(res.data || []))
+      .catch(() => { /* 忽略，下次刷新再试 */ })
+    settleApi.mine()
+      .then((res: any) => setSettles(res.data || []))
       .catch(() => { /* 忽略，下次刷新再试 */ })
   }
 
@@ -129,12 +134,31 @@ export default function MyOrders() {
     } catch (e: any) { toast(e?.message || '申请失败', 'error') }
   }
 
+  /**
+   * 结算单在线支付：先让后端为该结算单落一张待支付补缴单（同一笔钱不会挂两张），
+   * 再跳到支付页选支付宝/微信/银行卡。不直接跳支付宝——渠道得由顾客自己定。
+   */
+  const handleSettlePay = async (s: any) => {
+    try {
+      const res: any = await settleApi.payOnline(s.settleId, '')
+      const payId = res?.data?.payId
+      if (!payId) { toast('补缴单生成失败，请稍后重试', 'error'); return }
+      navigate(`/supplement-pay/${payId}`)
+    } catch (e: any) { toast(e?.message || '发起在线支付失败', 'error') }
+  }
+
   const active = list.filter(o => o.orderStatus === '已支付' || o.orderStatus === '租赁中' || o.orderStatus === '待支付')
   const finished = list.filter(o => o.orderStatus === '已完成' || o.orderStatus === '已完结')
   // 门店结算选「线上补缴」生成的待支付补缴单，顾客在此在线缴款
   // 注意字段名与后端 JSON 一致（camelCase）：写成 PayStatus 会永远过滤出空列表，
   // 表现就是「关掉支付页以后再也找不到补缴入口」。
   const pendingSupplements = supplements.filter(s => s.payStatus === '待支付')
+  /**
+   * 已由结算单承载的补缴不再单独列一行（同一笔钱出现两次会让人以为欠了两笔）；
+   * 这里只兜住「有补缴单却没有结算单」的历史数据。
+   */
+  const orphanSupplements = pendingSupplements.filter(
+    s => !settles.some((x: any) => x.orderId === s.orderId))
 
   const summary = [
     { label: '累计订单', value: list.length, icon: 'orders' as const, tone: 'sky' },
@@ -276,12 +300,73 @@ export default function MyOrders() {
         )}
       </div>
 
-      {/* 待补缴费用：门店结算时选「线上补缴」生成的独立补缴单，顾客回到顾客端在线支付 */}
-      {pendingSupplements.length > 0 && (
+      {/* 归还结算单：门店审核还车时生成，顾客在这里看清每一笔账并决定怎么付 */}
+      {settles.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
           <div className="card-title">
-            <Icon name="warning" size={18} chip />待补缴费用
-            <span className="card-title-count">{pendingSupplements.length} 笔待支付</span>
+            <Icon name="orders" size={18} chip />归还结算单
+            <span className="card-title-count">共 {settles.length} 条</span>
+          </div>
+          <div className="field-hint" style={{ padding: '0 16px 8px' }}>
+            <Icon name="info" size={14} />押金与多收租金按原支付渠道退回；补缴款可选择在线支付，或到门店缴纳现金。
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>订单号</th><th>车辆</th><th>结算时间</th>
+                  <th className="num">实际租金</th><th className="num">逾期费</th><th className="num">损坏费</th>
+                  <th className="num">应退</th><th className="num">应补缴</th><th>补缴状态</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {settles.map((s: any) => {
+                  const outstanding = Math.max(0, Number(s.supplementAmount || 0) - Number(s.supplementPaid || 0))
+                  return (
+                    <tr key={s.settleId}>
+                      <td className="mono">{s.orderNo}</td>
+                      <td>{s.vehicleNo || '—'}</td>
+                      <td className="cell-time">{fmtDT(s.settleTime)}</td>
+                      <td className="num">¥{Number(s.actualRent || 0).toFixed(2)}</td>
+                      <td className="num">¥{Number(s.overdueFee || 0).toFixed(2)}</td>
+                      <td className="num">¥{Number(s.damageFee || 0).toFixed(2)}</td>
+                      <td className="num">¥{Number(s.refundAmount || 0).toFixed(2)}</td>
+                      <td className="num">¥{Number(s.supplementAmount || 0).toFixed(2)}</td>
+                      <td>
+                        {Number(s.supplementAmount || 0) <= 0
+                          ? <span className="status-tag status-default">无需补缴</span>
+                          : s.supplementCollected
+                            ? <span className="status-tag status-success">已缴清{s.paidChannel ? `（${s.paidChannel}）` : ''}</span>
+                            : <span className="status-tag status-warning">待缴 ¥{outstanding.toFixed(2)}</span>}
+                        {s.remark && <div className="field-hint" style={{ marginTop: 4 }}>备注：{s.remark}</div>}
+                      </td>
+                      <td>
+                        {Number(s.supplementAmount || 0) > 0 && !s.supplementCollected ? (
+                          <div className="btn-group">
+                            <button className="btn-sm btn-sm-primary" onClick={() => handleSettlePay(s)}>
+                              <Icon name="rent" size={13} color="#fff" />在线支付
+                            </button>
+                            <span className="toolbar-note">或到店缴纳</span>
+                          </div>
+                        ) : (
+                          <span className="toolbar-note">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 其他待补缴费用：没有对应结算单的历史补缴单（如早期数据），单独兜底列出 */}
+      {orphanSupplements.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-title">
+            <Icon name="warning" size={18} chip />其他待补缴费用
+            <span className="card-title-count">{orphanSupplements.length} 笔待支付</span>
           </div>
           <div className="table-wrap">
             <table className="data-table">
@@ -291,7 +376,7 @@ export default function MyOrders() {
                 </tr>
               </thead>
               <tbody>
-                {pendingSupplements.map(s => (
+                {orphanSupplements.map(s => (
                   <tr key={s.payId}>
                     <td className="mono">{s.orderNo}</td>
                     <td className="num">¥{Number(s.payAmount).toFixed(2)}</td>

@@ -9,11 +9,7 @@ public class SystemConfigService(AppDbContext db)
 {
     private readonly AppDbContext _db = db;
 
-    /// <summary>
-    /// 数值型配置项及其合法区间（需求 4.2.5 租金自动核算：核算规则支持管理员自定义配置）。
-    /// 这些值直接被下单、结算、续租、登录锁定逻辑拿去参与计算，写成非数字会让
-    /// 下单 / 结算 / 续租三条主链一起失效（已实测复现），所以必须在写入时就拦住。
-    /// </summary>
+    /// <summary>数值型配置项及其合法区间（需求 4</summary>
     private static readonly Dictionary<string, (decimal Min, decimal Max, bool Integer)> NumericKeys = new()
     {
         // monthly_rent / overdue_rate 已删除：二者**不参与任何计费**（计费=小时租金×小时数，
@@ -27,11 +23,7 @@ public class SystemConfigService(AppDbContext db)
         ["member_default_price"] = (0m, 100000m, false) // 会员默认价格（元，新增会员类型时表单预填）
     };
 
-    /// <summary>
-    /// 数据字典分组（需求 4.2.1）。
-    /// 项目的数据表结构须与《唐荣强.docx》图4-1~图4-17 保持一致（17 张表），
-    /// 因此字典不新建表，直接复用 system_config，键统一加前缀 <c>dict.</c>。
-    /// </summary>
+    /// <summary>数据字典分组（需求 4</summary>
     private static readonly (string Code, string Name)[] DictGroups =
     [
         ("brand", "车辆品牌"),
@@ -42,31 +34,19 @@ public class SystemConfigService(AppDbContext db)
         ("member_level", "会员等级")
     ];
 
-    /// <summary>字典键前缀。带此前缀的配置项不会出现在「系统配置」列表里。</summary>
+    /// <summary>字典键前缀</summary>
     private const string DictPrefix = "dict.";
 
-    /// <summary>
-    /// 支付配置键前缀（PayConfigService.Prefix）。
-    /// 这些项由管理员在「支付配置」独立页维护，且含长密钥（私钥 1500+ 字符），
-    /// 不能混进普通系统配置列表——既避免被 200 字符校验拦截，也避免密钥明文暴露在列表里。
-    /// </summary>
+    /// <summary>支付配置键前缀（PayConfigService</summary>
     private const string PayPrefix = "pay.";
 
-    /// <summary>
-    /// AI 生图配置键前缀（ComfyConfigService.Key = ai.comfyui_base_url）。
-    /// ComfyUI 地址在系统配置页有独立卡片维护（带 URL 格式校验与测试连接），
-    /// 不混进普通参数列表——通用列表只认纯数字，URL 会被前端的数字校验拦下。
-    /// </summary>
+    /// <summary>AI 生图配置键前缀（ComfyConfigService</summary>
     private const string AiPrefix = "ai.";
 
-    /// <summary>
-    /// 会员购买待支付意向键前缀（MemberService.PayPrefix）。
-    /// 是支付流程的**临时交易状态**（HY 交易号 → 购买意向 JSON），不是配置：
-    /// 不能出现在参数列表里，更不允许从参数页改删——否则等于绕过支付直接改会员。
-    /// </summary>
+    /// <summary>会员购买待支付意向键前缀（MemberService</summary>
     private const string MemberPayPrefix = "memberpay.";
 
-    /// <summary>config_value 列宽 VARCHAR(200)，超出会被截断或报错，这里提前拦截。</summary>
+    /// <summary>config_value 列宽 VARCHAR(200)，超出会被截断或报错，这里提前拦截</summary>
     private const int MaxValueLength = 200;
 
     /// <summary>业务参数列表（不含数据字典、支付配置、AI 生图配置与会员购买意向，各有独立入口/生命周期）</summary>
@@ -79,9 +59,9 @@ public class SystemConfigService(AppDbContext db)
                 && !c.ConfigKey.StartsWith(SessionRegistry.Prefix))
             .OrderBy(c => c.ConfigId)
             .ToListAsync();
-    
+
     /// 登录页需要的公开配置（系统操作 #2 openLoginPage）：站点名称、可用登录方式、主题选项。
-    
+
     public async Task<Dictionary<string, string>> GetPublic()
     {
         var keys = new[] { "site.name", "login.modes", "theme.options" };
@@ -145,11 +125,7 @@ public class SystemConfigService(AppDbContext db)
         await _db.SaveChangesAsync();
     }
 
-    /// <summary>
-    /// 删除配置项。核心业务参数（NumericKeys）受保护不可删——它们被下单/结算/续租/锁定
-    /// 逻辑直接消费，删了参数页就没法管理（重启种子虽会补回，但运行期计算会走空值）；
-    /// 字典与支付配置各有独立页面，也在此拦住。
-    /// </summary>
+    /// <summary>删除配置项</summary>
     public async Task Delete(string key)
     {
         if (key.StartsWith(DictPrefix) || key.StartsWith(PayPrefix)
@@ -256,10 +232,7 @@ public class SystemConfigService(AppDbContext db)
 
     // ==================== 字典自更新（需求 4.2.1 扩展） ====================
 
-    /// <summary>
-    /// 从数据库实际业务数据同步字典项：扫描车辆品牌、维保故障类型、会员权益等级，
-    /// 把库里出现而字典缺失的值 upsert 进去。颜色 / 车型 / 费用类型在表中无对应列，跳过。
-    /// </summary>
+    /// <summary>从数据库实际业务数据同步字典项：扫描车辆品牌、维保故障类型、会员权益等级， 把库里出现而字典缺失的值 upsert …</summary>
     public async Task<List<(string Group, string GroupName, int Added)>> SyncDictFromDbAsync(int operatorId)
     {
         var brandValues = await _db.Vehicles
@@ -330,15 +303,7 @@ public class SystemConfigService(AppDbContext db)
 
     // ==================== 数据库初始化（需求 4.2.1 运维扩展） ====================
 
-    /// <summary>
-    /// 数据库初始化：清空全部业务运行数据，回到「有账号、有配置、有字典、无业务数据」状态。
-    /// 刻意保留三类数据：
-    ///   1. system_user —— 管理员账号绝对不动（用户明确要求），前台/财务账号一并保留，
-    ///      否则初始化后除管理员外无人可登录，门店无法立即恢复作业；
-    ///   2. system_config —— 含 pay.* 支付配置（用户明确要求）与 dict.* 数据字典、业务参数；
-    ///   3. member_rights —— 会员类型属配置性质，与字典同源，清了会让客户档案无等级可挂。
-    /// 用 ExecuteDelete 批量删除：不加载实体、不触发级联加载，12 张表顺序先子后父。
-    /// </summary>
+    /// <summary>数据库初始化：清空全部业务运行数据，回到「有账号、有配置、有字典、无业务数据」状态</summary>
     public async Task<(int TablesCleared, long RowsCleared)> ResetDatabaseAsync(int operatorId, string? ip)
     {
         // 先子后父：结算/支付/续租依赖订单，订单依赖客户与车辆

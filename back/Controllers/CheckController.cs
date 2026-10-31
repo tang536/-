@@ -16,13 +16,13 @@ public class CheckController(CheckService svc) : ControllerBase
     private readonly CheckService _svc = svc;
 
     [HttpGet("list")]
-    public async Task<IActionResult> GetChecks(DateTime? date) => Ok(new ApiResponse<List<CarCheckListDto>>
+    public async Task<IActionResult> QueryCheckRecords(DateTime? date) => Ok(new ApiResponse<List<CarCheckListDto>>
         {
             Data = (await _svc.GetAll(date)).Select(CarCheckListDto.From).ToList()
         });
 
     [HttpPost("add")]
-    public async Task<IActionResult> AddCheck([FromBody] CheckRequest req)
+    public async Task<IActionResult> AddCarCheckRecord([FromBody] CheckRequest req)
     {
         try
         {
@@ -33,13 +33,13 @@ public class CheckController(CheckService svc) : ControllerBase
     }
 
     [HttpGet("reports")]
-    public async Task<IActionResult> GetReports() => Ok(new ApiResponse<List<CheckReportDto>>
+    public async Task<IActionResult> QueryCheckReports() => Ok(new ApiResponse<List<CheckReportDto>>
         {
             Data = (await _svc.GetReports()).Select(CheckReportDto.From).ToList()
         });
 
     [HttpPost("generate-report")]
-    public async Task<IActionResult> GenerateReport([FromBody] GenReportRequest req) => Ok(new ApiResponse<CheckReportDto>
+    public async Task<IActionResult> GenerateCheckReport([FromBody] GenReportRequest req) => Ok(new ApiResponse<CheckReportDto>
         {
             Data = CheckReportDto.From(await _svc.GenerateReport(req.Date))
         });

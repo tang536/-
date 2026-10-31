@@ -1,5 +1,5 @@
 import {
-  createContext, useContext, useState, useCallback, useRef,
+  createContext, useContext, useState, useCallback, useRef, useEffect,
   type ReactNode,
 } from 'react'
 import Icon, { type IconName } from './Icon'
@@ -93,6 +93,9 @@ export function UIProvider({ children }: { children: ReactNode }) {
   /** 最近一次提示的时间戳，键为 `类型::文案`，用于 Toast 去重 */
   const recentToasts = useRef<Record<string, number>>({})
 
+  /** 输入框（Prompt）聚焦用 ref：用 preventScroll 聚焦，避免 fixed 遮罩内自动聚焦把长页面滚到顶 */
+  const promptInputRef = useRef<HTMLInputElement>(null)
+
   /** 全站弹窗统一支持 Esc 关闭（点遮罩语义），见 hooks/useGlobalEsc */
   useGlobalEscClose()
 
@@ -167,6 +170,14 @@ export function UIProvider({ children }: { children: ReactNode }) {
   const cfg = confirmState?.config
   const pcfg = promptState?.config
 
+  // 输入框（Prompt）打开时聚焦：用 preventScroll 防止浏览器为"揭示"焦点元素而把长页面滚到顶。
+  // 直接写 autoFocus 在 fixed 遮罩里会触发该滚动——这正是「点击退款后页面跳回顶端」的根因之一。
+  useEffect(() => {
+    if (pcfg && promptInputRef.current) {
+      promptInputRef.current.focus({ preventScroll: true })
+    }
+  }, [pcfg])
+
   return (
     <UIContext.Provider value={{ toast, success, error, warning, info, confirm, prompt }}>
       {children}
@@ -230,6 +241,7 @@ export function UIProvider({ children }: { children: ReactNode }) {
             <div className="prompt-body">
               <div className="prompt-message">{pcfg.message}</div>
               <input
+                ref={promptInputRef}
                 type={pcfg.inputType || 'text'}
                 className={promptError ? 'has-error' : ''}
                 placeholder={pcfg.placeholder || '请输入'}
@@ -239,7 +251,6 @@ export function UIProvider({ children }: { children: ReactNode }) {
                   if (e.key === 'Enter') closePrompt(true)
                   if (e.key === 'Escape') closePrompt(false)
                 }}
-                autoFocus
               />
               {promptError && <div className="field-error">{promptError}</div>}
             </div>

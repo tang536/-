@@ -17,14 +17,7 @@ public class PaymentService(
     private readonly BankPayService _bank = bank;
     private readonly ILogger<PaymentService> _logger = logger;
 
-    /// <summary>
-    /// 支付记录列表。用 AsNoTracking + Select 投影成 DTO：
-    /// ① 避免把 RentalOrder → Customer 整棵对象图（含登录账号、身份证号）交给前端；
-    /// ② 避免 EF 关系修复回填反向集合形成循环引用（维保模块曾因同类问题返回 500）。
-    /// </summary>
-    /// <param name="status">按支付状态过滤（如「已支付」）；传 null 表示不过滤</param>
-    /// <param name="from">统计起始日（含），财务在报表页自选区间时传入</param>
-    /// <param name="to">统计截止日（含当天 23:59:59），右端点 +1 天避免漏掉截止日当天</param>
+    /// <summary>支付记录列表</summary>
     public async Task<List<PaymentDto>> GetAll(string? status = null, DateTime? from = null, DateTime? to = null)
     {
         var q = _db.PaymentRecords.AsNoTracking().AsQueryable();
@@ -57,22 +50,7 @@ public class PaymentService(
     /// <summary>退款结果：Message 直接给前台/财务看，RealMoney 表示是否真的走了资金通道</summary>
     public sealed record RefundResult(string Message, bool RealMoney, decimal RefundedTotal, string PayStatus);
 
-    /// <summary>
-    /// 退款（需求 4.2.5「剩余押金原路退还」）。
-    ///
-    /// 三条口径，按通道能力分流，**绝不把"账面退款"伪装成"已原路退回"**：
-    ///   ① 真实凭证齐全的通道（支付宝 / 微信 / 银行卡）→ 调该通道的退款接口原路退回，
-    ///      成功后按累计金额改 refund_amount；金额未退满为「部分退款」，退满为「已退款」；
-    ///   ② 模拟支付模式（通道凭证不全，收款本身就没走资金）→ 只记账，返回文案明确写「未发生资金划转」。
-    ///
-    /// 幂等键：`{payId}R{累计应退金额的分}`，三通道同一口径——支付宝作 out_request_no、
-    /// 微信作 out_refund_no、银行卡作 out_refund_no。同一支付记录、同一累计退款额只会产生一个请求号，
-    /// 网关成功但本地事务回滚后重试不会重复退款。
-    /// 累计退款金额同时受 `pay_amount - refund_amount` 约束，不存在退超。
-    /// </summary>
-    /// <param name="payId">支付记录 ID（不是订单 ID）</param>
-    /// <param name="amount">本次退款金额（部分退款时传本次金额，不是累计金额）</param>
-    /// <param name="reason">退款原因，写进通道退款单，便于对账</param>
+    /// <summary>退款（需求 4</summary>
     public async Task<RefundResult> Refund(int payId, decimal amount, string? reason = null)
     {
         // 退款有两个入口：财务在支付记录上直接退（独立事务），以及结算流程内部退押金（外层已有事务）。
@@ -109,9 +87,7 @@ public class PaymentService(
         }
     }
 
-    /// <summary>
-    /// 退款主流程（必须在事务内、且已持有支付记录行锁的前提下调用）。
-    /// </summary>
+    /// <summary>退款主流程（必须在事务内、且已持有支付记录行锁的前提下调用）</summary>
     private async Task<RefundResult> RefundCoreAsync(int payId, decimal amount, string? reason)
     {
         // 行锁是这里的关键：并发退同一笔款时，第二个请求阻塞在锁上；
@@ -207,7 +183,7 @@ public class PaymentService(
         return await LedgerRefundAsync(p, newTotal, amount, payType, why);
     }
 
-    /// <summary>网关侧「交易不存在」类错误的识别：覆盖支付宝/微信/银行卡的中英文表述。</summary>
+    /// <summary>网关侧「交易不存在」类错误的识别：覆盖支付宝/微信/银行卡的中英文表述</summary>
     private static bool IsTradeNotFound(string msg)
     {
         if (string.IsNullOrWhiteSpace(msg)) return false;
@@ -221,11 +197,7 @@ public class PaymentService(
             || msg.Contains("INVALID_TRANSACTION", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>
-    /// 账面退款（无真实资金流）：写累计退款额、按是否退满改状态，返回如实告知的文案。
-    /// 用于两种情形：① 全局为模拟/凭证不全；② 真实模式下该笔收款在网关侧查无交易
-    /// （当初走模拟收银台、或订单号不匹配），此时绝不能把账面退伪装成已原路退。
-    /// </summary>
+    /// <summary>账面退款（无真实资金流）：写累计退款额、按是否退满改状态，返回如实告知的文案</summary>
     private async Task<RefundResult> LedgerRefundAsync(
         Models.PaymentRecord p, decimal newTotal, decimal amount, string channel, string cause)
     {

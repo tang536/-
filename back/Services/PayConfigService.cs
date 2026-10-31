@@ -8,39 +8,24 @@ using Microsoft.Extensions.Options;
 
 namespace ERental.Services;
 
-/// <summary>
-/// 支付凭证的存取与「三级自动降级」判定。
-///
-/// 为什么单开一个服务：支付凭证（AppId / 应用私钥 / 支付宝公钥）由管理员在管理员端填写，
-/// 存在 system_config 表里（键前缀 <c>pay.</c>），而 <see cref="AlipayService"/> 是无状态的
-/// 纯签名服务、不应依赖数据库。这里做中间层：把库里的凭证读出来，判定当前该走哪一级支付。
-///
-/// ── 三级降级规则（优先级从高到低，自动判定，无需人工切换）──
-///   ① 生产：生产 AppId + 生产应用私钥 + 支付宝公钥 **三者齐全** → 走支付宝生产网关
-///   ② 沙箱：沙箱 AppId + 沙箱应用私钥 + 支付宝公钥 **三者齐全** → 走支付宝沙箱网关
-///   ③ 模拟：以上任一级凭证不全 → 内置模拟收银台（不联网、不验签，保证演示链路完整）
-///
-/// 设计取舍：为什么用「齐全度」而不是「一个开关」——
-/// 开关是给人忘的，凭证齐了却因为忘开开关而没生效，是最难排查的故障。
-/// 让"能不能用"由"有没有配对凭证"直接决定，管理员填完即生效，少一个出错点。
-/// </summary>
+/// <summary>支付凭证的存取与「三级自动降级」判定</summary>
 public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan, SecretProvider secrets)
 {
     private readonly AppDbContext _db = db;
     private readonly SecretProvider _secrets = secrets;
 
-    /// <summary>局域网回环地址识别：整段 localhost/127.0.0.1 后紧跟端口、路径分隔或结尾。</summary>
+    /// <summary>局域网回环地址识别：整段 localhost/127</summary>
     [GeneratedRegex(@"^https?://(localhost|127\.0\.0\.1)(:|/|$)")]
     private static partial Regex LocalHostUrlRegex();
 
-    /// <summary>局域网回环前缀（含可选端口）：用于把历史遗留地址整段重写为本机 IP + 当前端口。</summary>
+    /// <summary>局域网回环前缀（含可选端口）：用于把历史遗留地址整段重写为本机 IP + 当前端口</summary>
     [GeneratedRegex(@"^https?://(localhost|127\.0\.0\.1)(:\d+)?")]
     private static partial Regex LocalHostPrefixRegex();
 
-    /// <summary>局域网模式下按需覆盖为「本机 IP + 当前前端端口」。</summary>
+    /// <summary>局域网模式下按需覆盖为「本机 IP + 当前前端端口」</summary>
     private readonly LanOptions _lan = lan.Value;
 
-    /// <summary>支付配置项的键前缀。带此前缀的项归本服务管理，不出现在普通系统配置列表。</summary>
+    /// <summary>支付配置项的键前缀</summary>
     public const string Prefix = "pay.";
 
     // ── 生产环境凭证 ──
@@ -126,10 +111,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     private const string ModeSandbox = "沙箱";
     public const string ModeMock = "模拟";
 
-    /// <summary>
-    /// 把支付方式归一到合法取值。只认 <c>native</c>，其余（含 null、空串、历史脏值）一律按 h5 处理，
-    /// 这样老数据升级后行为不变，配置面板也不会因为一个错值把通道打成不可用。
-    /// </summary>
+    /// <summary>把支付方式归一到合法取值</summary>
     public static string NormalizeWechatPayMode(string? value) =>
         string.Equals(value?.Trim(), WechatPayModeNative, StringComparison.OrdinalIgnoreCase)
             ? WechatPayModeNative
@@ -138,20 +120,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     private const string DefaultProdGateway = "https://openapi.alipay.com/gateway.do";
     private const string DefaultSandboxGateway = "https://openapi-sandbox.dl.alipaydev.com/gateway.do";
 
-    /// <summary>
-    /// 回调地址兜底：管理员没填（或填的仍是 localhost）时，按当前运行环境给一个能用的值。
-    ///
-    /// 关键约束——**绝不覆盖管理员填过的非 localhost 值**。
-    /// 生产环境回调必须走公网域名或内网穿透，那只能由人显式指定；自动猜测会把它改坏。
-    /// 这里只处理两种情况：
-    ///   ① 空值             → 局域网模式下补「本机 IP + 当前端口」，否则保持 localhost
-    ///   ② 含 localhost     → 局域网模式下整段换成本机 IP，避免"换台设备回调打到自己家"
-    ///
-    /// 协议不能一概而论：前端入口（return_url / 补缴回跳）在局域网模式下是 **HTTPS**
-    /// （vite 带自签证书），后端回调端口 5105 才是明文 HTTP。若把 return_url 拼成
-    /// <c>http://ip:5173</c>，手机浏览器会把明文请求发到 TLS 端口，对端在握手阶段断开，
-    /// 页面报「未发送任何数据」（ERR_EMPTY_RESPONSE）——这就是"付完款回不到商家页面"。
-    /// </summary>
+    /// <summary>回调地址兜底：管理员没填（或填的仍是 localhost）时，按当前运行环境给一个能用的值</summary>
     private string FallbackLocalUrl(string configured, string path)
     {
         var value = configured.Trim();
@@ -181,29 +150,14 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return value.Replace("localhost", ip).Replace("127.0.0.1", ip);
     }
 
-    /// <summary>只接受 http / https，其余（含空值、历史脏值）按 https 处理——局域网入口恒为 HTTPS。</summary>
+    /// <summary>只接受 http / https，其余（含空值、历史脏值）按 https 处理——局域网入口恒为 HTTPS</summary>
     private static string NormalizeFrontScheme(string? scheme) =>
         string.Equals(scheme?.Trim(), "http", StringComparison.OrdinalIgnoreCase) ? "http" : "https";
 
-    /// <summary>
-    /// 回跳地址兜底的**公开入口**（微信/银行卡通道构建跳转与回调地址用）。
-    /// <paramref name="path"/> 传相对路径：回调类传 "api/payment/wechat/notify"，
-    /// 前端回跳类传 "pay-result"，由本方法决定端口（回调 5105 / 前端 CustomerPort）。
-    /// </summary>
+    /// <summary>回跳地址兜底的公开入口（微信/银行卡通道构建跳转与回调地址用）</summary>
     public string FallbackChannelUrl(string configured, string path) => FallbackLocalUrl(configured, path);
 
-    /// <summary>
-    /// 从请求头还原「用户此刻访问的源」，供调用方拼回跳/通知地址。
-    ///
-    /// 优先用前端拦截器统一注入的 <c>X-Client-Origin</c>（最准，就是 window.location.origin）；
-    /// 它缺失时退回浏览器**自动**发送的 <c>Referer</c>——旧版本前端、第三方 WebView、
-    /// 或有人直接用 curl 复现时不会有自定义头，但同源请求的 Referer 一般完整。
-    /// 两者都拿不到才返回 null（调用方再退回配置值/局域网兜底）。
-    ///
-    /// 为什么值得多这一层：自定义头依赖前端代码已更新，而 Referer 是浏览器行为。
-    /// 少这一层时，一旦页面还是旧包，后端就会去猜 IP 与协议，猜成 http 打 HTTPS 端口，
-    /// 用户看到的就是「付完款回不到商家页面，提示未发送任何数据」。
-    /// </summary>
+    /// <summary>从请求头还原「用户此刻访问的源」，供调用方拼回跳/通知地址</summary>
     public static string? ResolveClientOrigin(string? explicitOrigin, string? referer)
     {
         if (!string.IsNullOrWhiteSpace(explicitOrigin)) return explicitOrigin.Trim();
@@ -213,21 +167,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             : null;
     }
 
-    /// <summary>
-    /// 构建「支付完成后回跳的前端地址」——**优先采用用户此刻访问的源**。
-    ///
-    /// 为什么不能只靠服务端拼：服务端只能按自己的网卡猜 IP（<see cref="NetworkHelper"/> 取
-    /// 第一个非回环 IPv4），一旦出现「换 Wi-Fi / 多网卡 / 热点 + 有线并存 / 走公网反代」，
-    /// 猜出来的地址就和用户地址栏里的不一样，表现为**付完款跳到另一个 IP**（端口往往还是对的，
-    /// 因为端口取的是固定配置）。更糟的是这个猜出来的值会被配置页展示成"可保存的值"，
-    /// 管理员一点保存就把它固化进 system_config，从此换网络也回不去。
-    ///
-    /// 所以浏览器把 <c>window.location.origin</c> 通过 X-Client-Origin 头带上来，
-    /// 从哪个地址来、付完款就回哪个地址。缺失或不合法时才退回配置值 → 局域网兜底，
-    /// 行为与改造前完全一致（服务端主动发起的场景没有浏览器，只能走这条）。
-    /// </summary>
-    /// <param name="origin">形如 <c>http://192.168.1.5:5173</c>；仅接受 http/https 裸源</param>
-    /// <param name="path">前端相对路径，如 <c>pay-result</c>、<c>supplement-pay/12</c></param>
+    /// <summary>构建「支付完成后回跳的前端地址」——优先采用用户此刻访问的源</summary>
     public async Task<string> BuildReturnUrlAsync(string? origin, string path)
     {
         var normalized = NormalizeOrigin(origin);
@@ -238,19 +178,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return FallbackChannelUrl(configured, path);
     }
 
-    /// <summary>
-    /// 构建「支付平台异步通知地址」——同样优先采用用户当前访问的源。
-    ///
-    /// 为什么通知地址也要跟着访问源走：<c>pay.notify_url</c> 一旦被固化成某个内网 IP
-    /// （配置页把兜底值当真实值展示 → 一点保存就写死），换网络后就永久指不到本服务；
-    /// 而支付宝只会往商户下单时传的地址推通知，推不到就只能靠前端轮询查单兜底，
-    /// 表现为"钱付了但订单迟迟不变已支付"。
-    ///
-    /// 用访问源拼出来的地址，前端代理（开发期 Vite / 生产 nginx）会把
-    /// <c>/api/...</c> 转发到后端 5105，端口与协议自动对齐用户实际使用的入口。
-    /// </summary>
-    /// <param name="origin">形如 <c>https://106.53.204.201</c></param>
-    /// <param name="path">后端相对路径，如 <c>api/payment/alipay/notify</c></param>
+    /// <summary>构建「支付平台异步通知地址」——同样优先采用用户当前访问的源</summary>
     public async Task<string> BuildNotifyUrlAsync(string? origin, string path)
     {
         var normalized = NormalizeOrigin(origin);
@@ -261,13 +189,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return FallbackChannelUrl(configured, path);
     }
 
-    /// <summary>
-    /// 校验并规范化浏览器传来的 origin。
-    ///
-    /// 这里不做"开放重定向"的放行口：只认 http/https，且必须是「协议 + 主机 + 可选端口」，
-    /// 带路径、查询串、片段、用户名密码的一律拒绝（返回 null → 退回配置值）。
-    /// 拒绝非法值时**静默降级**而不是报错——回跳地址算不出来时，支付本身仍应能发起。
-    /// </summary>
+    /// <summary>校验并规范化浏览器传来的 origin</summary>
     private static string? NormalizeOrigin(string? origin)
     {
         if (string.IsNullOrWhiteSpace(origin)) return null;
@@ -278,10 +200,10 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return uri.GetLeftPart(UriPartial.Authority);
     }
 
-    /// <summary>敏感项分层解析的公开入口（env > secrets > db），供各支付服务复用同一套优先级。</summary>
+    /// <summary>敏感项分层解析的公开入口（env > secrets > db），供各支付服务复用同一套优先级</summary>
     public string Secret(string key, string dbValue) => _secrets.Resolve(key, dbValue, out _);
 
-    /// <summary>读出全部支付配置（键 → 值）。密钥明文返回，仅在后端内部流转，绝不直接回给前端。</summary>
+    /// <summary>读出全部支付配置（键 → 值）</summary>
     public async Task<Dictionary<string, string>> GetRawAsync()
     {
         var rows = await _db.SystemConfigs
@@ -295,14 +217,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return dict;
     }
 
-    /// <summary>
-    /// 判定当前生效的支付模式 + 组装出该模式的接入参数。
-    /// 这是整个三级降级的唯一入口，<see cref="AlipayService"/> 与自检接口都从这里取参数。
-    ///
-    /// **敏感项（私钥 / 支付宝公钥）走 <see cref="SecretProvider"/> 分层解析**：
-    /// 环境变量 → 用户机密 → 数据库。非敏感项（AppId / 网关 / 回调地址）直接读库。
-    /// 这样部署时可用环境变量注入密钥覆盖库里的那份，而开发期仍保持"页面填了就生效"。
-    /// </summary>
+    /// <summary>判定当前生效的支付模式 + 组装出该模式的接入参数</summary>
     public async Task<PayRuntime> ResolveAsync()
     {
         var raw = await GetRawAsync();
@@ -357,11 +272,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return new PayRuntime { Mode = ModeMock };
     }
 
-    /// <summary>
-    /// 解析某个密钥项的**来源**（env / secrets / db / none），**只回来源不回值**。
-    /// 用途：后台展示"这项凭证由谁提供"，让管理员明白为什么页面上填的值没生效
-    /// （典型场景：部署时用环境变量注入了密钥，管理员在页面改的是数据库那份，自然不生效）。
-    /// </summary>
+    /// <summary>解析某个密钥项的来源（env / secrets / db / none），只回来源不回值</summary>
     private async Task<Dictionary<string, string>> ResolveSecretSourcesAsync(IEnumerable<string> keys)
     {
         var raw = await GetRawAsync();
@@ -375,11 +286,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return result;
     }
 
-    /// <summary>
-    /// 三条支付通道的状态汇总。
-    /// 三条通道均已实现正式通道服务；「凭证齐全 + 开关打开」即走真实通道，
-    /// 否则自动退回内置模拟收银台。状态字段回答的是「当前落在哪一档」，不是「能不能用」。
-    /// </summary>
+    /// <summary>三条支付通道的状态汇总</summary>
     public async Task<PaymentChannelsDto> GetChannelsAsync()
     {
         var raw = await GetRawAsync();
@@ -450,7 +357,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return new PaymentChannelsDto { Items = [alipay, wechat, bank] };
     }
 
-    /// <summary>把一组支付凭证写入 system_config（键不存在则新建）。仅管理员接口调用。</summary>
+    /// <summary>把一组支付凭证写入 system_config（键不存在则新建）</summary>
     private async Task SaveAsync(IEnumerable<(string Key, string Value, string Desc)> items)
     {
         var list = items.ToList();
@@ -472,10 +379,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         await _db.SaveChangesAsync();
     }
 
-    /// <summary>
-    /// 可查看明文的密钥字段（前端字段名 → system_config 键）。
-    /// 白名单形式而非"透传 config_key"，避免这个端点变成任意配置的读取后门。
-    /// </summary>
+    /// <summary>可查看明文的密钥字段（前端字段名 → system_config 键）</summary>
     public static readonly IReadOnlyDictionary<string, string> SecretFieldKeys =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -490,10 +394,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
             ["bankSignKey"] = KeyBankSignKey,
         };
 
-    /// <summary>
-    /// 读取单个密钥项的**明文**，只给管理员在「支付配置」弹窗里点「显示」时按需取用。
-    /// 返回 null 表示字段名不在白名单；返回空串表示这项确实还没配。
-    /// </summary>
+    /// <summary>读取单个密钥项的明文，只给管理员在「支付配置」弹窗里点「显示」时按需取用</summary>
     public async Task<string?> GetSecretAsync(string? field)
     {
         var name = (field ?? "").Trim();
@@ -503,7 +404,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return raw.TryGetValue(key, out var v) ? (v ?? "").Trim() : "";
     }
 
-    /// <summary>把已存的值脱敏后返回（私钥/公钥只留首尾几位），供管理员端表单回显。</summary>
+    /// <summary>把已存的值脱敏后返回（私钥/公钥只留首尾几位），供管理员端表单回显</summary>
     private static string Mask(string? value, int head = 6, int tail = 6)
     {
         var v = (value ?? "").Trim();
@@ -512,7 +413,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return v[..head] + new string('*', Math.Min(20, v.Length - head - tail)) + v[^tail..];
     }
 
-    /// <summary>组装管理员端「支付配置」回显视图（密钥脱敏 + 当前模式 + 模式原因）。</summary>
+    /// <summary>组装管理员端「支付配置」回显视图（密钥脱敏 + 当前模式 + 模式原因）</summary>
     public async Task<PayConfigViewDto> GetViewAsync()
     {
         var raw = await GetRawAsync();
@@ -603,11 +504,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
         return dto;
     }
 
-    /// <summary>
-    /// 保存管理员填写的支付凭证。
-    /// 约定：入参为 null 或空串 = 保持原值（密钥太长，不应要求每次重贴）；
-    /// 入参为字面量 "CLEAR" = 显式清空。
-    /// </summary>
+    /// <summary>保存管理员填写的支付凭证</summary>
     public async Task SaveViewAsync(SavePayConfigDto dto)
     {
         var raw = await GetRawAsync();
@@ -686,7 +583,7 @@ public partial class PayConfigService(AppDbContext db, IOptions<LanOptions> lan,
     }
 }
 
-/// <summary>一次支付调用所需的运行参数，由 <see cref="PayConfigService.ResolveAsync"/> 产出。</summary>
+/// <summary>一次支付调用所需的运行参数，由 产出</summary>
 public class PayRuntime
 {
     public string Mode { get; init; } = PayConfigService.ModeMock;
@@ -698,17 +595,13 @@ public class PayRuntime
     public string NotifyUrl { get; init; } = string.Empty;
     public string ReturnUrl { get; init; } = string.Empty;
 
-    /// <summary>
-    /// 商户 / 应用对应的支付宝会员 ID（PID，16 位数字）。
-    /// 用途：<c>alipay.fund.account.query</c> 查余额时**必传**，且官方要求必须等于请求发起方的 PID。
-    /// 非密钥（是账号标识而非凭证），但仍由后端独有，不下发前端。
-    /// </summary>
+    /// <summary>商户 / 应用对应的支付宝会员 ID（PID，16 位数字）</summary>
     public string Pid { get; init; } = string.Empty;
 
-    /// <summary>是否走真实支付宝（生产或沙箱）。false 表示模拟收银台。</summary>
+    /// <summary>是否走真实支付宝（生产或沙箱）</summary>
     public bool IsReal => Mode != PayConfigService.ModeMock;
 
-    /// <summary>真实模式下凭证是否齐全（模拟模式恒 false，用于区分"为什么不是真实支付"）。</summary>
+    /// <summary>真实模式下凭证是否齐全（模拟模式恒 false，用于区分"为什么不是真实支付"）</summary>
     public bool CredentialsComplete =>
         !string.IsNullOrWhiteSpace(AppId)
         && !string.IsNullOrWhiteSpace(PrivateKey)

@@ -15,11 +15,7 @@ public class SystemUser
     [Column("login_account")]
     public string LoginAccount { get; private set; } = string.Empty;
 
-    /// <summary>
-    /// 登录密码（BCrypt 哈希）。任何接口都不允许回传给前端；
-    /// 员工列表走 UserDto（本身不含密码字段），此处的 [JsonIgnore] 是双保险，
-    /// 防止将来有人误把 SystemUser 实体直接序列化时外泄。
-    /// </summary>
+    /// <summary>登录密码（BCrypt 哈希）</summary>
     [JsonIgnore]
     [Required, MaxLength(100)]
     [Column("login_pwd")]
@@ -44,20 +40,12 @@ public class SystemUser
     [Column("lock_until")]
     public DateTime? LockUntil { get; private set; }
 
-    /// <summary>
-    /// TPH 判别值：与 AppDbContext 中 HasValue 注册的 user_type 一致，
-    /// 基类为 staff，子类分别重写为 admin / reception / finance。
-    /// </summary>
+    /// <summary>TPH 判别值：与 AppDbContext 中 HasValue 注册的 user_type 一致， 基类为 st…</summary>
     [NotMapped]
     public virtual string UserType => "staff";
 
     // ------------------------------------------------------------------ 工厂
-    /// <summary>
-    /// 新建员工账号。用泛型工厂是为了让 TPH 落到正确的子类：
-    /// <c>SystemUser.CreateStaff&lt;AdminUser&gt;(...)</c> 写入的 user_type 是 admin，
-    /// <c>ReceptionUser</c> / <c>FinanceUser</c> 同理；直接 new 一个 SystemUser 只会得到 staff。
-    /// 密码只接收已算好的 BCrypt 哈希——实体不该知道哈希算法，也不该接触明文。
-    /// </summary>
+    /// <summary>新建员工账号</summary>
     public static T CreateStaff<T>(string loginAccount, string passwordHash, int roleId, string? userName = null)
         where T : SystemUser, new()
     {
@@ -75,16 +63,13 @@ public class SystemUser
     }
 
     // -------------------------------------------------------------- 领域方法
-    /// <summary>改显示名（空值表示不修改，与前端「只提交改过的项」一致）。</summary>
+    /// <summary>改显示名（空值表示不修改，与前端「只提交改过的项」一致）</summary>
     public void Rename(string? userName)
     {
         if (!string.IsNullOrWhiteSpace(userName)) UserName = userName.Trim();
     }
 
-    /// <summary>
-    /// 重置登录密码。改密同时清空失败计数与锁定时间——
-    /// 管理员重置密码的场景往往是「员工把自己锁在门外」，重置完还要等锁定到期等于没解决。
-    /// </summary>
+    /// <summary>重置登录密码</summary>
     public void SetPasswordHash(string passwordHash)
     {
         LoginPwd = passwordHash;
@@ -92,16 +77,16 @@ public class SystemUser
         LockUntil = null;
     }
 
-    /// <summary>启用/停用账号（1=启用，0=停用）。停用后该账号的在线会话由服务层吊销。</summary>
+    /// <summary>启用/停用账号（1=启用，0=停用）</summary>
     public void ChangeStatus(int status) => UserStatus = status;
 
     /// <summary>停用账号（注销员工时用）</summary>
     public void Deactivate() => UserStatus = 0;
 
-    /// <summary>登录失败一次：累计失败次数 +1（失败次数留痕，锁定由来源 IP 维度判定）。</summary>
+    /// <summary>登录失败一次：累计失败次数 +1（失败次数留痕，锁定由来源 IP 维度判定）</summary>
     public void RecordLoginFailure() => LoginFailCount++;
 
-    /// <summary>登录成功：清零失败计数并解除锁定。</summary>
+    /// <summary>登录成功：清零失败计数并解除锁定</summary>
     public void RecordLoginSuccess()
     {
         LoginFailCount = 0;

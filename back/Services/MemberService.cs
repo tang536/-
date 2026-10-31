@@ -7,34 +7,20 @@ using System.Text.Json;
 
 namespace ERental.Services;
 
-/// <summary>
-/// 会员自助购买（顾客端）：选等级 → 选支付渠道（支付宝/微信/银行卡）→ 收银台支付 → 入账升级。
-///
-/// 两条设计约束：
-/// 1. **不写 payment_record**：该表 order_id 非空且带外键，会员购买没有对应订单，
-///    硬写会撞外键约束。支付轨迹改为：待支付意向存 system_config（memberpay.* 前缀暂存，
-///    与 pay.*/ai.* 同一套隔离机制，免改表结构），成功后原地标记完成并写 system_log
-///    （需求 7.1 全流程可追溯），不破坏图4-1~图4-16 的表结构对应关系。
-/// 2. **价格存于会员权益表自身**（purchase_price 列），管理员在会员管理中直接定价，
-///    不经过 system_config——价格与等级同源同改，不会出现「改了等级忘改配置」的错位。
-///
-/// 支付链路与租车订单完全同构：HY 开头交易号作为 out_trade_no 送支付宝/模拟收银台，
-/// 异步回调与主动查单兜底两路都进 AlipayService.ApplyTradeResultAsync 的 HY 分支，
-/// 共用「幂等 + 金额校验」入账口径。
-/// </summary>
+/// <summary>会员自助购买（顾客端）：选等级 → 选支付渠道（支付宝/微信/银行卡）→ 收银台支付 → 入账升级</summary>
 public class MemberService(AppDbContext db, LogService log, ILogger<MemberService> logger)
 {
     private readonly AppDbContext _db = db;
     private readonly LogService _log = log;
     private readonly ILogger<MemberService> _logger = logger;
 
-    /// <summary>待支付购买意向的配置键前缀（SystemConfigService.GetAll 排除、参数页禁改）</summary>
+    /// <summary>待支付购买意向的配置键前缀（SystemConfigService</summary>
     private const string PayPrefix = "memberpay.";
 
     /// <summary>待支付意向有效期（小时）：超时未支付视为过期，入账与状态查询都会拒绝</summary>
     public const int PendingExpireHours = 24;
 
-    /// <summary>会员中心的全部信息：当前等级 + 可选购买项 + 本人购买记录。</summary>
+    /// <summary>会员中心的全部信息：当前等级 + 可选购买项 + 本人购买记录</summary>
     public async Task<MemberCenterDto> GetCenter(int customerId)
     {
         var c = await _db.Customers.AsNoTracking()
@@ -81,11 +67,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
         };
     }
 
-    /// <summary>
-    /// 发起会员购买：校验通过后生成 HY 交易号，把购买意向暂存到 system_config（memberpay.*），
-    /// 等支付入账后再升级。此处**不改会员档案**——付了钱才算数。
-    /// 校验与原即时购买一致：等级存在、不能重复买当前等级、不允许降级、价格已配置。
-    /// </summary>
+    /// <summary>发起会员购买：校验通过后生成 HY 交易号，把购买意向暂存到 system_config（memberpay</summary>
     public async Task<(string TradeNo, decimal Price)> CreatePurchase(int customerId, string level, string? payType)
     {
         var c = await _db.Customers.AsNoTracking().FirstOrDefaultAsync(x => x.CustomerId == customerId)
@@ -138,11 +120,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
         return (no, price);
     }
 
-    /// <summary>
-    /// 会员购买入账（幂等）：支付成功（回调验签通过 / 查单确认）后调用。
-    /// 金额核对 → 重新校验升级合法性 → 升级档案（乐观并发）→ 意向原地标记完成 → 写操作日志。
-    /// 同一笔交易重复通知/重复查单只会入账一次。
-    /// </summary>
+    /// <summary>会员购买入账（幂等）：支付成功（回调验签通过 / 查单确认）后调用</summary>
     public async Task<(bool Ok, string Message, decimal Amount, string AlipayTradeNo)> ApplyPaidPurchaseAsync(
         string tradeNo, string alipayTradeNo, string payType, decimal paidAmount)
         => await DbConcurrency.RunAsync(async () =>
@@ -164,7 +142,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
             }
         }, _logger, "会员购买入账", reset: () => _db.ChangeTracker.Clear());
 
-    /// <summary>入账本体（容器事务由调用方持有，这里只读锁内的最新值并做业务判定）。</summary>
+    /// <summary>入账本体（容器事务由调用方持有，这里只读锁内的最新值并做业务判定）</summary>
     private async Task<(bool Ok, string Message, decimal Amount, string AlipayTradeNo)>
         ApplyPaidPurchaseCoreAsync(string tradeNo, string alipayTradeNo, string payType, decimal paidAmount)
     {
@@ -248,7 +226,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
         }));
     }
 
-    /// <summary>读取购买意向/完成状态（供 {HY号}/status 轮询）：返回 (是否完成, 金额, 收款交易号, 创建时间, 是否存在)</summary>
+    /// <summary>读取购买意向/完成状态（供 {HY号}/status 轮询）：返回 (是否完成, 金额, 收款交易号, 创建时间, …</summary>
     public async Task<(bool Done, decimal Amount, string AlipayTradeNo, DateTime CreateTime, bool Exists)> GetPurchaseView(string tradeNo)
     {
         var cfg = await _db.SystemConfigs.AsNoTracking()
@@ -266,11 +244,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
         catch { return (false, 0m, "", default, true); }
     }
 
-    /// <summary>
-    /// 管理员侧：会员类型（权益）列表 + 每个类型下的客户数。
-    /// 「会员管理」页的唯一职责就是维护这份类型表——顾客挂哪个等级、什么折扣、
-    /// 自助购买价多少钱，全部以这里为唯一真源（3NF：客户档案只存等级名，读取时按本表关联折扣）。
-    /// </summary>
+    /// <summary>管理员侧：会员类型（权益）列表 + 每个类型下的客户数</summary>
     public async Task<List<MemberRightsDto>> GetRights()
     {
         var rights = await _db.MemberRights.AsNoTracking().OrderBy(m => m.Discount).ToListAsync();
@@ -290,7 +264,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
         })];
     }
 
-    /// <summary>新增会员类型：等级名唯一、折扣 0.5~1、购买价非负。</summary>
+    /// <summary>新增会员类型：等级名唯一、折扣 0</summary>
     public async Task<MemberRightsDto> CreateRight(MemberRightSaveRequest dto, int operatorId)
     {
         var level = (dto.MemberLevel ?? string.Empty).Trim();
@@ -319,11 +293,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
         };
     }
 
-    /// <summary>
-    /// 编辑会员类型：折扣/购买价即改即生效。
-    /// 3NF 后客户档案只存等级名，读取时按等级关联本表——改折扣**无需同步任何档案**，
-    /// 全体挂靠客户下次计价自动用新折扣；等级名称不允许改（客户档案按名称挂靠，改名会使存量档案悬空）。
-    /// </summary>
+    /// <summary>编辑会员类型：折扣/购买价即改即生效</summary>
     public async Task UpdateRight(int id, MemberRightSaveRequest dto, int operatorId)
     {
         ValidateDiscount(dto.Discount);
@@ -356,10 +326,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
 
     private static string PriceSuffix(decimal? p) => p.HasValue ? $"，购买价 ¥{p.Value:0.##}" : "（未开放购买）";
 
-    /// <summary>
-    /// 某客户的会员购买/调整记录（操作日志），供「客户管理」页查看——
-    /// 已注销客户的记录同样可查（档案随记录保留，注销客户仍可执行会员调整）。
-    /// </summary>
+    /// <summary>某客户的会员购买/调整记录（操作日志），供「客户管理」页查看—— 已注销客户的记录同样可查（档案随记录保留，注销客户…</summary>
     public async Task<List<MemberPurchaseDto>> GetMemberHistory(int customerId)
     {
         return await _db.SystemLogs.AsNoTracking()

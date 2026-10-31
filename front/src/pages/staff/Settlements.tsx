@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useUI } from '@/components/UIProvider'
-import { settleApi, orderApi, printApi } from '@/api'
+import { settleApi, supplementApi, orderApi, printApi } from '@/api'
 import Icon from '@/components/Icon'
 import ReceiptModal from '@/components/ReceiptModal'
 import CopyText from '@/components/CopyText'
@@ -86,7 +86,7 @@ export default function Settlements() {
       // 故两类都拉下来合并去重——这样扫码归还时，正在租赁中的车辆其订单也在待选列表里。
       const [s, o1, o2]: any[] = await Promise.all([
         settleApi.list(),
-        canOperate ? orderApi.list('已支付') : Promise.resolve({ data: [] }),
+        canOperate ? orderApi.waitReturn() : Promise.resolve({ data: [] }),
         canOperate ? orderApi.list('租赁中') : Promise.resolve({ data: [] }),
       ])
       setList(s.data || [])
@@ -121,7 +121,7 @@ export default function Settlements() {
     if (!canOperate) return
     if (!silent) setBillsLoading(true)
     try {
-      const res: any = await settleApi.supplementBills()
+      const res: any = await supplementApi.bills()
       setBills(res.data || [])
     } catch (e: any) {
       if (!silent) toast(e?.message || '待收款账单加载失败', 'error')
@@ -251,6 +251,10 @@ export default function Settlements() {
   const [rejectReason, setRejectReason] = useState('')
   const [reviewError, setReviewError] = useState('')
   const [reviewing, setReviewing] = useState(false)
+  /** 审核即验车：损坏费在此录入，随「通过并结算」一起提交，后端当场生成结算单 */
+  const [reviewDamageFee, setReviewDamageFee] = useState(0)
+  /** 结算备注（车况说明 / 随车物品清点），顾客在结算单上也能看到 */
+  const [reviewRemark, setReviewRemark] = useState('')
 
   const loadRequests = async () => {
     setRequestsLoading(true)
@@ -281,6 +285,8 @@ export default function Settlements() {
     setReviewOrder(o)
     setRejectReason('')
     setReviewError('')
+    setReviewDamageFee(0)
+    setReviewRemark('')
   }
 
   /** 已租时长（小时）：申请单里给前台一个「顾客已经用了多久」的直观量 */
@@ -289,6 +295,10 @@ export default function Settlements() {
     return Math.max(0, Math.round(ms / 36e5 * 10) / 10)
   }
 
+  /**
+   * 审核 + 结算一步完成：通过 = 验车完成，损坏费在此填清，后端当场生成结算单。
+   * 顾客随后在自己的订单页看到结算单，自行选择「在线支付」或「到店缴纳」。
+   */
   const handleReview = async (approve: boolean) => {
     const o = reviewOrder
     if (!o) return
@@ -296,10 +306,16 @@ export default function Settlements() {
       setReviewError('请填写驳回原因（顾客可见）')
       return
     }
+    if (approve && reviewDamageFee < 0) {
+      setReviewError('损坏费不能为负数')
+      return
+    }
     if (approve) {
       const ok = await confirm({
-        title: '通过还车申请',
-        message: `通过后将按实际用车时长结算订单 ${o.orderNo}（超时部分按系统倍数计收）。是否立即进入结算？`,
+        title: '通过还车申请并结算',
+        message: `将通过订单 ${o.orderNo} 的还车申请，按实际用车时长结算`
+          + `${reviewDamageFee > 0 ? `，并计入验车损坏费 ¥${reviewDamageFee.toFixed(2)}` : ''}。`
+          + '结算单生成后，顾客可自行选择在线支付或到店缴纳补缴款。是否继续？',
         type: 'question',
         confirmText: '通过并结算',
       })
@@ -308,14 +324,23 @@ export default function Settlements() {
 
     setReviewing(true)
     try {
-      await orderApi.reviewEarlyReturn(o.orderId, approve, approve ? undefined : rejectReason.trim())
-      toast(approve ? '已通过申请，请完成归还结算' : '已驳回该申请', 'success')
+      const res: any = await orderApi.reviewEarlyReturn(
+        o.orderId, approve, approve ? undefined : rejectReason.trim(), reviewDamageFee, reviewRemark || undefined)
+      if (!approve) {
+        toast('已驳回该申请', 'success')
+      } else {
+        // 后端把「钱到底动没动」写成一句话，直接展示，不用前端再猜
+        toast(res?.message || '已通过并完成结算', 'success')
+        // 结算产生补缴时把收款窗顶出来：顾客若选择到店缴纳，前台在这里当场收现金即可
+        if (res?.data?.needCollect) {
+          setCollect({ settleId: res.data.settleId, amount: Number(res.data.supplementAmount) || 0 })
+        }
+      }
       setReviewOrder(null)
       await load()
+      await loadBills(true)
       // 申请单汇总表开着时同步刷新，避免那条申请还留在列表里
       if (showRequests) await loadRequests()
-      // 通过后直接把结算弹窗带出来，省得前台再去下拉里找这笔单
-      if (approve) openSettle(o.orderId)
     } catch (e: any) { toast(e?.message || '审核失败', 'error') }
     finally { setReviewing(false) }
   }
@@ -396,7 +421,7 @@ export default function Settlements() {
   const handleRemind = async (s: any) => {
     setReminding(s.settleId)
     try {
-      const res: any = await settleApi.remindSupplement(s.settleId)
+      const res: any = await supplementApi.remind(s.settleId)
       toast(res?.message || '已提醒顾客补缴', 'success')
     } catch (e: any) {
       toast(e?.message || '催缴失败', 'error')
@@ -706,7 +731,31 @@ export default function Settlements() {
               </div>
 
               <div className="field-hint" style={{ marginTop: 12 }}>
-                <Icon name="info" size={14} />审核通过后立即按实际用车时长结算（多退少补）；驳回则订单继续按原租期执行，驳回原因顾客可见。
+                <Icon name="info" size={14} />通过即验车完成，按实际用车时长结算（多退少补），结算单当场生成；
+                顾客可在自己的订单页选择在线支付或到店缴纳补缴款。驳回则订单继续按原租期执行，驳回原因顾客可见。
+              </div>
+
+              <div className="form-group" style={{ marginTop: 6 }}>
+                <label>验车损坏费（元，无损坏填 0）</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={reviewDamageFee}
+                  onChange={e => { setReviewDamageFee(Math.max(0, parseFloat(e.target.value) || 0)); setReviewError('') }}
+                />
+                <div className="field-hint">
+                  押金不足以覆盖时会并入补缴金额；金额由顾客在结算单上可见，请如实录入。
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>结算备注（可选，顾客可见）</label>
+                <input
+                  value={reviewRemark}
+                  onChange={e => setReviewRemark(e.target.value)}
+                  placeholder="例如：车身完好、随车头盔 1 顶已收回"
+                />
               </div>
 
               <div className="form-group" style={{ marginTop: 6 }}>

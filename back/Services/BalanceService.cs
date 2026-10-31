@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using ERental.Data;
@@ -7,30 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-/// <summary>
-/// 支付渠道**余额查询**服务：对接支付宝 / 微信支付官方接口，取企业账户可用余额。
-///
-/// ── 方案选择（为何是"手动触发 + 短缓存 + 失败兜底"，而非定时任务/对账文件）──
-/// 管理员看余额是**低频、主动**行为，不需要秒级实时性。四个候选方案中：
-///   A 实时查询   —— 每次点开都打官方接口，容易触发限流，接口一挂页面就空白；
-///   B 定时任务   —— 页面秒开，但无人访问时白白请求，且需常驻调度；
-///   C 手动+缓存  —— **本项目采用**：管理员点了才请求，缓存兜住重复点击，天然限流；
-///   D 对账文件   —— 最权威，但 T+1 才有，且拿不到"当前可用余额"，与需求不符。
-/// 采用 C，同时吸收 A（提供 force 强制刷新）与 D（并列展示本地账目做粗对账）的优点。
-///
-/// ── 四项工程保障（需求明确要求）──
-///   ① 超时控制：单次请求 8 秒超时，超时即视为该次尝试失败；
-///   ② 失败重试：最多 2 次重试（共 3 次尝试），指数退避 300ms → 600ms；
-///   ③ 降级兜底：重试仍失败 → 返回上一次成功的缓存值（标记 source=fallback），
-///      连缓存都没有才返回 error，**绝不把异常抛给前端**；
-///   ④ 结果缓存：成功结果缓存 5 分钟（见 <see cref="CacheMinutes"/>），
-///      期间重复请求直接命中缓存，不打官方接口。
-///
-/// ── 安全约束 ──
-/// 本服务只用凭证**发请求**，不打印、不返回、不缓存任何凭证。
-/// 官方响应的原始报文体若要记日志，先过 <see cref="SecretMasker.Truncate"/> 截断。
-/// 余额数字属业务数据（非密钥），可正常回显给管理员。
-/// </summary>
+/// <summary>支付渠道余额查询服务：对接支付宝 / 微信支付官方接口，取企业账户可用余额</summary>
 public class BalanceService(
     AppDbContext db, PayConfigService payConfig, WechatPayService wechat, BankPayService bank,
     ILogger<BalanceService> logger, IHttpClientFactory httpFactory)
@@ -42,53 +19,34 @@ public class BalanceService(
     private readonly ILogger<BalanceService> _logger = logger;
     private readonly IHttpClientFactory _httpFactory = httpFactory;
 
-    /// <summary>
-    /// 余额缓存时长（分钟）。选 5 分钟的依据：
-    ///  - 管理员对账场景下，5 分钟前的余额与此刻并无实质差别；
-    ///  - 支付宝/微信对账类接口有每日调用上限，5 分钟粒度足以把"反复点开"的请求压到个位数；
-    ///  - 需要最新值时可用 force=true 强制刷新，不会因为缓存而看不到变更。
-    /// </summary>
+    /// <summary>余额缓存时长（分钟）</summary>
     public const int CacheMinutes = 5;
 
-    /// <summary>单次官方接口请求超时（秒）。对账类接口正常响应在 1 秒内，8 秒已很宽松。</summary>
+    /// <summary>单次官方接口请求超时（秒）</summary>
     private const int RequestTimeoutSeconds = 8;
 
-    /// <summary>失败后的额外重试次数（不含首次）。共 3 次尝试，覆盖"偶发网络抖动"。</summary>
+    /// <summary>失败后的额外重试次数（不含首次）</summary>
     private const int MaxRetries = 2;
 
-    /// <summary>
-    /// 失败负缓存时长（分钟）。为什么连"失败"也要缓存：
-    /// 查询失败往往是**持续性**的（凭证没权限 / 参数不对 / 账户未开通该产品），
-    /// 若失败不进缓存，管理员每点开一次面板就打 3 次官方接口 ——
-    /// 比成功时还频繁，恰与"避免频繁请求官方接口"背道而驰。
-    /// 取 1 分钟：足以吸住"反复点开/切换折叠"的连点，又不至于让管理员修好配置后还要干等。
-    /// </summary>
+    /// <summary>失败负缓存时长（分钟）</summary>
     private const int FailureCacheMinutes = 1;
 
-    /// <summary>重试的基准退避（毫秒），第 n 次重试等待 base * 2^(n-1)。</summary>
+    /// <summary>重试的基准退避（毫秒），第 n 次重试等待 base * 2^(n-1)</summary>
     private const int RetryBaseDelayMs = 300;
 
-    /// <summary>
-    /// 进程内缓存：渠道 → (余额, 抓取时刻)。
-    /// 为什么用内存而不是落库：余额是易失的展示型数据，落库要处理过期清理、并发写，
-    /// 而进程重启后重新查一次的代价很低（且管理员点开时正好会刷新）。
-    /// 单实例部署下内存缓存即等价；若将来多实例，再换成分布式缓存即可（本类已把读写收敛到两处）。
-    /// </summary>
+    /// <summary>进程内缓存：渠道 → (余额, 抓取时刻)</summary>
     private static readonly Dictionary<string, (BalanceDto Value, DateTime At)> Cache = new();
 
-    /// <summary>缓存与重试状态会跨请求读写，用锁保护。</summary>
+    /// <summary>缓存与重试状态会跨请求读写，用锁保护</summary>
     private static readonly Lock CacheLock = new();
 
-    /// <summary>清空缓存（保存凭证后调用：凭证变了，旧余额缓存已不代表同一账户）。</summary>
+    /// <summary>清空缓存（保存凭证后调用：凭证变了，旧余额缓存已不代表同一账户）</summary>
     public static void InvalidateCache()
     {
         lock (CacheLock) Cache.Clear();
     }
 
-    /// <summary>
-    /// 取三个渠道（支付宝 / 微信 / 银行卡）的余额 + 本地账目对照。
-    /// </summary>
-    /// <remarks>
+    /// <summary>取三个渠道（支付宝 / 微信 / 银行卡）的余额 + 本地账目对照</summary>
     /// ⚠️ 三个渠道必须**串行**查询，不能 Task.WhenAll：
     /// 每个通道都要先经 <see cref="PayConfigService"/> 读 system_config，而它用的是同一个
     /// scoped <see cref="AppDbContext"/>——EF Core 明确禁止同一 DbContext 上的并发操作，
@@ -97,8 +55,6 @@ public class BalanceService(
     /// 若将来要并行，必须用 IServiceScopeFactory 为每个通道开独立 scope，
     /// 而不是把共享 DbContext 的服务直接丢进 WhenAll。
     /// 串行的代价可接受：结果有 5 分钟缓存，正常响应在亚秒级，慢的是异常重试场景。
-    /// </remarks>
-    /// <param name="force">true = 跳过缓存强制刷新（管理员点「刷新」时用）</param>
     public async Task<BalanceOverviewDto> GetOverviewAsync(bool force = false)
     {
         var items = new List<BalanceDto>
@@ -161,7 +117,7 @@ public class BalanceService(
         });
     }
 
-    /// <summary>发一次支付宝余额查询。</summary>
+    /// <summary>发一次支付宝余额查询</summary>
     private async Task<(bool Ok, decimal? Amount, decimal? Total, decimal? Frozen, string? Error)>
         TryAlipayOnceAsync(PayRuntime rt, string method)
     {
@@ -220,7 +176,7 @@ public class BalanceService(
         }
     }
 
-    /// <summary>从支付宝响应里抽取错误码/错误信息，转成给管理员看的短句（不外泄原始报文）。</summary>
+    /// <summary>从支付宝响应里抽取错误码/错误信息，转成给管理员看的短句（不外泄原始报文）</summary>
     private static string SummarizeAlipayError(string body)
     {
         var code = ExtractString(body, "sub_code") ?? ExtractString(body, "code");
@@ -296,14 +252,7 @@ public class BalanceService(
     //  通用：缓存 → 重试 → 降级（三通道共用同一套策略）
     // ══════════════════════════════════════════════════════
 
-    /// <summary>
-    /// 三通道共用的「缓存 → 首次 + 2 次重试（指数退避）→ 降级兜底」流程。
-    /// <para>
-    /// 为什么抽出来：支付宝、微信、银行卡的**查询方式**完全不同（表单 + RSA2 / APIv3 头签名 / HMAC），
-    /// 但**可靠性策略**应该完全一致——三个渠道谁都不该在偶发网络抖动时给出「余额为 0」的错觉。
-    /// 渠道差异由 <paramref name="probe"/> 表达，策略只在这里写一遍。
-    /// </para>
-    /// </summary>
+    /// <summary>三通道共用的「缓存 → 首次 + 2 次重试（指数退避）→ 降级兜底」流程</summary>
     private async Task<BalanceDto> QueryWithRetryAsync(
         BalanceDto dto, bool force,
         Func<Task<(bool Ok, decimal? Available, decimal? Total, decimal? Frozen, string? Error)>> probe)
@@ -356,11 +305,7 @@ public class BalanceService(
         Source = "none"
     };
 
-    /// <summary>
-    /// 读缓存。成功的缓存按 <see cref="CacheMinutes"/> 计龄；
-    /// 失败结果按 <see cref="FailureCacheMinutes"/> 计龄，且命中也只回"上次失败原因"，
-    /// 目的是**压住重复请求**而不是冒充成功数据（前端据 status 照常显示失败态）。
-    /// </summary>
+    /// <summary>读缓存。成功的缓存按 计龄</summary>
     private static bool TryReadCache(string channel, out BalanceDto dto)
     {
         lock (CacheLock)
@@ -396,10 +341,7 @@ public class BalanceService(
         }
     }
 
-    /// <summary>
-    /// 降级兜底：优先回上一次成功的值（哪怕已过期），否则回一个明确的失败说明。
-    /// 关键：**不抛异常、不返回空白**——管理员至少能看到"上次是多少 + 这次为什么没查到"。
-    /// </summary>
+    /// <summary>降级兜底：优先回上一次成功的值（哪怕已过期），否则回一个明确的失败说明</summary>
     private BalanceDto Fallback(string channel, BalanceDto fresh, int retries, string? error)
     {
         lock (CacheLock)
@@ -447,7 +389,7 @@ public class BalanceService(
         Message = s.Message
     };
 
-    /// <summary>用 System.Text.Json 精确取字段，避免"字符串包含"式的误判。</summary>
+    /// <summary>用 System</summary>
     private static decimal? ExtractDecimal(string json, string field)
     {
         var s = ExtractString(json, field);
@@ -475,7 +417,7 @@ public class BalanceService(
         }
     }
 
-    /// <summary>递归找字段（支付宝把业务字段包在 alipay_fund_account_query_response 里）。</summary>
+    /// <summary>递归找字段（支付宝把业务字段包在 alipay_fund_account_query_response 里）</summary>
     private static string? FindString(JsonElement el, string field)
     {
         if (el.ValueKind == JsonValueKind.Object)

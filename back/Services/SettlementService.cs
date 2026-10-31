@@ -8,25 +8,15 @@ namespace ERental.Services;
 
 public class SettlementService(
     AppDbContext db, PaymentService payment, MessageService messages,
-    AlipayService alipay, WechatPayService wechat, BankPayService bank, PayConfigService payConfig,
-    IHttpContextAccessor http, ILogger<SettlementService> logger)
+    SupplementService supplement, ILogger<SettlementService> logger)
 {
     private readonly AppDbContext _db = db;
     private readonly PaymentService _payment = payment;
     private readonly MessageService _messages = messages;
-    private readonly AlipayService _alipay = alipay;
-    private readonly WechatPayService _wechat = wechat;
-    private readonly BankPayService _bank = bank;
-    private readonly PayConfigService _payConfig = payConfig;
-    private readonly IHttpContextAccessor _http = http;
+    private readonly SupplementService _supplement = supplement;
     private readonly ILogger<SettlementService> _logger = logger;
 
-    /// <summary>
-    /// 结算记录列表（对账用）。
-    /// 直接在数据库侧投影成 <see cref="SettleListDto"/>：只取对账需要的金额字段
-    /// 和订单号/车牌/客户名。原来的实现返回实体 + Include，序列化时会把
-    /// 客户名下的全部历史订单一起吐出来（23 条记录 128KB），属于纯冗余负载。
-    /// </summary>
+    /// <summary>结算记录列表（对账用）</summary>
     public async Task<List<SettleListDto>> GetAll() =>
         await _db.SettleRecords
             .OrderByDescending(s => s.SettleTime)
@@ -72,21 +62,72 @@ public class SettlementService(
             })
             .ToListAsync();
 
-    /// <summary>
-    /// 结算核算结果。
-    /// `ActualRent` = 约定租期内的租金，`OverdueFee` = 超出约定还车时间那一段的租金，
-    /// 两者**都是租金**（OverdueFee 只是单价上浮的特殊形式），`RentTotal` 是这笔订单的租金合计。
-    /// </summary>
+    /// <summary>顾客侧结算单列表：只返回自己订单的结算结果</summary>
+    public async Task<List<MySettleDto>> GetMineAsync(int customerId)
+    {
+        var settles = await _db.SettleRecords
+            .Where(s => s.RentalOrder != null && s.RentalOrder.CustomerId == customerId)
+            .Include(s => s.RentalOrder).ThenInclude(o => o!.Vehicle)
+            .Include(s => s.RentalOrder).ThenInclude(o => o!.PaymentRecords)
+            .OrderByDescending(s => s.SettleTime)
+            .ToListAsync();
+
+        return settles.Select(s =>
+        {
+            var pays = s.RentalOrder?.PaymentRecords.Where(p => p.BizType == "supplement").ToList() ?? [];
+            var paid = pays.Where(p => p.PayStatus == "已支付").ToList();
+            var paidSum = paid.Sum(p => p.PayAmount);
+            return new MySettleDto
+            {
+                SettleId = s.SettleId,
+                OrderId = s.OrderId,
+                OrderNo = s.RentalOrder?.OrderNo ?? "",
+                VehicleNo = s.RentalOrder?.Vehicle?.VehicleNo ?? "",
+                SettleTime = s.SettleTime,
+                ActualRent = s.ActualRent,
+                OverdueFee = s.OverdueFee,
+                DamageFee = s.DamageFee,
+                RefundAmount = s.RefundAmount,
+                SupplementAmount = s.SupplementAmount,
+                SupplementPaid = paidSum,
+                SupplementCollected = s.SupplementAmount <= 0 || paidSum >= s.SupplementAmount - 0.01m,
+                PaidChannel = paid.OrderByDescending(p => p.PayId).FirstOrDefault()?.PayType,
+                PendingPayId = pays.Where(p => p.PayStatus == "待支付")
+                    .OrderByDescending(p => p.PayId).Select(p => (int?)p.PayId).FirstOrDefault(),
+                Remark = s.Remark,
+            };
+        }).ToList();
+    }
+
+    /// <summary>顾客选择在线支付补缴：确保有一张可付的待支付补缴单，再按选定渠道拉起收银台</summary>
+    public async Task<CreatePayResultDto> PayOnlineAsync(int settleId, int customerId, string? channelRaw)
+    {
+        var payId = await _supplement.EnsurePendingSupplementAsync(settleId, customerId);
+        if (string.IsNullOrWhiteSpace(channelRaw))
+            return new CreatePayResultDto { PayId = payId };
+
+        var r = await _supplement.PayAsync(payId, customerId, channelRaw);
+        return new CreatePayResultDto
+        {
+            PayId = payId,
+            OrderNo = r.OrderNo,
+            PayType = r.PayType,
+            Amount = r.Amount,
+            PayUrl = r.PayUrl,
+            QrCode = r.QrCode,
+            PayMode = r.PayMode,
+            RealPay = r.RealPay,
+        };
+    }
+
+    /// <summary>结算核算结果</summary>
     private sealed record SettleCalc(
         decimal HourlyRent, decimal Multiplier,
         int ActualHours, decimal ActualRent,
         int OverdueHours, decimal OverdueFee, decimal RentTotal,
         decimal RentDiff, decimal Refund, decimal Supplement);
 
-    /// <summary>
-    /// 统一的结算核算：正常租金只算到约定还车时间，超出部分按超时倍数计为逾期费。
-    /// `damageFee` 由调用方给出——试算时按 0（损坏费要前台现场录入），结算时用表单值。
-    /// </summary>
+    /// <summary>统一的结算核算：正常租金只算到约定还车时间，超出部分按超时倍数计为逾期费</summary>
     private async Task<SettleCalc> CalculateAsync(RentalOrder order, decimal damageFee)
     {
         var now = DateTime.Now;
@@ -119,11 +160,7 @@ public class SettlementService(
             refund, supplement);
     }
 
-    /// <summary>
-    /// 结算试算（只读，不落库）。前台在结算弹窗选定订单后，需要**当场看到逾期费金额**：
-    /// 未逾期显示 ¥0.00，已逾期显示自动计收的数额与算式。
-    /// 与 <see cref="Settle"/> 共用 <see cref="CalculateAsync"/>，口径必然一致。
-    /// </summary>
+    /// <summary>结算试算（只读，不落库）</summary>
     public async Task<SettlePreviewDto> Preview(int orderId)
     {
         var order = await _db.RentalOrders
@@ -243,14 +280,19 @@ public class SettlementService(
             //     「确认已收现金」才落一条已支付记录（钱真到手才算收清），没选就一直是「待收款」；
             //   · 支付宝/微信/银行卡 → 预生成一张待支付补缴单（指定渠道），顾客立刻能在
             //     顾客端「待补缴」付款，前台也可以直接把二维码摆给顾客扫。
-            // 两种都和结算同进同退；网关调用一律不放进这个事务（见 CollectSupplementAsync）。
+            // 两种都和结算同进同退；网关调用一律不放进这个事务（见 SupplementService.CollectAsync）。
             string note;
             if (c.Supplement > 0)
             {
-                var channel = NormalizeChannel(dto.SupplementPayMethod);
-                note = channel == "现金"
-                    ? await SettleNoteAsync(order, c, paid)
-                    : await CreateOnlineSupplementAsync(order, c.Supplement, channel);
+                // SupplementPayMethod 已由前端收敛为「现金/支付宝/微信/银行卡/待顾客选择」之一，
+                // 与 SupplementService 的渠道归一保持一致。
+                var channel = string.IsNullOrWhiteSpace(dto.SupplementPayMethod) ? SupplementPayMethods.Cash : dto.SupplementPayMethod;
+                note = channel switch
+                {
+                    SupplementPayMethods.Cash => await SettleNoteAsync(order, c, paid),
+                    SupplementPayMethods.CustomerChoice => await _supplement.NotifySupplementChoiceAsync(order, c.Supplement),
+                    _ => await _supplement.CreateOnlineSupplementAsync(order, c.Supplement, channel),
+                };
             }
             else
             {
@@ -275,16 +317,7 @@ public class SettlementService(
         }
     }
 
-    /// <summary>
-    /// 生成结算提示文案，并把退款真正执行掉。
-    ///
-    /// 单独拆出来是为了让 <see cref="Settle"/> 的事务体保持"改状态 → 释放车 → 退款 → 提交"的直线结构；
-    /// 三种结果（已原路退回 / 无支付记录 / 仅登记应收补缴）互斥，文案必须让前台一眼看出
-    /// **钱到底动没动**，不能统一回一句"结算成功"。
-    ///
-    /// 退款成功时同步向顾客推送「退款去向」通知（需求：提前还车/正常结算的退款按原支付渠道原路退回，
-    /// 顾客需明确知道钱退到了哪里）——这是把"退款去向"落到顾客侧的关键一步。
-    /// </summary>
+    /// <summary>生成结算提示文案，并把退款真正执行掉</summary>
     private async Task<string> SettleNoteAsync(RentalOrder order, SettleCalc c, PaymentRecord? paid)
     {
         /*
@@ -322,397 +355,7 @@ public class SettlementService(
             : $"结算完成 · 未真实划款，请线下退现金 ¥{c.Refund:0.00}";
     }
 
-    /// <summary>
-    /// 催缴：提醒顾客还有补缴款未缴清。
-    ///
-    /// ── 与旧实现的区别 ──
-    /// 旧实现只认「已生成的待支付线上补缴单」，于是走现金口径的结算单根本催不了，
-    /// 前台看到的是「该结算单没有待支付的补缴单」。现在改成按**派生状态**判断：
-    /// 只要这笔结算的补缴款没缴清（应收 &gt; 已到账），就允许催缴，文案按渠道分开——
-    /// 有线上待支付单 → 引导回顾客端在线付款；没有 → 请到店缴纳或联系门店。
-    /// 幂等键仍是 supplement + 订单号，重复点只会把同一条消息重新置为未读。
-    /// </summary>
-    /// <returns>返回尚未缴清的金额；已缴清或本就无补缴时抛出业务异常。</returns>
-    public async Task<decimal> RemindSupplementAsync(int settleId)
-    {
-        var bill = await BuildBillAsync(settleId);
-        if (bill.Amount <= 0) throw new Exception("该结算单没有补缴款，无需催缴");
-        if (bill.Collected) throw new Exception("该结算单的补缴款已收清，无需再催缴");
-
-        var order = await _db.RentalOrders
-            .Where(o => o.OrderId == bill.OrderId)
-            .Select(o => new { o.OrderNo, o.CustomerId })
-            .FirstOrDefaultAsync() ?? throw new Exception("结算记录未关联租赁订单");
-
-        var online = bill.PendingPayId != null;
-        await _messages.SendAsync(
-            "customer", order.CustomerId, "supplement", order.OrderNo, "补缴催缴提醒",
-            $"门店提醒：订单 {order.OrderNo} 尚有 ¥{bill.Amount - bill.PaidAmount:0.00} 未缴清（逾期/损坏费用）。" +
-            (online
-                ? "请登录顾客端「我的订单 → 待补缴费用」在线支付，或到店缴纳。"
-                : "请到店缴纳，或联系门店获取在线支付链接。"));
-
-        return bill.Amount - bill.PaidAmount;
-    }
-
-    /// <summary>
-    /// 补缴账单列表。
-    ///
-    /// 这是前台「待收款」入口的唯一数据源，也是判断"这笔钱到底收没收清"的唯一口径：
-    /// 收清 = 已到账补缴合计 ≥ 应收补缴。用派生状态而不是加一列状态字段，
-    /// 是因为现金收款、支付宝/微信异步回调、顾客端在线补缴、查单兜底最终都会写 payment_record，
-    /// 从同一张表推出来必然一致；另存状态列则需要四条路径都记得回写，漏一条就成了脏数据。
-    /// </summary>
-    /// <param name="onlyOutstanding">true = 只给未收清的（前台入口用）；false = 连已收清的一起给（对账查看用）</param>
-    public async Task<List<SupplementBillDto>> GetSupplementBillsAsync(bool onlyOutstanding = true)
-    {
-        var settles = await _db.SettleRecords
-            .Where(s => s.SupplementAmount > 0)
-            .Include(s => s.RentalOrder).ThenInclude(o => o!.Customer)
-            .Include(s => s.RentalOrder).ThenInclude(o => o!.Vehicle)
-            .OrderByDescending(s => s.SettleTime)
-            .ToListAsync();
-
-        if (settles.Count == 0) return new List<SupplementBillDto>();
-
-        // 一次性把相关的补缴支付记录捞出来，避免每行一次往返
-        var orderIds = settles.Select(s => s.OrderId).Distinct().ToList();
-        var pays = await _db.PaymentRecords
-            .Where(p => orderIds.Contains(p.OrderId) && p.BizType == "supplement")
-            .OrderBy(p => p.PayId)
-            .ToListAsync();
-
-        var bills = settles.Select(s => BuildBill(s, pays.Where(p => p.OrderId == s.OrderId).ToList())).ToList();
-        return onlyOutstanding ? bills.Where(b => !b.Collected).ToList() : bills;
-    }
-
-    /// <summary>单张结算单的补缴账单（收款弹窗、状态轮询、催缴共用）。</summary>
-    public async Task<SupplementBillDto> BuildBillAsync(int settleId)
-    {
-        var settle = await _db.SettleRecords
-            .Include(s => s.RentalOrder).ThenInclude(o => o!.Customer)
-            .Include(s => s.RentalOrder).ThenInclude(o => o!.Vehicle)
-            .FirstOrDefaultAsync(s => s.SettleId == settleId)
-            ?? throw new Exception("结算记录不存在");
-
-        var pays = await _db.PaymentRecords
-            .Where(p => p.OrderId == settle.OrderId && p.BizType == "supplement")
-            .OrderBy(p => p.PayId)
-            .ToListAsync();
-
-        return BuildBill(settle, pays);
-    }
-
-    private static SupplementBillDto BuildBill(SettleRecord s, List<PaymentRecord> pays)
-    {
-        var paid = pays.Where(p => p.PayStatus == "已支付").ToList();
-        var paidAmount = paid.Sum(p => p.PayAmount);
-        var pending = pays.Where(p => p.PayStatus == "待支付").OrderByDescending(p => p.PayId).FirstOrDefault();
-        var order = s.RentalOrder;
-
-        // 逾期小时数：结算单只存了逾期费金额，小时数按同一套口径从"约定还车 → 实际归还"反推，
-        // 前台收款时能说清"这钱是超时多久产生的"。
-        var overdueHours = order?.ActualReturn is DateTime actual && actual > order.LeaseEnd
-            ? PricingResolver.CalcHours(order.LeaseEnd, actual)
-            : 0;
-
-        return new SupplementBillDto
-        {
-            SettleId = s.SettleId,
-            OrderId = s.OrderId,
-            OrderNo = order?.OrderNo ?? "",
-            CustomerName = order?.Customer?.FullName ?? "",
-            VehicleNo = order?.Vehicle?.VehicleNo ?? "",
-            Amount = s.SupplementAmount,
-            PaidAmount = paidAmount,
-            Collected = s.SupplementAmount <= 0 || paidAmount >= s.SupplementAmount - 0.01m,
-            Channel = paid.OrderByDescending(p => p.PayId).FirstOrDefault()?.PayType,
-            PendingPayId = pending?.PayId,
-            PendingChannel = pending?.PayType,
-            OverdueFee = s.OverdueFee,
-            OverdueHours = overdueHours,
-            SettleTime = s.SettleTime,
-            PaidTime = paid.OrderByDescending(p => p.PayId).FirstOrDefault()?.PayTime
-        };
-    }
-
-    /// <summary>
-    /// 补缴收款（前台收银台）。
-    ///
-    /// 四种方式走两条路：
-    ///   · 现金 → 当场确认收到，直接落一条**已支付**补缴记录（PayType=现金）并通知顾客已收讫。
-    ///     落支付记录而不是只改结算单，是为了让报表「补缴（已到账）」与对账口径自动包含现金；
-    ///   · 支付宝 / 微信 / 银行卡 → 复用或新建一张待支付补缴单，再向通道下单拿收银台地址/二维码。
-    ///     网关调用刻意放在数据库提交之后：一次网关往返几百毫秒到十几秒，塞进事务会长时间持锁。
-    ///
-    /// 并发：现金确认会先锁订单行再重算已收金额，两个前台同时点也只会落一条已支付记录。
-    /// </summary>
-    public async Task<SupplementCollectResultDto> CollectSupplementAsync(int settleId, string channelRaw)
-    {
-        var channel = NormalizeChannel(channelRaw);
-        if (channel is "线上" or "" or null)
-            throw new Exception("请选择收款方式（现金 / 支付宝 / 微信 / 银行卡）");
-
-        return channel == "现金"
-            ? await CollectCashAsync(settleId)
-            : await CollectOnlineAsync(settleId, channel);
-    }
-
-    private async Task<SupplementCollectResultDto> CollectCashAsync(int settleId)
-    {
-        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
-        try
-        {
-            await DbRowLock.PrepareAsync(_db);
-            var settle = await _db.SettleRecords.FirstOrDefaultAsync(s => s.SettleId == settleId)
-                         ?? throw new Exception("结算记录不存在");
-            // 锁订单行：同一张单的现金收款串行化，第二个人拿到锁时已收金额已非 0
-            await DbRowLock.LockOrderAsync(_db, settle.OrderId);
-
-            var pays = await _db.PaymentRecords
-                .Where(p => p.OrderId == settle.OrderId && p.BizType == "supplement")
-                .ToListAsync();
-            var paid = pays.Where(p => p.PayStatus == "已支付").Sum(p => p.PayAmount);
-            var remaining = Math.Round(settle.SupplementAmount - paid, 2);
-            if (remaining <= 0.01m)
-            {
-                await tx.CommitAsync();
-                return new SupplementCollectResultDto
-                {
-                    SettleId = settleId, Channel = "现金", Amount = 0m, Paid = true,
-                    Message = "该结算单的补缴款已收清，无需重复收款"
-                };
-            }
-
-            var now = DateTime.Now;
-            var cashPay = PaymentRecord.Create(settle.OrderId, remaining, "现金", "supplement",
-                BuildSupplementOutTradeNo($"JS{settleId}"));
-            // 现金没有通道流水号，用「CASH-结算单号-时间」留痕，小票与操作日志能对上
-            cashPay.MarkPaid("现金", now, $"CASH-{settleId}-{now:yyyyMMddHHmmss}");
-            _db.PaymentRecords.Add(cashPay);
-            // 之前为线上收款生成过的待支付补缴单必须作废：钱已经用现金收了，
-            // 那张单再挂在顾客端「待补缴」里，顾客可能重复付一次。
-            foreach (var stale in pays.Where(p => p.PayStatus == "待支付"))
-                stale.Cancel();
-            await _db.SaveChangesAsync();
-            await tx.CommitAsync();
-
-            var orderNo = await _db.RentalOrders.Where(o => o.OrderId == settle.OrderId)
-                .Select(o => o.OrderNo).FirstOrDefaultAsync() ?? "";
-            var customerId = await _db.RentalOrders.Where(o => o.OrderId == settle.OrderId)
-                .Select(o => o.CustomerId).FirstOrDefaultAsync();
-            if (customerId > 0)
-                await _messages.SendAsync("customer", customerId, "supplement_paid", orderNo, "补缴成功通知",
-                    $"订单 {orderNo} 的补缴 ¥{remaining:0.00} 已在门店以现金收讫，感谢您的配合。");
-
-            return new SupplementCollectResultDto
-            {
-                SettleId = settleId, Channel = "现金", Amount = remaining, Paid = true,
-                Message = $"已确认收取现金 ¥{remaining:0.00}，该结算单补缴款已收清"
-            };
-        }
-        catch
-        {
-            await tx.RollbackAsync();
-            throw;
-        }
-    }
-
-    private async Task<SupplementCollectResultDto> CollectOnlineAsync(int settleId, string channel)
-    {
-        var settle = await _db.SettleRecords.FirstOrDefaultAsync(s => s.SettleId == settleId)
-                     ?? throw new Exception("结算记录不存在");
-        var order = await _db.RentalOrders.FirstOrDefaultAsync(o => o.OrderId == settle.OrderId)
-                    ?? throw new Exception("结算记录未关联租赁订单");
-
-        var pays = await _db.PaymentRecords
-            .Where(p => p.OrderId == settle.OrderId && p.BizType == "supplement")
-            .OrderBy(p => p.PayId)
-            .ToListAsync();
-        var paidSum = pays.Where(p => p.PayStatus == "已支付").Sum(p => p.PayAmount);
-        var remaining = Math.Round(settle.SupplementAmount - paidSum, 2);
-        if (remaining <= 0.01m)
-            return new SupplementCollectResultDto
-            {
-                SettleId = settleId, Channel = channel, Amount = 0m, Paid = true,
-                Message = "该结算单的补缴款已收清，无需重复收款"
-            };
-
-        // 复用已有的待支付单（结算时按线上渠道预生成的那张），避免同一笔钱挂出多个待支付单；
-        // 顾客端「待补缴」也只会看到这一张。
-        var pending = pays.FirstOrDefault(p => p.PayStatus == "待支付");
-        var firstTime = pending == null;
-        if (pending == null)
-        {
-            pending = PaymentRecord.Create(settle.OrderId, remaining, channel, "supplement",
-                BuildSupplementOutTradeNo(order.OrderNo));
-            _db.PaymentRecords.Add(pending);
-        }
-        else if (pending.PayType != channel || pending.PayAmount != remaining)
-        {
-            pending.PreparePayment(channel, remaining);
-        }
-        await _db.SaveChangesAsync();
-
-        // ── 以下为网关调用：数据库已落库，失败只会导致"有单但拿不到付款参数"，
-        //    前台可以再点一次重试，不会留下半条脏数据 ──
-        string payUrl = "", qrCode = "", payMode = "";
-        bool realPay;
-        var subject = $"电动车租赁补缴 {order.OrderNo}";
-        // 回跳地址按「操作人此刻的访问源」生成：结算台可能被 localhost、局域网 IP 或公网域名打开，
-        // 服务端自己猜的 IP 与地址栏不符时，顾客付完款会被甩到另一个地址。
-        // 自定义头缺失时退回 Referer（浏览器自动带），两条都拿不到才用配置值兜底；
-        // 后台任务没有 HttpContext 时该值为 null，自动退回配置值兜底。
-        var clientOrigin = PayConfigService.ResolveClientOrigin(
-            _http.HttpContext?.Request.Headers["X-Client-Origin"].ToString(),
-            _http.HttpContext?.Request.Headers.Referer.ToString());
-        var returnUrl = await _payConfig.BuildReturnUrlAsync(clientOrigin, $"supplement-pay/{pending.PayId}");
-        var notifyUrl = await _payConfig.BuildNotifyUrlAsync(clientOrigin, "api/payment/alipay/notify");
-        switch (channel)
-        {
-            case "支付宝":
-                payUrl = await _alipay.CreatePagePayAsync(
-                    pending.OutTradeNo!, subject, pending.PayAmount, returnUrl, notifyUrl);
-                var cfg = await _payConfig.ResolveAsync();
-                realPay = cfg is { IsReal: true, CredentialsComplete: true };
-                payMode = "page";
-                break;
-            case "微信":
-            {
-                var wx = await _wechat.CreatePayAsync(pending.OutTradeNo!, subject, pending.PayAmount, returnUrl);
-                payUrl = wx.PayUrl;
-                qrCode = wx.QrCode;
-                payMode = wx.PayMode;
-                realPay = wx.Real;
-                break;
-            }
-            case "银行卡":
-                (payUrl, realPay) = await _bank.CreatePayAsync(pending.OutTradeNo!, subject, pending.PayAmount);
-                payMode = "page";
-                break;
-            default:
-                throw new Exception($"不支持的收款方式「{channel}」");
-        }
-
-        // 首次生成待支付单时同时通知顾客：他可以在顾客端「待补缴」里自己付，
-        // 不必必须等前台把二维码递到眼前。
-        if (firstTime)
-        {
-            await _messages.SendAsync(
-                "customer", order.CustomerId, "supplement", order.OrderNo, "逾期补缴通知",
-                $"订单 {order.OrderNo} 已结算，您尚有余款 ¥{remaining:0.00} 待补缴（逾期/损坏费用）。" +
-                $"可用{channel}在线支付，或到店缴纳；逾期可能影响后续租车。");
-        }
-
-        return new SupplementCollectResultDto
-        {
-            SettleId = settleId,
-            PayId = pending.PayId,
-            Channel = channel,
-            Amount = pending.PayAmount,
-            Paid = false,
-            PayUrl = payUrl,
-            QrCode = qrCode,
-            PayMode = payMode,
-            RealPay = realPay,
-            Message = realPay
-                ? $"已发起{channel}收款 ¥{pending.PayAmount:0.00}，请引导顾客扫码/打开收银台"
-                : $"已生成模拟{channel}收银台 ¥{pending.PayAmount:0.00}（未配置真实凭证，不会真实扣款）"
-        };
-    }
-
-    /// <summary>
-    /// 查询补缴收款状态（前台轮询用）。
-    /// 待支付时按所选渠道主动查一次单，兜住"回调丢失/延迟"——顾客说付了、页面却还显示待收款，
-    /// 就是这条兜底在起作用。三个线上渠道都支持：银行卡走通用网关的查单端点
-    /// （未配置时方法内部直接返回，不影响本地状态）；现金本来就没有待支付单，不会走到这里。
-    /// </summary>
-    public async Task<SupplementBillDto> GetSupplementStatusAsync(int settleId)
-    {
-        var bill = await BuildBillAsync(settleId);
-        if (bill.Collected || bill.PendingPayId == null) return bill;
-
-        var pending = await _db.PaymentRecords.FirstOrDefaultAsync(p => p.PayId == bill.PendingPayId);
-        if (pending?.OutTradeNo == null) return bill;
-
-        try
-        {
-            if (pending.PayType == "微信") await _wechat.QueryTradeStatusAsync(pending.OutTradeNo);
-            else if (pending.PayType == "支付宝") await _alipay.QueryTradeStatusAsync(pending.OutTradeNo);
-            else if (pending.PayType == "银行卡") await _bank.QueryTradeStatusAsync(pending.OutTradeNo);
-            else return bill; // 现金等人工渠道：无待支付单可查
-        }
-        catch (Exception ex)
-        {
-            // 查单失败不能影响前台看到本地状态：回退到库里的记录继续展示
-            _logger.LogWarning(ex, "补缴单 {PayId} 查单兜底失败，回退本地状态", bill.PendingPayId);
-            return bill;
-        }
-
-        return await BuildBillAsync(settleId);
-    }
-
-    /// <summary>
-    /// 收款渠道归一：接受「线下/现金/cash」「微信/微信支付/wechat」等写法，
-    /// 统一成四个前端展示用的字面量。无法识别时回退现金（前台默认收现金，不会误走在线收款）。
-    /// </summary>
-    private static string NormalizeChannel(string? raw)
-    {
-        var s = (raw ?? "").Trim();
-        return s switch
-        {
-            "现金" or "线下" or "cash" or "CASH" => "现金",
-            "支付宝" or "alipay" or "Alipay" => "支付宝",
-            "微信" or "微信支付" or "wechat" or "Wechat" or "WECHAT" => "微信",
-            "银行卡" or "银联" or "bank" or "Bank" => "银行卡",
-            "线上" => "线上",       // 旧口径：渠道待顾客在支付页自选
-            _ => "现金"
-        };
-    }
-
-    /// <summary>
-    /// 生成「线上补缴单」：为逾期/损坏产生的补缴金额创建一条独立的待支付支付记录
-    /// （biz_type='supplement' + 全局唯一的 out_trade_no），并向顾客推送补缴通知。
-    ///
-    /// 与首付款的区别：首付款以租赁订单号作为 out_trade_no；补缴单必须拥有全局唯一的交易号
-    /// （支付宝/微信会拒绝与历史交易重复的 out_trade_no），故单独生成并存储。
-    /// 顾客回到顾客自助端后，用这张待支付记录发起与原首付款一致的真实通道支付。
-    /// </summary>
-    /// <param name="order">结算的租赁订单</param>
-    /// <param name="amount">本次应收补缴金额</param>
-    /// <param name="channel">支付宝/微信/银行卡；旧口径「线上」表示渠道留空由顾客自选</param>
-    private async Task<string> CreateOnlineSupplementAsync(RentalOrder order, decimal amount, string channel)
-    {
-        var outTradeNo = BuildSupplementOutTradeNo(order.OrderNo);
-        _db.PaymentRecords.Add(PaymentRecord.Create(order.OrderId, amount,
-            channel == "线上" ? null : channel, "supplement", outTradeNo));
-        await _db.SaveChangesAsync();
-
-        await _messages.SendAsync(
-            "customer", order.CustomerId, "supplement", order.OrderNo, "逾期补缴通知",
-            $"订单 {order.OrderNo} 已结算，您尚有余款 ¥{amount:0.00} 待补缴（逾期/损坏费用）。" +
-            "请登录顾客端「我的订单 → 待补缴」在线支付，或到店缴纳；逾期可能影响后续租车。");
-
-        return $"结算完成；已生成线上补缴单 ¥{amount:0.00} 并通知顾客在线支付（顾客回到顾客端即可缴款）。";
-    }
-
-    /// <summary>
-    /// 生成全局唯一的补缴交易号：SP + 订单号 + 时间戳 + 随机后缀。
-    /// 同一订单即便历史补缴已支付，也能保证 out_trade_no 不重复（通道拒绝重复订单号）。
-    /// </summary>
-    private static string BuildSupplementOutTradeNo(string orderNo)
-    {
-        var ts = DateTime.Now.ToString("yyyyMMddHHmmssfff");
-        var rnd = new Random().Next(1000, 9999);
-        return $"SP-{orderNo}-{ts}-{rnd}";
-    }
-
-    /// <summary>
-    /// 财务对账：按日期范围核对「应收（订单租金+押金）」与「实收（支付记录）」，
-    /// 同时统计退款、补缴、结算笔数，生成对账汇总。财务每日打烊前据此核对账目。
-    /// 资金三口——实收 / 退款 / 补缴——全部取自支付记录（同一批订单），
-    /// 与「财务下钻」同源，两张卡的数必然对得上。
-    /// </summary>
+    /// <summary>财务对账：按日期范围核对「应收（订单租金+押金）」与「实收（支付记录）」， 同时统计退款、补缴、结算笔数，生成对账汇总</summary>
     public async Task<object> Reconcile(DateTime startDate, DateTime endDate)
     {
         if (endDate < startDate) throw new Exception("结束日期不能早于开始日期");
