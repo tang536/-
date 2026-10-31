@@ -112,6 +112,12 @@ export interface Order {
   deposit: number
   orderStatus: string
   createTime: string
+  /** 下单时选定的支付方式（落库在 payment_record.pay_type），订单详情据此展示 */
+  payType?: string | null
+  /** 提前还车申请状态：null = 未申请；「待审核」= 顾客已申请、等前台审核 */
+  earlyReturnStatus?: string | null
+  /** 租期是否已到期（到期订单在归还结算页置顶高亮） */
+  isOverdue?: boolean
 }
 
 export interface StaffUser {

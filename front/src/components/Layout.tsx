@@ -184,7 +184,7 @@ export default function Layout() {
 
   const roleName = user?.roleName || ''
   const isCustomer = user?.userType === 'customer'
-  const { isDark, toggleTheme } = useTheme()
+  const { isDark, canToggle: canToggleTheme, toggleTheme } = useTheme()
 
   /**
    * 顶栏全局搜索按角色限制数据源，避免出现「搜得到但点进去没权限」：
@@ -626,14 +626,17 @@ export default function Layout() {
               </button>
             )}
 
-            {/* 深浅主题切换：sun/moon 与 IDE 端一致，偏好持久化到 localStorage */}
-            <button
-              className="header-icon-btn"
-              title={isDark ? '切换为浅色主题' : '切换为深色主题'}
-              onClick={toggleTheme}
-            >
-              <Icon name={isDark ? 'sun' : 'moon'} size={19} />
-            </button>
+            {/* 深浅主题切换：sun/moon 与 IDE 端一致，偏好持久化到 localStorage。
+                theme.options 只配了一种主题时按钮隐藏——配置项写了「只允许浅色」就该真正锁住。 */}
+            {canToggleTheme && (
+              <button
+                className="header-icon-btn"
+                title={isDark ? '切换为浅色主题' : '切换为深色主题'}
+                onClick={toggleTheme}
+              >
+                <Icon name={isDark ? 'sun' : 'moon'} size={19} />
+              </button>
+            )}
 
             {/* GitHub 直达：作者/源码入口，新标签打开，员工端与顾客端都显示 */}
             <a

@@ -13,6 +13,7 @@ import { useAuth, ROLE } from '@/hooks/useAuth'
 import { fmtDT, recentDateRange } from '@/utils/datetime'
 import { downloadBlob, todayStamp } from '@/utils/download'
 import CreateOrderPanel from './components/CreateOrderPanel'
+import OrderDetailModal from './components/OrderDetailModal'
 import Pagination from '@/components/Pagination'
 
 /** 默认每页条数；用户可在分页条上改（对账时一屏看更多） */
@@ -107,6 +108,8 @@ export default function Orders() {
   const [sortDir, setSortDir] = useState<SortDir>(searchParams.get('dir') === 'asc' ? 'asc' : 'desc')
   const [loading, setLoading] = useState(true)
   const [receipt, setReceipt] = useState<string | null>(null)
+  /** 订单详情弹窗：展示订单字段与续租记录（系统操作 #105 查询续租记录） */
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
   const [exporting, setExporting] = useState(false)
   /** 到期/逾期预警。与列表筛选无关，独立拉取：换页换条件不该让它闪一下。 */
   const [warn, setWarn] = useState<WarningSummary | null>(null)
@@ -422,6 +425,8 @@ export default function Orders() {
                     <td>
                       {(() => {
                         const ops: any[] = []
+                        // 详情常驻：任何状态的订单都要能查字段与续租记录（需求 4.2.4 订单查询）
+                        ops.push({ key: 'detail', label: '详情', icon: 'orders', tone: 'default', onClick: () => setDetailOrder(o) })
                         if (canOperate && (o.orderStatus === '已支付' || o.orderStatus === '租赁中'))
                           ops.push({ key: 'renew', label: '续租', icon: 'refresh', tone: 'primary', onClick: () => handleRenewal(o.orderId) })
                         ops.push({ key: 'receipt', label: '小票', icon: 'print', tone: 'default', onClick: () => handlePrint(o.orderId) })
@@ -455,6 +460,14 @@ export default function Orders() {
             </div>
           )}
         </>
+      )}
+
+      {detailOrder && (
+        <OrderDetailModal
+          order={detailOrder}
+          onClose={() => setDetailOrder(null)}
+          onPrint={handlePrint}
+        />
       )}
 
       {receipt !== null && (

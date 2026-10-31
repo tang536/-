@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams, useLocation } from 'react-router-dom'
 import Icon, { type IconName } from '@/components/Icon'
-import HeroStage, { resolveInitialMode, type StageFace, type StageMode } from '../components/landing/HeroStage'
+import HeroStage, { resolveInitialMode, type StageFace, type StageMode, type LoginSide } from '../components/landing/HeroStage'
 import { ROLE } from '@/hooks/useAuth'
-import { useTheme } from '@/hooks/useTheme'
+import { useTheme, setThemeOptions } from '@/hooks/useTheme'
 import { authApi } from '@/api'
 import { ROUTE_ROLES } from '@/permissions'
 import { GITHUB_URL } from '@/utils/links'
@@ -20,7 +20,7 @@ import { GITHUB_URL } from '@/utils/links'
 export default function Landing() {
   const [params] = useSearchParams()
   const location = useLocation()
-  const { isDark, toggleTheme } = useTheme()
+  const { isDark, canToggle, toggleTheme } = useTheme()
   const stageWrapRef = useRef<HTMLDivElement>(null)
 
   const [mode, setMode] = useState<StageMode>('none')
@@ -29,16 +29,33 @@ export default function Landing() {
   const [scrolled, setScrolled] = useState(false)
   /** 站点名称：取自后端公开配置 site.name（系统操作 #2 openLoginPage），取不到就用本地默认名 */
   const [siteName, setSiteName] = useState('途电驿站')
+  /**
+   * 允许出现在首屏的登录身份，取自系统配置项 login.modes（默认 "staff,customer"）。
+   * 门店若只对顾客开放自助端（或反过来只留员工入口），对应的车、卡片与按钮就不再出现；
+   * 配置值非法或解析为空时回退到「两种都开放」，不让一处误填把登录入口整个关掉。
+   */
+  const [allowedModes, setAllowedModes] = useState<LoginSide[]>(['customer', 'staff'])
 
   // 打开登录页 = 向后端要一次公开配置（站点名 / 可用登录方式 / 主题选项）。
-  // 这个请求匿名可发，拿不到也不影响页面可用：失败就保持本地默认名，不弹错、不阻塞渲染。
+  // 这个请求匿名可发，拿不到也不影响页面可用：失败就保持本地默认值，不弹错、不阻塞渲染。
   useEffect(() => {
     let alive = true
     authApi
       .options()
       .then((res: any) => {
-        const name = res?.data?.['site.name']
+        const data = res?.data || {}
+        const name = data['site.name']
         if (alive && typeof name === 'string' && name.trim()) setSiteName(name.trim())
+
+        // login.modes：形如 "staff,customer"，只认这两个合法身份
+        const modes = String(data['login.modes'] ?? '')
+          .split(',')
+          .map((s: string) => s.trim().toLowerCase())
+          .filter((s: string): s is LoginSide => s === 'customer' || s === 'staff')
+        if (alive && modes.length) setAllowedModes(Array.from(new Set(modes)) as LoginSide[])
+
+        // theme.options：交给 useTheme 决定切换按钮是否出现、当前偏好是否越界
+        setThemeOptions(data['theme.options'])
       })
       .catch(() => {
         /* 公开配置拿不到不提示：登录页必须永远能显示出来 */
@@ -130,15 +147,18 @@ export default function Landing() {
             <a href="#flow" className="landing-nav-link">使用流程</a>
           </nav>
           <div className="landing-nav-actions">
-            {/* 深浅主题切换：与系统内顶栏同一套 sun/moon，偏好共用 localStorage */}
-            <button
-              className="landing-theme-btn"
-              title={isDark ? '切换为浅色主题' : '切换为深色主题'}
-              aria-label={isDark ? '切换为浅色主题' : '切换为深色主题'}
-              onClick={toggleTheme}
-            >
-              <Icon name={isDark ? 'sun' : 'moon'} size={17} />
-            </button>
+            {/* 深浅主题切换：与系统内顶栏同一套 sun/moon，偏好共用 localStorage。
+                theme.options 只允许一种主题时整颗按钮隐藏（配置即界面，不留能点却无效的入口）。 */}
+            {canToggle && (
+              <button
+                className="landing-theme-btn"
+                title={isDark ? '切换为浅色主题' : '切换为深色主题'}
+                aria-label={isDark ? '切换为浅色主题' : '切换为深色主题'}
+                onClick={toggleTheme}
+              >
+                <Icon name={isDark ? 'sun' : 'moon'} size={17} />
+              </button>
+            )}
             {/* GitHub 直达：与系统顶栏共用 utils/links.ts 里的同一个地址 */}
             <a
               className="landing-theme-btn"
@@ -168,14 +188,18 @@ export default function Landing() {
               门店员工登录后可处理订单、车辆、会员与对账事务。
             </p>
             <div className="hero-actions">
-              <button className="btn-primary hero-btn-primary" onClick={() => igniteAndFocusStage('customer')}>
-                <Icon name="rent" size={16} color="#fff" />
-                我要租车
-              </button>
-              <button className="hero-btn-ghost" onClick={() => igniteAndFocusStage('staff')}>
-                门店员工入口
-                <Icon name="chevron-right" size={15} />
-              </button>
+              {allowedModes.includes('customer') && (
+                <button className="btn-primary hero-btn-primary" onClick={() => igniteAndFocusStage('customer')}>
+                  <Icon name="rent" size={16} color="#fff" />
+                  我要租车
+                </button>
+              )}
+              {allowedModes.includes('staff') && (
+                <button className="hero-btn-ghost" onClick={() => igniteAndFocusStage('staff')}>
+                  门店员工入口
+                  <Icon name="chevron-right" size={15} />
+                </button>
+              )}
             </div>
             <ul className="hero-meta">
               <li><Icon name="check" size={14} />线上选车下单</li>
@@ -185,7 +209,13 @@ export default function Landing() {
           </div>
 
           <div className="hero-stage-wrap" ref={stageWrapRef}>
-            <HeroStage mode={mode} onIgnite={ignite} onExtinguish={extinguish} autoFocus={autoFocus} />
+            <HeroStage
+              mode={mode}
+              onIgnite={ignite}
+              onExtinguish={extinguish}
+              autoFocus={autoFocus}
+              allowed={allowedModes}
+            />
           </div>
         </div>
       </section>
@@ -232,12 +262,16 @@ export default function Landing() {
         <h2>现在就开始</h2>
         <p>顾客注册即享普通会员价；门店账号由管理员在后台开通。</p>
         <div className="landing-cta-actions">
-          <button className="btn-primary cta-btn-primary" onClick={() => igniteAndFocusStage('register')}>
-            免费注册租车
-          </button>
-          <button className="cta-btn-ghost" onClick={() => igniteAndFocusStage('staff')}>
-            工作人员登录
-          </button>
+          {allowedModes.includes('customer') && (
+            <button className="btn-primary cta-btn-primary" onClick={() => igniteAndFocusStage('register')}>
+              免费注册租车
+            </button>
+          )}
+          {allowedModes.includes('staff') && (
+            <button className="cta-btn-ghost" onClick={() => igniteAndFocusStage('staff')}>
+              工作人员登录
+            </button>
+          )}
         </div>
       </section>
 

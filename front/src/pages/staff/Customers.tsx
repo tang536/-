@@ -188,6 +188,32 @@ export default function Customers() {
     }
   }
 
+  /**
+   * 删除客户档案（系统操作 #81 删除客户档案）。
+   *
+   * 只对「零订单」的客户能真正删掉：后端在客户名下有租赁订单时会直接拒绝，
+   * 因为 rental_order 的客户外键是级联删除，物理删除会连带抹掉订单与支付流水，
+   * 与需求 7.1「数据可追溯」冲突。有订单的客户该走「注销」（账号状态转为已注销），
+   * 拦截发生在后端，前端把后端给的可读原因原样弹出来即可。
+   */
+  const handleDelete = async (c: Customer) => {
+    const ok = await confirm({
+      title: '删除客户档案',
+      message: `确定要删除客户「${c.fullName}」的档案吗？该操作不可恢复。名下有租赁订单的客户不允许删除，请改用注销。`,
+      type: 'warning',
+      danger: true,
+      confirmText: '确认删除',
+    })
+    if (!ok) return
+    try {
+      await customerApi.remove(c.customerId)
+      toast('客户档案已删除', 'success')
+      load()
+    } catch (e: any) {
+      toast(e?.message || '删除失败', 'error')
+    }
+  }
+
   /** 打开客户记录弹窗；默认停在「消费记录」，切页签按需懒加载 */
   const openRecord = (c: Customer, tab: 'consume' | 'member' = 'consume') => {
     defaultRecordRangeRef.current = recentDateRange(30)
@@ -317,6 +343,7 @@ export default function Customers() {
                     {/* 编辑对已注销客户同样开放：档案纠错与会员调整（恢复/迁移等级）都从这里进 */}
                     <button className="btn-sm btn-sm-default" onClick={() => openEdit(c)}>编辑</button>
                     <button className="btn-sm btn-sm-default" onClick={() => openRecord(c)} title="查看该客户的消费记录与会员记录">记录</button>
+                    <button className="btn-sm btn-sm-default text-danger" onClick={() => handleDelete(c)} title="删除无租赁订单的客户档案（有订单时请改用注销）">删除</button>
                   </div>
                 </td>
               </tr>

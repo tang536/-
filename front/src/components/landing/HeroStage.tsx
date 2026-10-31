@@ -44,15 +44,34 @@ export default function HeroStage({
   onIgnite,
   onExtinguish,
   autoFocus,
+  allowed = ['customer', 'staff'],
 }: {
   mode: StageMode
   onIgnite: (face: StageFace) => void
   onExtinguish: () => void
   autoFocus: boolean
+  /**
+   * 允许出现在舞台上的身份，来自系统配置 login.modes。
+   * 只开放一种身份时，另一侧的车、对应卡面与「切换身份」按钮都不渲染——
+   * 舞台用绝对定位摆放两辆车，少一辆不会塌陷，只是中央卡片居中。
+   */
+  allowed?: LoginSide[]
 }) {
-  const lit = mode !== 'none'
+  const showCustomer = allowed.includes('customer')
+  const showStaff = allowed.includes('staff')
+
+  /**
+   * 实际渲染用的舞台状态。
+   * 深链（/login?as=staff）或路由守卫带过来的身份，可能落在被配置关掉的一侧；
+   * 此时回落成「未选中」，让用户看到剩下的那唯一入口，而不是一张点不动的空卡。
+   */
+  const modeView: StageMode =
+    (mode === 'staff' && !showStaff) || ((mode === 'customer' || mode === 'register') && !showCustomer)
+      ? 'none'
+      : mode
+
   /** 顾客车在「顾客登录」与「顾客注册」两面下都保持点亮 */
-  const customerSide = mode === 'customer' || mode === 'register'
+  const customerSide = modeView === 'customer' || modeView === 'register'
 
   /** 注册成功后回填到登录卡面的用户名 */
   const [prefill, setPrefill] = useState('')
@@ -79,17 +98,17 @@ export default function HeroStage({
 
   // Esc 收起：展开后按 Esc 回到未选中态，避免用户找不到退路
   useEffect(() => {
-    if (!lit) return
+    if (modeView === 'none') return
     const onKey = (e: KeyboardEvent) => {
       // 卡面里可能叠着协议弹窗，此时 Esc 该归弹窗，别顺手把整张卡面也收掉
       if (e.key === 'Escape' && !document.querySelector('.modal-overlay')) onExtinguish()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [lit, onExtinguish])
+  }, [modeView, onExtinguish])
 
   return (
-    <div className="stage" data-mode={mode}>
+    <div className="stage" data-mode={modeView}>
       {/* ── 背景：远景天际线 + 地面。点击空白处收起 ── */}
       <div className="stage-sky" onClick={onExtinguish} aria-hidden="true">
         <svg className="stage-city" viewBox="0 0 1200 180" preserveAspectRatio="none">
@@ -111,58 +130,74 @@ export default function HeroStage({
         <div className="stage-road" />
       </div>
 
-      {/* ── 左侧：顾客的车 ── */}
-      <Scooter
-        variant="customer"
-        side="left"
-        lit={customerSide}
-        onIgnite={() => (customerSide ? onExtinguish() : onIgnite('customer'))}
-        tag="顾客"
-        tagSub="在线选车下单"
-        icon="rent"
-        hint="进入顾客登录"
-      />
+      {/* ── 左侧：顾客的车（login.modes 未开放顾客身份时不渲染） ── */}
+      {showCustomer && (
+        <Scooter
+          variant="customer"
+          side="left"
+          lit={customerSide}
+          onIgnite={() => (customerSide ? onExtinguish() : onIgnite('customer'))}
+          tag="顾客"
+          tagSub="在线选车下单"
+          icon="rent"
+          hint="进入顾客登录"
+        />
+      )}
 
       {/* ── 中央：当前身份对应的卡片 ── */}
       <div className="stage-core">
         <span className="stage-pool" aria-hidden="true" />
         {/* key 带上前缀：flash 与 card 是同级兄弟，直接用 mode 做 key 会撞车 */}
-        <span className="stage-lamp-flash" key={`flash-${mode}`} aria-hidden="true" />
-        <div className="stage-card" key={`card-${mode}`}>
-          {mode === 'none' && (
+        <span className="stage-lamp-flash" key={`flash-${modeView}`} aria-hidden="true" />
+        <div className="stage-card" key={`card-${modeView}`}>
+          {modeView === 'none' && (
             <div className="stage-idle">
               <span className="stage-idle-icon">
                 <Icon name="vehicles" size={26} color="#fff" />
               </span>
-              <h3>请选择登录身份</h3>
-              <p>顾客登录后可在线选车、下单与支付；门店员工请使用岗位账号登录。</p>
+              <h3>{showCustomer && showStaff ? '请选择登录身份' : showCustomer ? '顾客登录' : '员工登录'}</h3>
+              <p>
+                {showCustomer && showStaff
+                  ? '顾客登录后可在线选车、下单与支付；门店员工请使用岗位账号登录。'
+                  : showCustomer
+                    ? '登录后可在线选车、下单与支付，到店扫码取车。'
+                    : '请使用门店岗位账号登录，处理订单、车辆与结算事务。'}
+              </p>
               <div className="stage-idle-actions">
-                <button type="button" className="stage-idle-btn" onClick={() => onIgnite('customer')}>
-                  顾客登录
-                </button>
-                <button type="button" className="stage-idle-btn" onClick={() => onIgnite('staff')}>
-                  员工登录
-                </button>
+                {showCustomer && (
+                  <button type="button" className="stage-idle-btn" onClick={() => onIgnite('customer')}>
+                    顾客登录
+                  </button>
+                )}
+                {showStaff && (
+                  <button type="button" className="stage-idle-btn" onClick={() => onIgnite('staff')}>
+                    员工登录
+                  </button>
+                )}
               </div>
             </div>
           )}
-          {mode === 'customer' && (
+          {modeView === 'customer' && (
             <div className="stage-lit">
               <CustomerLoginPanel
                 key={prefill || 'blank'}
                 initialAccount={prefill}
                 autoFocus={autoFocus}
-                onSwitchRole={() => onIgnite('staff')}
+                /* 员工入口被配置关掉时不给「切换身份」，否则按钮点了没反应 */
+                onSwitchRole={showStaff ? () => onIgnite('staff') : undefined}
                 onGoRegister={() => onIgnite('register')}
               />
             </div>
           )}
-          {mode === 'staff' && (
+          {modeView === 'staff' && (
             <div className="stage-lit">
-              <StaffLoginPanel autoFocus={autoFocus} onSwitchRole={() => onIgnite('customer')} />
+              <StaffLoginPanel
+                autoFocus={autoFocus}
+                onSwitchRole={showCustomer ? () => onIgnite('customer') : undefined}
+              />
             </div>
           )}
-          {mode === 'register' && (
+          {modeView === 'register' && (
             <div className="stage-lit">
               <RegisterPanel
                 autoFocus={autoFocus}
@@ -177,17 +212,19 @@ export default function HeroStage({
         </div>
       </div>
 
-      {/* ── 右侧：门店员工的车 ── */}
-      <Scooter
-        variant="staff"
-        side="right"
-        lit={mode === 'staff'}
-        onIgnite={() => (mode === 'staff' ? onExtinguish() : onIgnite('staff'))}
-        tag="门店员工"
-        tagSub="订单 · 车辆 · 结算"
-        icon="shield"
-        hint="进入员工登录"
-      />
+      {/* ── 右侧：门店员工的车（login.modes 未开放员工身份时不渲染） ── */}
+      {showStaff && (
+        <Scooter
+          variant="staff"
+          side="right"
+          lit={modeView === 'staff'}
+          onIgnite={() => (modeView === 'staff' ? onExtinguish() : onIgnite('staff'))}
+          tag="门店员工"
+          tagSub="订单 · 车辆 · 结算"
+          icon="shield"
+          hint="进入员工登录"
+        />
+      )}
     </div>
   )
 }
