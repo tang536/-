@@ -45,7 +45,7 @@ public class PrintController(
         catch (Exception ex) { return BadRequest(new { message = ErrorText.Safe(ex) }); }
     }
 
-    /// <summary>结算单小票：随归还结算使用 → 前台 / 财务（图2-10 #13</summary>
+    /// <summary>结算单小票：随归还结算使用 → 前台 / 财务（图2-12 第 #12 项）</summary>
     [HttpGet("settle/{settleId:int}")]
     [Authorize(Policy = Policies.ReceptionOrFinance)]
     public async Task<IActionResult> PrintSettleReceipt(int settleId)
