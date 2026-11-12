@@ -1,0 +1,46 @@
+# 构建产物：任何层级的编译/打包输出都不入库
+**/bin/
+**/obj/
+**/dist/
+**/dist-ssr/
+**/publish/
+**/backups/
+**/.sonarqube/
+**/.scannerwork/
+*.dll
+*.pdb
+*.exe
+*.cache
+*.user
+*.suo
+*.erbk
+*.log
+*.tar.gz
+
+# 依赖：包管理器下载的第三方代码一律不入库（只保留 package-lock.json / *.csproj 清单）
+**/node_modules/
+
+# 运行时数据：上传文件、自动生成的签名密钥、本地开发证书
+back/wwwroot/uploads/
+back/App_Data/
+front/certs/
+
+# 本地配置（生产凭据一律走环境变量）
+# Development.json 含本机数据库口令与开发 JWT 密钥，只保留 .example 模板在仓库里
+back/appsettings.Development.json
+back/appsettings.Production.json
+back/appsettings.Local.json
+
+# 编辑器 / 系统
+.vs/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 项目工作记忆/本地缓存（工具生成，非源码）
+.workbuddy/
+
+# SonarQube 本地扫描工具链（脚本内含明文令牌与本机绝对路径，禁止入库）
+Sonar扫描*.bat
+front/sonar-project.properties
