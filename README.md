@@ -73,7 +73,7 @@ eRentalSystem/
 
 ## 版本
 
-版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)（`MAJOR.MINOR.PATCH`）：不兼容的 API 变更递增主版本号，向下兼容的功能新增递增次版本号，向下兼容的问题修正递增修订号。当前版本 **v1.0.0**。
+版本号遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/)（`MAJOR.MINOR.PATCH`）：不兼容的 API 变更递增主版本号，向下兼容的功能新增递增次版本号，向下兼容的问题修正递增修订号。当前版本 **v1.0.1**。
 
 ---
 
