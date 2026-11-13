@@ -131,6 +131,8 @@ sudo nginx -t && sudo systemctl reload nginx
 
 生产环境的数据库连接串、JWT 密钥、支付凭证通过环境变量或管理员在「支付配置」页维护，仓库内不含任何可用凭据。`wwwroot/uploads/`、`App_Data/`、`backups/`、本地 `appsettings.*.json` 与前端证书目录均不入库。
 
+> 若 MySQL 开启了 binlog，且应用账号没有 `SUPER` 权限，请先执行 `SET PERSIST log_bin_trust_function_creators = 1;`。否则后端启动安装函数时会报 `You do not have the SUPER privilege and binary logging is enabled`，导致启动失败。
+
 ## 数据库对象与一致性
 
 `database/objects.sql` 是以下对象的唯一定义处：
