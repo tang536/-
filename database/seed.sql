@@ -36,9 +36,9 @@ INSERT INTO `permission` (`permission_name`, `permission_code`, `module_name`, `
 -- 系统用户（密码均为 123456 的 BCrypt 哈希）
 -- trq 管理员 / qiantai 前台 / caiwu 财务
 INSERT INTO `system_user` (`login_account`, `login_pwd`, `role_id`, `user_name`, `user_status`, `user_type`) VALUES
-('trq', '$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 1, '唐荣强', 1, 'admin'),
-('qiantai', '$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 2, '前台小张', 1, 'reception'),
-('caiwu', '$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', 3, '财务小李', 1, 'finance');
+('trq', '$2a$11$Cmkl8ZgPVOgOm8yJlujUte/RsVGCYCh5iQymyKxyZ2.O4wApKH.Cm', 1, '唐荣强', 1, 'admin'),
+('qiantai', '$2a$11$Cmkl8ZgPVOgOm8yJlujUte/RsVGCYCh5iQymyKxyZ2.O4wApKH.Cm', 2, '前台小张', 1, 'reception'),
+('caiwu', '$2a$11$Cmkl8ZgPVOgOm8yJlujUte/RsVGCYCh5iQymyKxyZ2.O4wApKH.Cm', 3, '财务小李', 1, 'finance');
 
 -- 会员权益（purchase_price = 顾客在会员中心的自助购买价，普通会员为基准等级故不设价）
 -- ⚠️ 以下四个等级只是**演示数据**，用于让新环境一打开就有可展示的等级梯度。
@@ -53,9 +53,9 @@ INSERT INTO `member_rights` (`member_level`, `discount`, `min_rent_count`, `purc
 -- 示例客户（密码 123456；登录只认用户名 + 密码）
 -- 注册阶段只采集用户名+密码，身份证号/手机号在此仅作演示数据
 INSERT INTO `customer` (`login_account`, `id_card`, `full_name`, `contact_phone`, `login_password`, `member_level`) VALUES
-('zhangsan', '450100199001011234', '张三', '13800138001', '$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '普通会员'),
-('lisi', '450100199203155678', '李四', '13800138002', '$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '银卡会员'),
-('wangwu', '450100198805209012', '王五', '13800138003', '$2a$11$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy', '金卡会员');
+('zhangsan', '450100199001011234', '张三', '13800138001', '$2a$11$Cmkl8ZgPVOgOm8yJlujUte/RsVGCYCh5iQymyKxyZ2.O4wApKH.Cm', '普通会员'),
+('lisi', '450100199203155678', '李四', '13800138002', '$2a$11$Cmkl8ZgPVOgOm8yJlujUte/RsVGCYCh5iQymyKxyZ2.O4wApKH.Cm', '银卡会员'),
+('wangwu', '450100198805209012', '王五', '13800138003', '$2a$11$Cmkl8ZgPVOgOm8yJlujUte/RsVGCYCh5iQymyKxyZ2.O4wApKH.Cm', '金卡会员');
 
 -- 示例车辆
 INSERT INTO `vehicle` (`vehicle_no`, `frame_number`, `brand`, `buy_time`, `buy_price`, `vehicle_status`) VALUES
