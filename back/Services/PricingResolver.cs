@@ -6,53 +6,53 @@ namespace ERental.Services;
 ///<summary>车辆计价：每辆车有自己的日租金与押金</summary>
 internal static class PricingResolver
 {
-    public const decimal FallbackDailyRent=30m;
-    public const decimal FallbackDeposit=500m;
+    public const decimal FallbackDailyRent = 30m;
+    public const decimal FallbackDeposit = 500m;
 
     ///<summary>一天按多少小时折算（与「日租金 ÷ 24 得小时价」是同一个常量）</summary>
-    private const int HoursPerDay=24;
+    private const int HoursPerDay = 24;
 
     ///<summary>日租金换算成小时价，四舍五入到分</summary>
-    public static decimal HourlyRent(decimal dailyRent)=>Math.Round(dailyRent/HoursPerDay,2);
+    public static decimal HourlyRent(decimal dailyRent) => Math.Round(dailyRent / HoursPerDay, 2);
 
     ///<summary>租期折算成计费小时数，向上取整，最少 1 小时</summary>
-    public static int CalcHours(DateTime start,DateTime end)
+    public static int CalcHours(DateTime start, DateTime end)
     {
-        var hours=(int)Math.Ceiling((end-start).TotalHours);
-        return hours<1?1:hours;
+        var hours = (int)Math.Ceiling((end - start).TotalHours);
+        return hours < 1 ? 1 : hours;
     }
 
     ///<summary>解析某辆车的计价</summary>
-    private static async Task<(decimal DailyRent,decimal Deposit)> ResolveAsync(AppDbContext db,int? vehicleId)
+    private static async Task<(decimal DailyRent, decimal Deposit)> ResolveAsync(AppDbContext db, int? vehicleId)
     {
-        decimal? vehicleRent=null,vehicleDeposit=null;
+        decimal? vehicleRent = null, vehicleDeposit = null;
 
-        if(vehicleId.HasValue)
+        if (vehicleId.HasValue)
         {
-            var v=await db.Vehicles.AsNoTracking().Where(x=>x.VehicleId==vehicleId.Value).Select(x=>new{x.DailyRent,x.Deposit}).FirstOrDefaultAsync();
-            if(v!=null)
+            var v = await db.Vehicles.AsNoTracking().Where(x => x.VehicleId == vehicleId.Value).Select(x => new { x.DailyRent, x.Deposit }).FirstOrDefaultAsync();
+            if (v != null)
             {
-                vehicleRent=v.DailyRent;
-                vehicleDeposit=v.Deposit;
+                vehicleRent = v.DailyRent;
+                vehicleDeposit = v.Deposit;
             }
         }
 
         //车辆侧留空的两项才去读全局配置，能少查一次是一次
-        decimal globalRent=FallbackDailyRent,globalDeposit=FallbackDeposit;
-        if(vehicleRent==null||vehicleDeposit==null)
+        decimal globalRent = FallbackDailyRent, globalDeposit = FallbackDeposit;
+        if (vehicleRent == null || vehicleDeposit == null)
         {
-            var cfgs=await db.SystemConfigs.Where(c=>c.ConfigKey=="daily_rent"||c.ConfigKey=="deposit").ToListAsync();
-            globalRent=ConfigValue.Decimal(cfgs,"daily_rent",FallbackDailyRent);
-            globalDeposit=ConfigValue.Decimal(cfgs,"deposit",FallbackDeposit);
+            var cfgs = await db.SystemConfigs.Where(c => c.ConfigKey == "daily_rent" || c.ConfigKey == "deposit").ToListAsync();
+            globalRent = ConfigValue.Decimal(cfgs, "daily_rent", FallbackDailyRent);
+            globalDeposit = ConfigValue.Decimal(cfgs, "deposit", FallbackDeposit);
         }
 
-        return(vehicleRent??globalRent,vehicleDeposit??globalDeposit);
+        return (vehicleRent ?? globalRent, vehicleDeposit ?? globalDeposit);
     }
 
     ///<summary>解析某辆车的计价</summary>
-    public static async Task<(decimal DailyRent,decimal HourlyRent,decimal Deposit)> ResolveHourlyAsync(AppDbContext db,int? vehicleId)
+    public static async Task<(decimal DailyRent, decimal HourlyRent, decimal Deposit)> ResolveHourlyAsync(AppDbContext db, int? vehicleId)
     {
-        var(dailyRent,deposit)=await ResolveAsync(db,vehicleId);
-        return(dailyRent,HourlyRent(dailyRent),deposit);
+        var (dailyRent, deposit) = await ResolveAsync(db, vehicleId);
+        return (dailyRent, HourlyRent(dailyRent), deposit);
     }
 }

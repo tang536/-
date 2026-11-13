@@ -4,59 +4,59 @@ namespace ERental.Models;
 public record VisualReport
 {
     //累计指标（统计报表页使用）
-    public decimal TotalRevenue{get;init;}
-    public int TotalOrders{get;init;}
+    public decimal TotalRevenue { get; init; }
+    public int TotalOrders { get; init; }
     ///<summary>客户总数</summary>
-    public int TotalCustomers{get;init;}
+    public int TotalCustomers { get; init; }
     ///<summary>总的维修费用</summary>
-    public decimal TotalMaintenanceFee{get;init;}
-    public Dictionary<string,decimal>? MonthlyRevenue{get;init;}
-    public Dictionary<string,int>? VehicleStatusStats{get;init;}
-    public Dictionary<string,int>? OrderStatusStats{get;init;}
+    public decimal TotalMaintenanceFee { get; init; }
+    public Dictionary<string, decimal>? MonthlyRevenue { get; init; }
+    public Dictionary<string, int>? VehicleStatusStats { get; init; }
+    public Dictionary<string, int>? OrderStatusStats { get; init; }
 
     ///<summary>今日营收</summary>
-    public decimal TodayRevenue{get;init;}
+    public decimal TodayRevenue { get; init; }
     ///<summary>今日新增订单</summary>
-    public int TodayOrders{get;init;}
+    public int TodayOrders { get; init; }
     ///<summary>在租车辆数</summary>
-    public int RentedCount{get;init;}
+    public int RentedCount { get; init; }
     ///<summary>空闲可租车辆数</summary>
-    public int FreeCount{get;init;}
+    public int FreeCount { get; init; }
     ///<summary>进行中订单数（已支付/租赁中）</summary>
-    public int ActiveOrderCount{get;init;}
+    public int ActiveOrderCount { get; init; }
     ///<summary>逾期未还订单数</summary>
-    public int OverdueCount{get;init;}
+    public int OverdueCount { get; init; }
     ///<summary>24 小时内到期订单数</summary>
-    public int ExpiringCount{get;init;}
+    public int ExpiringCount { get; init; }
     ///<summary>待支付订单数</summary>
-    public int PendingPayCount{get;init;}
+    public int PendingPayCount { get; init; }
     ///<summary>维保中车辆数</summary>
-    public int MaintenanceCount{get;init;}
+    public int MaintenanceCount { get; init; }
     ///<summary>资料待完善的客户数（缺身份证号或手机号）</summary>
-    public int IncompleteProfileCount{get;init;}
+    public int IncompleteProfileCount { get; init; }
     ///<summary>保养到期车辆数</summary>
-    public int MaintenanceDueCount{get;init;}
+    public int MaintenanceDueCount { get; init; }
 
     //设计口径：管理员看「车辆转得动不动、订单来不来得及」，财务看「钱收了多少、账平不平」
 
     ///<summary>车辆使用率（%）：区间内被租出过的车辆数/全部车辆数</summary>
-    public decimal VehicleUsageRate{get;init;}
+    public decimal VehicleUsageRate { get; init; }
 
     ///<summary>区间内被租出过的车辆数（去重）</summary>
-    public int RentedVehicleCount{get;init;}
+    public int RentedVehicleCount { get; init; }
 
     ///<summary>车辆总数（使用率分母）</summary>
-    public int TotalVehicleCount{get;init;}
+    public int TotalVehicleCount { get; init; }
 
     ///<summary>平均单笔租期（小时）：区间内订单的平均时长</summary>
-    public decimal AvgRentHours{get;init;}
+    public decimal AvgRentHours { get; init; }
 
     ///<summary>单台车平均产出（元/台）：区间营收/车辆总数</summary>
-    public decimal RevenuePerVehicle{get;init;}
+    public decimal RevenuePerVehicle { get; init; }
 
     ///<summary>订单取消率（%）：区间内已取消订单/区间内全部订单</summary>
-    public decimal CancelRate{get;init;}
+    public decimal CancelRate { get; init; }
 
     ///<summary>订单趋势</summary>
-    public Dictionary<string,int>? OrderTrend{get;init;}
+    public Dictionary<string, int>? OrderTrend { get; init; }
 }

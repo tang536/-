@@ -7,9 +7,9 @@ namespace ERental.Services;
 internal static class VehicleStateGuard
 {
     ///<summary>原子转入「维保」</summary>
-    public static async Task<bool> TryEnterMaintenanceAsync(AppDbContext db,int vehicleId)
+    public static async Task<bool> TryEnterMaintenanceAsync(AppDbContext db, int vehicleId)
     {
-        FormattableString sql=$@"
+        FormattableString sql = $@"
             UPDATE vehicle
                SET vehicle_status = {VehicleStatuses.Maintenance}
              WHERE vehicle_id = {vehicleId}
@@ -18,9 +18,9 @@ internal static class VehicleStateGuard
     }
 
     ///<summary>维保完成后的放行：把车从「维保」送回「空闲」</summary>
-    public static async Task<bool> TryReleaseAfterMaintenanceAsync(AppDbContext db,int vehicleId,int workOrderId)
+    public static async Task<bool> TryReleaseAfterMaintenanceAsync(AppDbContext db, int vehicleId, int workOrderId)
     {
-        FormattableString sql=$@"
+        FormattableString sql = $@"
             UPDATE vehicle
                SET vehicle_status = {VehicleStatuses.Idle}
              WHERE vehicle_id = {vehicleId}
@@ -35,9 +35,9 @@ internal static class VehicleStateGuard
     }
 
     ///<summary>原子转入「报废」</summary>
-    public static async Task<bool> TryScrapAsync(AppDbContext db,int vehicleId)
+    public static async Task<bool> TryScrapAsync(AppDbContext db, int vehicleId)
     {
-        FormattableString sql=$@"
+        FormattableString sql = $@"
             UPDATE vehicle
                SET vehicle_status = {VehicleStatuses.Scrapped}
              WHERE vehicle_id = {vehicleId}
@@ -46,9 +46,9 @@ internal static class VehicleStateGuard
     }
 
     ///<summary>管理员手动把车置回「空闲」（车辆管理的状态切换接口用）</summary>
-    public static async Task<bool> TryForceIdleAsync(AppDbContext db,int vehicleId)
+    public static async Task<bool> TryForceIdleAsync(AppDbContext db, int vehicleId)
     {
-        FormattableString sql=$@"
+        FormattableString sql = $@"
             UPDATE vehicle
                SET vehicle_status = {VehicleStatuses.Idle}
              WHERE vehicle_id = {vehicleId}

@@ -259,7 +259,59 @@ public class RenewalRequest
 {
     [JsonRequired]
     public int OrderId { get; init; }
-    /// <summary>续租时长，单位「小时」——租车以小时计费，续租沿用同一粒度。</summary>
+    /// <summary>续租天数——续租按整天顺延租期，费用按「日租金 × 天数」核算。</summary>
     [JsonRequired]
-    public int Hours { get; init; }
+    public int Days { get; init; }
+}
+
+/// <summary>开单结果：只回传小票与前端跳转需要的字段</summary>
+public class OrderCreatedDto
+{
+    public int OrderId { get; init; }
+    public string OrderNo { get; init; } = string.Empty;
+    public DateTime LeaseStart { get; init; }
+    public DateTime LeaseEnd { get; init; }
+    public decimal TotalRent { get; init; }
+    public decimal Deposit { get; init; }
+    public string OrderStatus { get; init; } = string.Empty;
+    /// <summary>本次应付合计 = 租金 + 押金</summary>
+    public decimal Payable { get; init; }
+}
+
+/// <summary>订单到期预警行：工作台置顶提醒只需要这些展示字段</summary>
+public class OrderWarningDto
+{
+    public int OrderId { get; init; }
+    public string OrderNo { get; init; } = string.Empty;
+    public string CustomerName { get; init; } = string.Empty;
+    public string? ContactPhone { get; init; }
+    public string VehicleNo { get; init; } = string.Empty;
+    public DateTime LeaseEnd { get; init; }
+    public string OrderStatus { get; init; } = string.Empty;
+    /// <summary>已逾期 / 即将到期</summary>
+    public string WarningType { get; init; } = string.Empty;
+    public double OverdueHours { get; init; }
+    public double RemainingHours { get; init; }
+}
+
+/// <summary>订单到期预警汇总</summary>
+public class OrderWarningListDto
+{
+    public int Total { get; init; }
+    public int OverdueCount { get; init; }
+    public int SoonCount { get; init; }
+    public int WarnDays { get; init; }
+    public List<OrderWarningDto> Items { get; init; } = [];
+}
+
+/// <summary>续租记录投影：时间统一由数据库返回，前端不再接触 RentalOrder 导航属性</summary>
+public class RenewalDto
+{
+    public int RenewalId { get; init; }
+    public int OrderId { get; init; }
+    public int RenewalDays { get; init; }
+    public decimal RenewalFee { get; init; }
+    public DateTime OldEndTime { get; init; }
+    public DateTime NewEndTime { get; init; }
+    public DateTime RenewalTime { get; init; }
 }

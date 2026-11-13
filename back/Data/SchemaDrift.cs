@@ -21,8 +21,12 @@ public static class SchemaDrift
         // 单列的判断与执行拆到 InspectProperty，避免所有分支挤在同一方法里。
         foreach (var entity in db.Model.GetEntityTypes())
         {
+            // 视图映射也带「表名」外观，但 ALTER TABLE 对视图无效；
+            // 视图由 SchemaObjects 安装器统一维护，这里必须跳过。
+            if (entity.GetViewName() is not null) continue;
+
             var table = entity.GetTableName();
-            if (string.IsNullOrEmpty(table)) continue;   // 视图/无表映射的实体不参与补列
+            if (string.IsNullOrEmpty(table)) continue;   // 无表映射的实体不参与补列
 
             foreach (var prop in entity.GetProperties())
                 InspectProperty(db, table, prop, existing, (added, manual));

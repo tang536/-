@@ -36,6 +36,7 @@ public static class DbInitializer
         UpgradeConfigColumns(db);
         UpgradeAccountStateColumns(db);
         CreateMissingTables(db);
+        NormalizeRenewalDays(db);
         UpgradeVehicleColumns(db);
         UpgradeRentalColumns(db);
         UpgradeVehicleImageColumns(db);
@@ -60,6 +61,10 @@ public static class DbInitializer
         EnsureConcurrencyConstraints(db);
 
         EnsureSchemaIndexes(db);
+
+        // ── 数据库对象（视图/触发器/存储过程）：唯一定义在 database/objects.sql，
+        //    作为嵌入资源随程序发布。安装器按脚本哈希 + 对象存在性判断，已安装则直接跳过。
+        SchemaObjects.EnsureInstalled(db);
     }
 
     /// <summary>customer 的登录列（注册用户名 / 密码）与身份证列</summary>
@@ -174,6 +179,23 @@ public static class DbInitializer
         PRIMARY KEY (`report_id`),
         UNIQUE KEY `uk_report_no` (`report_no`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='盘点报表表';
+        """);
+    }
+
+    /// <summary>历史续租记录由「小时」折算为「天」</summary>
+    private static void NormalizeRenewalDays(AppDbContext db)
+    {
+        // 旧接口把前端天数乘 24 后按小时写入 renewal_days，列注释却一直是「天」。
+        // 只认「值等于两个到期时间的小时差、且是整天」的旧行；新记录写的是天数，
+        // 例如续租 1 天：列值 1 与小时差 24 不相等，条件天然不成立，不会二次折算。
+        if (!TableExists(db, "renewal_record")) return;
+        db.Database.ExecuteSqlRaw("""
+            UPDATE `renewal_record`
+               SET `renewal_days` = `renewal_days` DIV 24
+             WHERE `renewal_days` >= 24
+               AND `renewal_days` % 24 = 0
+               AND `renewal_days` = TIMESTAMPDIFF(HOUR, `old_end_time`, `new_end_time`)
+               AND `renewal_days` <> TIMESTAMPDIFF(DAY, `old_end_time`, `new_end_time`);
         """);
     }
 
@@ -446,6 +468,14 @@ public static class DbInitializer
         // ④ 操作日志：按模块筛选 + 按时间倒序分页是最高频的查法。
         //    关键字是 LIKE '%kw%'，内置索引一概帮不上，那种查询只能靠限制时间范围。
         EnsureCompositeIndex(db, TableSystemLog, "idx_log_module_time", "`operate_module`, `operate_time`", "操作日志：按模块 + 时间倒序");
+
+        // ⑤ 结算与租期：对账按结算时间倒序、顾客订单按起租时间排序
+        EnsureIndex(db, "settle_record", "idx_settle_time", "`settle_time`");
+        EnsureIndex(db, TableRentalOrder, "idx_lease_start", "`lease_start`");
+        EnsureCompositeIndex(db, TableRentalOrder, "idx_customer_lease", "`customer_id`, `lease_start`", "顾客订单：按客户 + 起租时间");
+
+        // ⑥ 保养到期视图：按车取最近一次完工时间
+        EnsureCompositeIndex(db, TableMaintenanceOrder, "idx_maint_vehicle_finish", "`vehicle_id`, `finish_time`", "保养到期：按车取最近完工时间");
     }
 
     private static void EnsureMessageContentWidth(AppDbContext db)
@@ -480,7 +510,14 @@ public static class DbInitializer
         EnsureCheckConstraint(db, TableRentalOrder, "ck_order_amount", "`total_rent` >= 0 AND `deposit` >= 0");
         EnsureCheckConstraint(db, TableRentalOrder, "ck_order_period", "`lease_end` > `lease_start`");
 
-        // ③ 复合索引：让「状态 + 时间」「订单 + 状态」一次命中
+        // ③ 状态枚举：绕过服务层直接写库时，非法状态会被数据库拒绝。
+        //    兼容历史值：订单含「已完成」、支付含「已取消」、维保含「处理中」。
+        EnsureCheckConstraint(db, TableVehicle, "ck_vehicle_status", "`vehicle_status` IN ('空闲','在租','维保','报废')");
+        EnsureCheckConstraint(db, TableRentalOrder, "ck_order_status", "`order_status` IN ('待支付','已支付','租赁中','已完结','已取消','已完成')");
+        EnsureCheckConstraint(db, TablePaymentRecord, "ck_pay_status", "`pay_status` IN ('待支付','已支付','部分退款','已退款','已取消')");
+        EnsureCheckConstraint(db, TableMaintenanceOrder, "ck_maint_status", "`status` IN ('待处理','处理中','已完成','已撤回')");
+
+        // ④ 复合索引：让「状态 + 时间」「订单 + 状态」一次命中
         EnsureCompositeIndex(db, TableRentalOrder, "idx_status_create", "`order_status`, `create_time`", purpose: "超时待支付订单回收");
         EnsureCompositeIndex(db, TablePaymentRecord, "idx_order_status", "`order_id`, `pay_status`", purpose: "支付回调定位本次支付记录");
     }

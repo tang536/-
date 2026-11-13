@@ -18,6 +18,11 @@
     <InternalsVisibleTo Include="ERental.Tests" />
   </ItemGroup>
   <ItemGroup>
+    <!-- 视图/触发器/存储过程的唯一定义在 database/objects.sql：随程序集嵌入，
+         后端启动时由 Data/SchemaObjects.cs 幂等安装，避免 C# 与 SQL 两处维护。 -->
+    <EmbeddedResource Include="..\database\objects.sql" LogicalName="ERental.database.objects.sql" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.9" />
     <!-- MySQL 驱动：原 Pomelo.EntityFrameworkCore.MySql 无 EF Core 10 版本（止步 9.0.0），

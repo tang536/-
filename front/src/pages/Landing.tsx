@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams, useLocation } from 'react-router-dom'
-import Icon, { type IconName } from '@/components/Icon'
+import Icon from '@/components/Icon'
 import HeroStage, { resolveInitialMode, type StageFace, type StageMode, type LoginSide } from '../components/landing/HeroStage'
+import RentDemo, { type DemoPricing } from '../components/landing/RentDemo'
 import { ROLE } from '@/hooks/useAuth'
 import { useTheme, setThemeOptions } from '@/hooks/useTheme'
 import { authApi } from '@/api'
@@ -29,6 +30,12 @@ export default function Landing() {
   const [scrolled, setScrolled] = useState(false)
   /** 站点名称：取自后端公开配置 site.name，取不到就用本地默认名 */
   const [siteName, setSiteName] = useState('途电驿站')
+  /** 首页试算用到的三项公开计价配置：日租金、押金、超时倍数 */
+  const [pricing, setPricing] = useState<DemoPricing>({
+    dailyRent: 30,
+    deposit: 500,
+    overdueMultiplier: 1.5,
+  })
   /**
    * 允许出现在首屏的登录身份，取自系统配置项 login.modes（默认 "staff,customer"）。
    * 门店若只对顾客开放自助端（或反过来只留员工入口），对应的车、卡片与按钮就不再出现；
@@ -56,6 +63,18 @@ export default function Landing() {
 
         // theme.options：交给 useTheme 决定切换按钮是否出现、当前偏好是否越界
         setThemeOptions(data['theme.options'])
+
+        // 计价三项：与后端的公开配置同一套回退值，非法数值不覆盖默认
+        const dailyRent = Number(data['daily_rent'])
+        const deposit = Number(data['deposit'])
+        const multiplier = Number(data['overdue_multiplier'])
+        if (alive) {
+          setPricing({
+            dailyRent: Number.isFinite(dailyRent) && dailyRent >= 0 ? dailyRent : 30,
+            deposit: Number.isFinite(deposit) && deposit >= 0 ? deposit : 500,
+            overdueMultiplier: Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1.5,
+          })
+        }
       })
       .catch(() => {
         /* 公开配置拿不到不提示：登录页必须永远能显示出来 */
@@ -112,20 +131,17 @@ export default function Landing() {
     [ignite]
   )
 
-  const features: { icon: IconName; title: string; desc: string }[] = [
-    { icon: 'rent', title: '线上自助租车', desc: '选车、下单、支付全程线上，到店取车即走，小票即租约。' },
-    { icon: 'orders', title: '订单全流程', desc: '从下单、审核还车到归还结算，状态全程可查，多退少补。' },
-    { icon: 'profile', title: '会员折扣体系', desc: '多级会员等级，租车自动享折扣，购买升级即时生效。' },
-    { icon: 'settlements', title: '归还结算对账', desc: '按实际用车时长计费，超时按倍数自动计，财务日结一键对账。' },
-    { icon: 'vehicles', title: '车辆资产台账', desc: '车辆状态实时同步，保养、检查、维修记录全程留痕。' },
-    { icon: 'shield', title: '分级权限管控', desc: '管理员 / 前台 / 财务分角色授权，顾客信息加密存储。' },
-  ]
-
-  const flow: { step: string; title: string; desc: string; icon: IconName }[] = [
-    { step: '01', title: '选车下单', desc: '顾客端挑车、选租期，线上支付押金与租金', icon: 'rent' },
-    { step: '02', title: '到店取车', desc: '前台扫码核销，登记证件，车况拍照留档', icon: 'check' },
-    { step: '03', title: '用车中', desc: '车辆状态实时同步，超时自动按倍数计费', icon: 'clock' },
-    { step: '04', title: '归还结算', desc: '按实际时长多退少补，生成小票、日结对账', icon: 'settlements' },
+  /**
+   * 系统能力：写成「系统里真实存在的规则」，不再用六张图标卡把功能名词铺一遍。
+   * 每条都能在代码或数据库对象里找到对应实现，用户读完知道系统到底怎么做事。
+   */
+  const capabilities: { title: string; desc: string }[] = [
+    { title: '一笔订单一条状态链', desc: '待支付 → 已支付 → 租赁中 → 已完结 / 已取消，五个合法状态由数据库触发器兜底，跳过中间态会被直接拒绝。' },
+    { title: '一车只能租给一个人', desc: '开单事务里先原子占车再写订单：并发请求同时下单，只有一笔能把车辆从「空闲」改成「在租」。' },
+    { title: '按小时计费，向上取整', desc: '日租金 ÷ 24 得小时价，租 61 分钟按 2 小时计；超时部分按配置倍数单收，不并进正常租金。' },
+    { title: '押金与补缴分开结算', desc: '归还时先算实际租金与超时费，再与押金相抵：多收的退回，不足的生成补缴单，退款金额不会为负。' },
+    { title: '三端同源，不各算一套', desc: '顾客、前台、财务读同一批视图（v_order_overview / v_settlement_bill），列表与结算单不会出现两个口径。' },
+    { title: '权限写在接口上', desc: '管理员 / 前台 / 财务 / 顾客四类身份，路由与后端接口共用同一份角色表；顾客资料与支付凭据不会出现在员工列表里。' },
   ]
 
   return (
@@ -143,8 +159,8 @@ export default function Landing() {
             </span>
           </div>
           <nav className="landing-nav-links">
-            <a href="#features" className="landing-nav-link">系统能力</a>
-            <a href="#flow" className="landing-nav-link">使用流程</a>
+            <a href="#demo" className="landing-nav-link">费用试算</a>
+            <a href="#features" className="landing-nav-link">系统规则</a>
           </nav>
           <div className="landing-nav-actions">
             {/* 深浅主题切换：与系统内顶栏同一套 sun/moon，偏好共用 localStorage。
@@ -178,10 +194,6 @@ export default function Landing() {
       <section className="hero">
         <div className="hero-inner">
           <div className="hero-copy">
-            <span className="hero-badge">
-              <span className="hero-badge-dot" />
-              租赁全流程线上化
-            </span>
             <h1>电动车租赁，全程线上办理</h1>
             <p className="hero-sub">
               顾客在线选车、下单、支付，到店扫码取车，归还自动结算；
@@ -220,41 +232,30 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ── 系统能力 ── */}
-      <section className="landing-features" id="features">
-        <span className="section-eyebrow">系统能力</span>
-        <h2>一套系统，管好门店租赁全流程</h2>
-        <p className="landing-features-sub">顾客端自助用车，工作人员端高效运营，数据同源、状态实时</p>
-        <div className="landing-grid">
-          {features.map(f => (
-            <article className="landing-card" key={f.title}>
-              <span className="landing-card-icon">
-                <Icon name={f.icon} size={22} color="#fff" />
-              </span>
-              <h3>{f.title}</h3>
-              <p>{f.desc}</p>
-            </article>
-          ))}
-        </div>
-      </section>
+      {/* ── 交互演示：把一笔订单真的算一遍、走一遍 ── */}
+      <RentDemo pricing={pricing} onTry={() => igniteAndFocusStage('customer')} />
 
-      {/* ── 使用流程 ── */}
-      <section className="landing-flow" id="flow">
-        <span className="section-eyebrow">使用流程</span>
-        <h2>从挑车到结算，一共四步</h2>
-        <div className="flow-track">
-          {flow.map((s, i) => (
-            <div className="flow-step" key={s.step}>
-              <span className="flow-step-no">{s.step}</span>
-              <span className="flow-step-icon">
-                <Icon name={s.icon} size={20} color="#fff" />
-              </span>
-              <h3>{s.title}</h3>
-              <p>{s.desc}</p>
-              {i < flow.length - 1 && <span className="flow-step-arrow" aria-hidden="true" />}
+      {/* ── 系统规则：六条能在代码/数据库里找到对应实现的约束 ── */}
+      <section className="landing-rules" id="features">
+        <div className="rules-head">
+          <h2>系统里真实存在的六条规则</h2>
+          <p>
+            下面这些不是功能名词，而是上线后每天都会生效的约束：状态机、并发占车、计费口径、
+            结算顺序、视图同源与角色权限。每条都能在代码或数据库对象里找到对应实现。
+          </p>
+        </div>
+        <dl className="rules-list">
+          {capabilities.map(c => (
+            <div className="rule-item" key={c.title}>
+              <dt>{c.title}</dt>
+              <dd>{c.desc}</dd>
             </div>
           ))}
-        </div>
+        </dl>
+        <p className="rules-foot">
+          当前门店配置：日租金 ¥{pricing.dailyRent.toFixed(2)} / 天，押金 ¥{pricing.deposit.toFixed(2)}，
+          超时按小时租金的 {pricing.overdueMultiplier} 倍计。
+        </p>
       </section>
 
       {/* ── 底部 CTA ── */}

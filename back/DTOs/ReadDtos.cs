@@ -12,8 +12,8 @@ namespace ERental.DTOs;
 ///      换成投影后它们连出现在 DTO 里的机会都没有（DTO 里根本没有这个字段）；
 ///   3) **导航属性不外溢**——实体上的 <c>Vehicle</c> / <c>RentalOrder</c> 引用导航
 ///      一旦被 EF 的 Include 填上，序列化就会把整棵对象树带出去，投影里只保留扁平的外键与展示所需的编号。
-/// 约定：DTO 全部 <c>init</c> 只读，与服务层返回的实体一一对应（字段名保持一致，
-/// 前端契约不变）；转换只发生在控制器边界，服务层内部仍用实体。
+/// 约定：DTO 全部 <c>init</c> 只读；列表类查询在服务层完成投影，控制器不再拼装返回结构，
+/// 单条详情等需要实体参与领域逻辑的场景仍由服务层内部使用实体。
 /// </summary>
 public class VehicleDto
 {
@@ -77,6 +77,25 @@ public class CustomerDto
         CreateTime = c.CreateTime,
         Version = c.Version,
         ProfileCompleted = c.ProfileCompleted,
+    };
+}
+
+/// <summary>业务参数投影：配置页只展示键、值、说明与更新时间，内部主键仅用于表格 key</summary>
+public class SystemConfigDto
+{
+    public int ConfigId { get; init; }
+    public string ConfigKey { get; init; } = string.Empty;
+    public string? ConfigValue { get; init; }
+    public string? ConfigDesc { get; init; }
+    public DateTime UpdateTime { get; init; }
+
+    public static SystemConfigDto From(SystemConfig c) => new()
+    {
+        ConfigId = c.ConfigId,
+        ConfigKey = c.ConfigKey,
+        ConfigValue = c.ConfigValue,
+        ConfigDesc = c.ConfigDesc,
+        UpdateTime = c.UpdateTime,
     };
 }
 

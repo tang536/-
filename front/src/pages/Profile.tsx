@@ -6,6 +6,7 @@ import { useUI } from '@/components/UIProvider'
 import { logoutEverywhere } from '@/utils/session'
 import Icon from '@/components/Icon'
 import Avatar from '@/components/Avatar'
+import ImageLightbox from '@/components/ImageLightbox'
 
 export default function Profile() {
   const { user, login } = useAuth()
@@ -112,6 +113,12 @@ export default function Profile() {
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
   /** 头像版本号：上传成功后自增，用来破浏览器缓存并清除组件内的失败标记 */
   const [avatarVer, setAvatarVer] = useState(0)
+  /** 上传接口返回的精确地址；保留原扩展名，避免前端按固定 .jpg 猜错 */
+  const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
+  /** 头像大图预览的地址；null 表示没有打开 */
+  const [avatarZoom, setAvatarZoom] = useState<string | null>(null)
+  /** 真实头像是否已加载：决定是否显示「点击查看原图」提示 */
+  const [avatarReady, setAvatarReady] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const validatePwd = () => {
@@ -160,8 +167,11 @@ export default function Profile() {
             userType={user?.userType}
             name={info?.fullName || user?.userName}
             version={avatarVer}
+            src={avatarSrc || undefined}
+            onOpen={setAvatarZoom}
+            onLoaded={() => setAvatarReady(true)}
           />
-          <button className="avatar-edit-btn" onClick={() => fileInputRef.current?.click()} disabled={uploadingAvatar} title="更换头像">
+          <button className="avatar-edit-btn" onClick={() => fileInputRef.current?.click()} disabled={uploadingAvatar} title="更换头像（原图不压缩）">
             <Icon name="camera" size={14} color="#fff" />
           </button>
           <input
@@ -175,8 +185,10 @@ export default function Profile() {
               if (!f) return
               setUploadingAvatar(true)
               try {
-                await authApi.uploadAvatar(f)
-                toast('头像已更新', 'success')
+                const res: any = await authApi.uploadAvatar(f)
+                // 后端返回真实扩展名；用它做 src，后续刷新也不必逐个后缀探测
+                setAvatarSrc(res?.data?.url || null)
+                toast('头像已更新（原图未压缩）', 'success')
                 // 推进版本号：破缓存，同时让 Avatar 组件清掉之前的 404 失败标记
                 setAvatarVer(v => v + 1)
                 setInfo({ ...info })
@@ -196,6 +208,7 @@ export default function Profile() {
               : <span className="status-tag status-warning">租车资料待完善</span>}
           </div>
           <p>注册时间：{new Date(info.createTime).toLocaleDateString('zh-CN')}</p>
+          {avatarReady && <p className="profile-avatar-hint">点击头像可查看原图</p>}
         </div>
       </div>
 
@@ -384,6 +397,14 @@ export default function Profile() {
             </div>
           </div>
         </div>
+      )}
+
+      {avatarZoom && (
+        <ImageLightbox
+          src={avatarZoom}
+          alt={`${info?.fullName || '用户'}的头像大图`}
+          onClose={() => setAvatarZoom(null)}
+        />
       )}
     </div>
   )

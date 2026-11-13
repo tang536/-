@@ -53,6 +53,19 @@ const ALL_MENUS: MenuItem[] = ([
 const GROUP_ORDER = ['工作台', '租赁业务', '资源管理', '数据分析', '系统管理', '我的服务']
 
 /**
+ * 顾客端（C 端）主导航。
+ * 顾客不使用员工式侧边栏：侧边栏是「后台工作台」的语言，放在消费端会让用户
+ * 以为自己进了管理后台。这里只保留四个顾客真正会用的入口，桌面放顶栏、
+ * 手机放底部标签栏，两边共用同一份定义，避免导航与权限各写一套。
+ */
+const CUSTOMER_NAV: Array<{ key: string; label: string; path: string; icon: IconName }> = [
+  { key: 'rent', label: '线上租车', path: '/rent', icon: 'rent' },
+  { key: 'my-orders', label: '我的订单', path: '/my-orders', icon: 'my-orders' },
+  { key: 'membership', label: '会员中心', path: '/membership', icon: 'settlements' },
+  { key: 'profile', label: '个人中心', path: '/profile', icon: 'profile' },
+]
+
+/**
  * 没有独立菜单项的页面 → 归属到哪个菜单。
  *
  * 这些是「子页面」：入口收在父页面里（不占菜单格），但顶栏标题、面包屑与
@@ -505,56 +518,79 @@ export default function Layout() {
   if (!user) return null
 
   return (
-    <div className={`layout ${collapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'is-mobile-open' : ''}`}>
-      {/* 手机端抽屉遮罩：点空白处收起侧边栏 */}
-      {mobileOpen && <div className="sidebar-mask" onClick={() => setMobileOpen(false)} />}
-      <aside className="sidebar">
-        <div className="sidebar-brand" onClick={() => { setMobileOpen(false); navigate(homePathOf(user)) }} title="返回首页">
-          <span className="sidebar-brand-logo"><Icon name="vehicles" size={22} color="#ffffff" /></span>
-          {!collapsed && <span className="sidebar-brand-text">途电驿站</span>}
-        </div>
+    <div className={`layout ${isCustomer ? 'is-customer' : ''} ${collapsed ? 'is-collapsed' : ''} ${mobileOpen ? 'is-mobile-open' : ''}`}>
+      {/* 手机端抽屉遮罩：点空白处收起侧边栏。顾客端没有侧边栏，也不渲染遮罩。 */}
+      {!isCustomer && mobileOpen && <div className="sidebar-mask" onClick={() => setMobileOpen(false)} />}
+      {!isCustomer && (
+        <aside className="sidebar">
+          <div className="sidebar-brand" onClick={() => { setMobileOpen(false); navigate(homePathOf(user)) }} title="返回首页">
+            <span className="sidebar-brand-logo"><Icon name="vehicles" size={22} color="#ffffff" /></span>
+            {!collapsed && <span className="sidebar-brand-text">途电驿站</span>}
+          </div>
 
-        <nav className="sidebar-menu">
-          {groupedMenus.map(({ group, items }) => (
-            <div className="menu-group" key={group}>
-              {!collapsed && <div className="menu-group-title">{group}</div>}
-              {items.map(m => (
-                <button
-                  key={m.key}
-                  className={`menu-item ${activeMenu?.key === m.key ? 'active' : ''}`}
-                  onClick={() => { setMobileOpen(false); navigate(m.path) }}
-                  title={collapsed ? m.label : undefined}
-                >
-                  <Icon name={m.icon} size={20} />
-                  {!collapsed && <span className="menu-label">{m.label}</span>}
-                </button>
-              ))}
-            </div>
-          ))}
-        </nav>
+          <nav className="sidebar-menu">
+            {groupedMenus.map(({ group, items }) => (
+              <div className="menu-group" key={group}>
+                {!collapsed && <div className="menu-group-title">{group}</div>}
+                {items.map(m => (
+                  <button
+                    key={m.key}
+                    className={`menu-item ${activeMenu?.key === m.key ? 'active' : ''}`}
+                    onClick={() => { setMobileOpen(false); navigate(m.path) }}
+                    title={collapsed ? m.label : undefined}
+                  >
+                    <Icon name={m.icon} size={20} />
+                    {!collapsed && <span className="menu-label">{m.label}</span>}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </nav>
 
-        <div className="sidebar-foot">
-          <button className="sidebar-collapse" onClick={() => setCollapsed(v => !v)}>
-            <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={18} />
-            {!collapsed && <span>收起菜单</span>}
-          </button>
-        </div>
-      </aside>
+          <div className="sidebar-foot">
+            <button className="sidebar-collapse" onClick={() => setCollapsed(v => !v)}>
+              <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={18} />
+              {!collapsed && <span>收起菜单</span>}
+            </button>
+          </div>
+        </aside>
+      )}
 
       <div className="main">
-        <header className={`header ${scrolled ? 'is-scrolled' : ''}`}>
-          <div className="header-left">
-            {isMobile && (
-              <button className="header-burger" title="打开菜单" onClick={() => setMobileOpen(true)}>
-                <Icon name="menu" size={20} />
+        <header className={`header ${isCustomer ? 'is-customer-header' : ''} ${scrolled ? 'is-scrolled' : ''}`}>
+          {isCustomer ? (
+            <div className="customer-header-left">
+              <button className="customer-brand" onClick={() => navigate('/rent')} aria-label="返回线上租车">
+                <span className="customer-brand-logo"><Icon name="vehicles" size={20} color="#fff" /></span>
+                <span className="customer-brand-text">途电驿站</span>
               </button>
-            )}
-            <h1 className="header-title">{activeMenu?.label || '工作台'}</h1>
-            {/* 面包屑只标「属于哪个功能区」，不再重复当前页名——
-                原来 h1 和面包屑末级都写着「数据看板」，紧挨着读两遍是纯冗余。
-                当前页由 h1 回答，面包屑回答「它挂在哪一组下」。 */}
-            <span className="header-breadcrumb">{activeMenu?.group}</span>
-          </div>
+              <nav className="customer-nav" aria-label="顾客功能导航">
+                {CUSTOMER_NAV.map(item => (
+                  <button
+                    key={item.key}
+                    className={`customer-nav-item ${activeMenu?.key === item.key ? 'active' : ''}`}
+                    aria-current={activeMenu?.key === item.key ? 'page' : undefined}
+                    onClick={() => navigate(item.path)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </nav>
+            </div>
+          ) : (
+            <div className="header-left">
+              {isMobile && (
+                <button className="header-burger" title="打开菜单" onClick={() => setMobileOpen(true)}>
+                  <Icon name="menu" size={20} />
+                </button>
+              )}
+              <h1 className="header-title">{activeMenu?.label || '工作台'}</h1>
+              {/* 面包屑只标「属于哪个功能区」，不再重复当前页名——
+                  原来 h1 和面包屑末级都写着「数据看板」，紧挨着读两遍是纯冗余。
+                  当前页由 h1 回答，面包屑回答「它挂在哪一组下」。 */}
+              <span className="header-breadcrumb">{activeMenu?.group}</span>
+            </div>
+          )}
 
           <div className="header-right">
             {/* 全局搜索：仅对存在可检索数据源的角色展示（财务只做经营统计，不显示） */}
@@ -638,17 +674,19 @@ export default function Layout() {
               </button>
             )}
 
-            {/* GitHub 直达：作者/源码入口，新标签打开，员工端与顾客端都显示 */}
-            <a
-              className="header-icon-btn header-github"
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="我的 GitHub"
-              aria-label="我的 GitHub"
-            >
-              <Icon name="github" size={19} strokeWidth={0.7} />
-            </a>
+            {/* GitHub 直达：作者/源码入口。顾客端是消费场景，不展示开发相关入口，只在员工端保留 */}
+            {!isCustomer && (
+              <a
+                className="header-icon-btn header-github"
+                href={GITHUB_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="我的 GitHub"
+                aria-label="我的 GitHub"
+              >
+                <Icon name="github" size={19} strokeWidth={0.7} />
+              </a>
+            )}
 
             {/* 消息中心：员工看经营预警、顾客看站内消息，同一套组件与接口 */}
             <div className="notify-wrap" ref={notifyBoxRef}>
@@ -804,7 +842,7 @@ export default function Layout() {
           </div>
         </header>
 
-        <main className="content">
+        <main className={`content ${isCustomer ? 'customer-content' : ''}`}>
           {/*
             Suspense 边界放在 Outlet 外层而不是整个 App 外面：
             页面改成路由级懒加载后，如果边界在更外层，切页的瞬间连侧边栏和顶栏
@@ -831,6 +869,24 @@ export default function Layout() {
             <Outlet />
           </Suspense>
         </main>
+
+        {/* 顾客端手机底部标签栏：桌面隐藏，≤860px 显示。
+            侧边栏在顾客端整体移除，触屏用户靠这条栏在「租车 / 订单 / 会员 / 我的」之间切换。 */}
+        {isCustomer && (
+          <nav className="customer-tabbar" aria-label="顾客底部导航">
+            {CUSTOMER_NAV.map(item => (
+              <button
+                key={item.key}
+                className={`customer-tab ${activeMenu?.key === item.key ? 'active' : ''}`}
+                aria-current={activeMenu?.key === item.key ? 'page' : undefined}
+                onClick={() => navigate(item.path)}
+              >
+                <Icon name={item.icon} size={21} />
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </nav>
+        )}
 
         {/* 手机端搜索浮层：与桌面搜索共用 keyword / hits / 防抖逻辑，
             只是把结果从绝对定位的下拉换成整屏面板（触屏上更好点） */}

@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS `vehicle` (
   `deposit` DECIMAL(10,2) DEFAULT NULL COMMENT '该车押金（元），NULL 表示回退系统配置',
   `image_url` VARCHAR(255) DEFAULT NULL COMMENT '车辆图片相对路径，如 /uploads/vehicle/xxx.jpg',
   PRIMARY KEY (`vehicle_id`),
-  UNIQUE KEY `uk_vehicle_no` (`vehicle_no`)
+  UNIQUE KEY `uk_vehicle_no` (`vehicle_no`),
+  CONSTRAINT `ck_vehicle_status` CHECK (`vehicle_status` IN ('空闲','在租','维保','报废')) ENFORCED
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='车辆表';
 
 -- 7. 租赁订单表
@@ -116,14 +117,18 @@ CREATE TABLE IF NOT EXISTS `rental_order` (
   KEY `idx_vehicle_id` (`vehicle_id`),
   KEY `idx_create_time` (`create_time`),
   KEY `idx_lease_end` (`lease_end`),
+  KEY `idx_lease_start` (`lease_start`),
   KEY `idx_order_status` (`order_status`),
+  -- 顾客「我的订单」与后台按客户筛选：按客户 + 起租时间倒序
+  KEY `idx_customer_lease` (`customer_id`, `lease_start`),
   -- 复合索引：超时待支付回收按「状态 + 创建时间」取数，单列索引只能命中其中一个条件
   KEY `idx_status_create` (`order_status`, `create_time`),
   -- 归还 SQL 的「按车 + 按状态」二维过滤：NOT EXISTS 子查询只在索引内判状态，不回表扫历史订单
   KEY `idx_vehicle_status` (`vehicle_id`, `order_status`),
   -- 数据库层的恒定业务事实：金额不为负、到期必须晚于起租（应用层已校验，这里兜住绕过服务层的写入）
   CONSTRAINT `ck_order_amount` CHECK (`total_rent` >= 0 AND `deposit` >= 0) ENFORCED,
-  CONSTRAINT `ck_order_period` CHECK (`lease_end` > `lease_start`) ENFORCED
+  CONSTRAINT `ck_order_period` CHECK (`lease_end` > `lease_start`) ENFORCED,
+  CONSTRAINT `ck_order_status` CHECK (`order_status` IN ('待支付','已支付','租赁中','已完结','已取消','已完成')) ENFORCED
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='租赁订单表';
 
 -- 8. 支付记录表
@@ -148,7 +153,8 @@ CREATE TABLE IF NOT EXISTS `payment_record` (
   KEY `idx_pay_out_trade_no` (`out_trade_no`),
   -- 退款不得超过实收：并发退款的最后一道防线（应用层用支付记录行锁先在事务内排队）
   CONSTRAINT `ck_pay_amount` CHECK (`pay_amount` >= 0) ENFORCED,
-  CONSTRAINT `ck_pay_refund` CHECK (`refund_amount` >= 0 AND `refund_amount` <= `pay_amount`) ENFORCED
+  CONSTRAINT `ck_pay_refund` CHECK (`refund_amount` >= 0 AND `refund_amount` <= `pay_amount`) ENFORCED,
+  CONSTRAINT `ck_pay_status` CHECK (`pay_status` IN ('待支付','已支付','部分退款','已退款','已取消')) ENFORCED
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付记录表';
 
 -- 9. 结算记录表
@@ -165,6 +171,8 @@ CREATE TABLE IF NOT EXISTS `settle_record` (
   `remark` VARCHAR(200) DEFAULT NULL COMMENT '备注',
   PRIMARY KEY (`settle_id`),
   KEY `idx_order_id` (`order_id`),
+  -- 结算记录按结算时间倒序分页
+  KEY `idx_settle_time` (`settle_time`),
   -- 一张订单只能有一条结算记录：并发点「结算」时，重复的那次会被数据库直接拒绝
   UNIQUE KEY `uk_settle_order` (`order_id`),
   CONSTRAINT `ck_settle_amount` CHECK (`actual_rent` >= 0 AND `overdue_fee` >= 0
@@ -190,7 +198,10 @@ CREATE TABLE IF NOT EXISTS `maintenance_order` (
   KEY `idx_status` (`status`),
   KEY `idx_create_time` (`create_time`),
   -- 维保完工放行：按车 + 按工单状态判定「还有没有其它未完成工单」
-  KEY `idx_vehicle_status` (`vehicle_id`, `status`)
+  KEY `idx_vehicle_status` (`vehicle_id`, `status`),
+  -- 保养到期视图：按车取最近一次完工时间
+  KEY `idx_maint_vehicle_finish` (`vehicle_id`, `finish_time`),
+  CONSTRAINT `ck_maint_status` CHECK (`status` IN ('待处理','处理中','已完成','已撤回')) ENFORCED
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='维保工单表';
 
 -- 11. 报废记录表

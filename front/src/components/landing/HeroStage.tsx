@@ -149,7 +149,7 @@ export default function HeroStage({
         <span className="stage-pool" aria-hidden="true" />
         {/* key 带上前缀：flash 与 card 是同级兄弟，直接用 mode 做 key 会撞车 */}
         <span className="stage-lamp-flash" key={`flash-${modeView}`} aria-hidden="true" />
-        <div className="stage-card" key={`card-${modeView}`}>
+        <div className="stage-card" data-ui key={`card-${modeView}`}>
           {modeView === 'none' && (
             <div className="stage-idle">
               <span className="stage-idle-icon">
@@ -175,6 +175,7 @@ export default function HeroStage({
                   </button>
                 )}
               </div>
+              <p className="stage-idle-note">登录后可继续；下方流程演示不会写入真实订单。</p>
             </div>
           )}
           {modeView === 'customer' && (

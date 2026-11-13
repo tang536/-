@@ -11,87 +11,87 @@ namespace ERental.Services;
 internal static class DbRowLock
 {
     ///<summary>单次等锁上限（秒）</summary>
-    public const int LockWaitTimeoutSeconds=5;
+    public const int LockWaitTimeoutSeconds = 5;
 
     ///<summary>「待支付」订单状态值</summary>
-    private const string PendingPayStatus="待支付";
+    private const string PendingPayStatus = "待支付";
 
     ///<summary>事务内的会话级设置</summary>
-    public static async Task PrepareAsync(AppDbContext db,CancellationToken ct=default)
+    public static async Task PrepareAsync(AppDbContext db, CancellationToken ct = default)
     {
         //走参数占位而不是字符串插值
-        await db.Database.ExecuteSqlRawAsync("SET SESSION innodb_lock_wait_timeout = {0}",[LockWaitTimeoutSeconds],ct);
+        await db.Database.ExecuteSqlRawAsync("SET SESSION innodb_lock_wait_timeout = {0}", [LockWaitTimeoutSeconds], ct);
     }
 
     ///<summary>锁住一张订单（按主键）</summary>
-    public static async Task<RentalOrder?> LockOrderAsync(AppDbContext db,int orderId,CancellationToken ct=default)
+    public static async Task<RentalOrder?> LockOrderAsync(AppDbContext db, int orderId, CancellationToken ct = default)
     {
-        var hit=await LockScalarAsync(db,"SELECT `order_id` FROM `rental_order` WHERE `order_id` = @id FOR UPDATE",("@id",orderId),ct);
-        if(hit is null) return null;
+        var hit = await LockScalarAsync(db, "SELECT `order_id` FROM `rental_order` WHERE `order_id` = @id FOR UPDATE", ("@id", orderId), ct);
+        if (hit is null) return null;
         //必须 Reload：EF 查询遇到「已被跟踪」的实体会返回跟踪器里的那个实例
-        var order=await db.RentalOrders.FirstOrDefaultAsync(o=>o.OrderId==orderId,ct);
-        if(order is null) return null;
+        var order = await db.RentalOrders.FirstOrDefaultAsync(o => o.OrderId == orderId, ct);
+        if (order is null) return null;
         await db.Entry(order).ReloadAsync(ct);
         return order;
     }
 
     ///<summary>锁住一张订单（按订单号）</summary>
-    public static async Task<RentalOrder?> LockOrderByNoAsync(AppDbContext db,string orderNo,CancellationToken ct=default)
+    public static async Task<RentalOrder?> LockOrderByNoAsync(AppDbContext db, string orderNo, CancellationToken ct = default)
     {
-        var hit=await LockScalarAsync(db,"SELECT `order_id` FROM `rental_order` WHERE `order_no` = @no FOR UPDATE",("@no",orderNo),ct);
-        var id=hit is null?0:Convert.ToInt32(hit);
-        return id==0?null:await LockOrderAsync(db,id,ct);
+        var hit = await LockScalarAsync(db, "SELECT `order_id` FROM `rental_order` WHERE `order_no` = @no FOR UPDATE", ("@no", orderNo), ct);
+        var id = hit is null ? 0 : Convert.ToInt32(hit);
+        return id == 0 ? null : await LockOrderAsync(db, id, ct);
     }
 
     ///<summary>锁住一条支付记录</summary>
-    public static async Task<PaymentRecord?> LockPaymentAsync(AppDbContext db,int payId,CancellationToken ct=default)
+    public static async Task<PaymentRecord?> LockPaymentAsync(AppDbContext db, int payId, CancellationToken ct = default)
     {
-        var hit=await LockScalarAsync(db,"SELECT `pay_id` FROM `payment_record` WHERE `pay_id` = @id FOR UPDATE",("@id",payId),ct);
-        if(hit is null) return null;
-        var pay=await db.PaymentRecords.FirstOrDefaultAsync(p=>p.PayId==payId,ct);
-        if(pay is null) return null;
+        var hit = await LockScalarAsync(db, "SELECT `pay_id` FROM `payment_record` WHERE `pay_id` = @id FOR UPDATE", ("@id", payId), ct);
+        if (hit is null) return null;
+        var pay = await db.PaymentRecords.FirstOrDefaultAsync(p => p.PayId == payId, ct);
+        if (pay is null) return null;
         await db.Entry(pay).ReloadAsync(ct);//同上：覆盖跟踪器里的旧 refund_amount
         return pay;
     }
 
     ///<summary>锁住客户档案的一行</summary>
-    public static async Task<Customer?> LockCustomerAsync(AppDbContext db,int customerId,CancellationToken ct=default)
+    public static async Task<Customer?> LockCustomerAsync(AppDbContext db, int customerId, CancellationToken ct = default)
     {
-        var hit=await LockScalarAsync(db,"SELECT `customer_id` FROM `customer` WHERE `customer_id` = @id FOR UPDATE",("@id",customerId),ct);
-        if(hit is null) return null;
-        var c=await db.Customers.FirstOrDefaultAsync(x=>x.CustomerId==customerId,ct);
-        if(c is null) return null;
+        var hit = await LockScalarAsync(db, "SELECT `customer_id` FROM `customer` WHERE `customer_id` = @id FOR UPDATE", ("@id", customerId), ct);
+        if (hit is null) return null;
+        var c = await db.Customers.FirstOrDefaultAsync(x => x.CustomerId == customerId, ct);
+        if (c is null) return null;
         await db.Entry(c).ReloadAsync(ct);//同上：覆盖跟踪器里的旧等级/余额
         return c;
     }
 
     ///<summary>锁住一条系统配置</summary>
-    public static async Task<SystemConfig?> LockConfigAsync(AppDbContext db,string key,CancellationToken ct=default)
+    public static async Task<SystemConfig?> LockConfigAsync(AppDbContext db, string key, CancellationToken ct = default)
     {
-        var hit=await LockScalarAsync(db,"SELECT `config_id` FROM `system_config` WHERE `config_key` = @k FOR UPDATE",("@k",key),ct);
-        if(hit is null) return null;
-        var cfg=await db.SystemConfigs.FirstOrDefaultAsync(c=>c.ConfigKey==key,ct);
-        if(cfg is null) return null;
+        var hit = await LockScalarAsync(db, "SELECT `config_id` FROM `system_config` WHERE `config_key` = @k FOR UPDATE", ("@k", key), ct);
+        if (hit is null) return null;
+        var cfg = await db.SystemConfigs.FirstOrDefaultAsync(c => c.ConfigKey == key, ct);
+        if (cfg is null) return null;
         await db.Entry(cfg).ReloadAsync(ct);//同上：覆盖跟踪器里的旧配置值
         return cfg;
     }
 
     ///<summary>锁住一条维保工单（按主键）</summary>
-    public static async Task<MaintenanceOrder?> LockWorkOrderAsync(AppDbContext db,int workOrderId,CancellationToken ct=default)
+    public static async Task<MaintenanceOrder?> LockWorkOrderAsync(AppDbContext db, int workOrderId, CancellationToken ct = default)
     {
-        var hit=await LockScalarAsync(db,"SELECT `work_order_id` FROM `maintenance_order` WHERE `work_order_id` = @id FOR UPDATE",("@id",workOrderId),ct);
-        if(hit is null) return null;
-        var m=await db.MaintenanceOrders.FirstOrDefaultAsync(x=>x.WorkOrderId==workOrderId,ct);
-        if(m is null) return null;
+        var hit = await LockScalarAsync(db, "SELECT `work_order_id` FROM `maintenance_order` WHERE `work_order_id` = @id FOR UPDATE", ("@id", workOrderId), ct);
+        if (hit is null) return null;
+        var m = await db.MaintenanceOrders.FirstOrDefaultAsync(x => x.WorkOrderId == workOrderId, ct);
+        if (m is null) return null;
         await db.Entry(m).ReloadAsync(ct);//同上：覆盖跟踪器里的旧状态/维修费
         return m;
     }
 
     ///<summary>批量锁住「已超时仍未支付」的订单</summary>
-    public static async Task<List<RentalOrder>> LockExpiredPendingAsync(AppDbContext db,DateTime deadline,int batch,DateTime? paidGraceDeadline=null,CancellationToken ct=default)
+    public static async Task<List<RentalOrder>> LockExpiredPendingAsync(AppDbContext db, DateTime deadline, int batch, DateTime? paidGraceDeadline = null, CancellationToken ct = default)
     {
         //判定「已发起支付」的依据是 payment_record 上的渠道标记：下单时该字段是占位值「待定」
-        var sql=paidGraceDeadline is null
+        var sql = paidGraceDeadline is null
             ? "SELECT `order_id` FROM `rental_order` " +
               "WHERE `order_status` = @s AND `create_time` < @d " +
               "ORDER BY `order_id` LIMIT @n FOR UPDATE SKIP LOCKED"
@@ -104,56 +104,56 @@ internal static class DbRowLock
               "                        AND p.`pay_type` <> '待定')) " +
               "ORDER BY o.`order_id` LIMIT @n FOR UPDATE SKIP LOCKED";
 
-        (string Name,object? Value)[] args;
-        if(paidGraceDeadline is null) args=[("@s",PendingPayStatus),("@d",deadline),("@n",batch)];
-        else args=[("@s",PendingPayStatus),("@d",deadline),("@dg",paidGraceDeadline.Value),("@n",batch)];
+        (string Name, object? Value)[] args;
+        if (paidGraceDeadline is null) args = [("@s", PendingPayStatus), ("@d", deadline), ("@n", batch)];
+        else args = [("@s", PendingPayStatus), ("@d", deadline), ("@dg", paidGraceDeadline.Value), ("@n", batch)];
 
-        var ids=await QueryScalarsAsync(db,sql,args,ct);
+        var ids = await QueryScalarsAsync(db, sql, args, ct);
 
-        if(ids.Count==0) return[];
-        var orders=await db.RentalOrders.Where(o=>ids.Contains(o.OrderId)).ToListAsync(ct);
+        if (ids.Count == 0) return [];
+        var orders = await db.RentalOrders.Where(o => ids.Contains(o.OrderId)).ToListAsync(ct);
         //同 LockOrderAsync：本批次可能有一部分已被跟踪过，强制用锁内真实值覆盖
-        foreach(var o in orders) await db.Entry(o).ReloadAsync(ct);
+        foreach (var o in orders) await db.Entry(o).ReloadAsync(ct);
         //按 id 顺序返回
-        return[.. orders.OrderBy(o=>o.OrderId)];
+        return [.. orders.OrderBy(o => o.OrderId)];
     }
 
     ///<summary>在当前连接上执行一条「返回单值」的加锁查询</summary>
-    private static async Task<object?> LockScalarAsync(AppDbContext db,string sql,(string Name,object? Value) arg,CancellationToken ct)=>await ExecuteScalarAsync(db,sql,[arg],ct);
+    private static async Task<object?> LockScalarAsync(AppDbContext db, string sql, (string Name, object? Value) arg, CancellationToken ct) => await ExecuteScalarAsync(db, sql, [arg], ct);
 
-    private static async Task<object?> ExecuteScalarAsync(AppDbContext db,string sql,(string Name,object? Value)[] args,CancellationToken ct)
+    private static async Task<object?> ExecuteScalarAsync(AppDbContext db, string sql, (string Name, object? Value)[] args, CancellationToken ct)
     {
-        await using var cmd=await CreateCommandAsync(db,sql,args,ct);
-        var value=await cmd.ExecuteScalarAsync(ct);
-        return value is DBNull?null:value;
+        await using var cmd = await CreateCommandAsync(db, sql, args, ct);
+        var value = await cmd.ExecuteScalarAsync(ct);
+        return value is DBNull ? null : value;
     }
 
-    private static async Task<List<int>> QueryScalarsAsync(AppDbContext db,string sql,(string Name,object? Value)[] args,CancellationToken ct)
+    private static async Task<List<int>> QueryScalarsAsync(AppDbContext db, string sql, (string Name, object? Value)[] args, CancellationToken ct)
     {
-        await using var cmd=await CreateCommandAsync(db,sql,args,ct);
-        var list=new List<int>();
-        await using var reader=await cmd.ExecuteReaderAsync(ct);
-        while(await reader.ReadAsync(ct))
+        await using var cmd = await CreateCommandAsync(db, sql, args, ct);
+        var list = new List<int>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
         {
-            if(!reader.IsDBNull(0)) list.Add(reader.GetInt32(0));
+            if (!reader.IsDBNull(0)) list.Add(reader.GetInt32(0));
         }
         return list;
     }
 
     ///<summary>建命令：显式挂到 EF 当前事务上</summary>
-    private static async Task<DbCommand> CreateCommandAsync(AppDbContext db,string sql,(string Name,object? Value)[] args,CancellationToken ct)
+    private static async Task<DbCommand> CreateCommandAsync(AppDbContext db, string sql, (string Name, object? Value)[] args, CancellationToken ct)
     {
-        var conn=db.Database.GetDbConnection();
-        if(conn.State!=ConnectionState.Open) await db.Database.OpenConnectionAsync(ct);
+        var conn = db.Database.GetDbConnection();
+        if (conn.State != ConnectionState.Open) await db.Database.OpenConnectionAsync(ct);
 
-        var cmd=conn.CreateCommand();
-        cmd.CommandText=sql;
-        cmd.Transaction=db.Database.CurrentTransaction?.GetDbTransaction();
-        foreach(var(name,value) in args)
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
+        foreach (var (name, value) in args)
         {
-            var p=cmd.CreateParameter();
-            p.ParameterName=name;
-            p.Value=value??DBNull.Value;
+            var p = cmd.CreateParameter();
+            p.ParameterName = name;
+            p.Value = value ?? DBNull.Value;
             cmd.Parameters.Add(p);
         }
         return cmd;

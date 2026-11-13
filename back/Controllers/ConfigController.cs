@@ -13,62 +13,62 @@ namespace ERental.Controllers;
 ///<summary>系统配置+数据字典管理，均仅管理员可用</summary>
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Policy=Policies.AdminOnly)]
-[SuppressMessage("Major Code Smell","S6960:Controllers should have a single responsibility",
-    Justification="配置、数据字典、AI 生图设置都是「系统参数维护」同一职责域，且前端设置页一次打开会同时拉多组参数；按子域拆控制器只会把一个页面的请求打散到多个前缀，收益不抵契约变更成本。")]
+[Authorize(Policy = Policies.AdminOnly)]
+[SuppressMessage("Major Code Smell", "S6960:Controllers should have a single responsibility",
+    Justification = "配置、数据字典、AI 生图设置都是「系统参数维护」同一职责域，且前端设置页一次打开会同时拉多组参数；按子域拆控制器只会把一个页面的请求打散到多个前缀，收益不抵契约变更成本。")]
 public class ConfigController(
-    SystemConfigService svc,ComfyConfigService comfyCfg,ComfyUiClient comfy,
-    IHttpClientFactory httpFactory):ControllerBase
+    SystemConfigService svc, ComfyConfigService comfyCfg, ComfyUiClient comfy,
+    IHttpClientFactory httpFactory) : ControllerBase
 {
-    private readonly SystemConfigService _svc=svc;
-    private readonly ComfyConfigService _comfyCfg=comfyCfg;
-    private readonly ComfyUiClient _comfy=comfy;
-    private readonly IHttpClientFactory _httpFactory=httpFactory;
+    private readonly SystemConfigService _svc = svc;
+    private readonly ComfyConfigService _comfyCfg = comfyCfg;
+    private readonly ComfyUiClient _comfy = comfy;
+    private readonly IHttpClientFactory _httpFactory = httpFactory;
 
-    private int CurrentUserId=>int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
+    private int CurrentUserId => int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
     [HttpGet]
-    public async Task<IActionResult> ManageSystemConfig()=>Ok(new ApiResponse<object>{Data=await _svc.GetAll()});
+    public async Task<IActionResult> ManageSystemConfig() => Ok(new ApiResponse<List<SystemConfigDto>> { Data = await _svc.GetAll() });
 
     [HttpPut("{key}")]
-    public async Task<IActionResult> UpdateSystemConfig(string key,[FromBody] string value)
+    public async Task<IActionResult> UpdateSystemConfig(string key, [FromBody] string value)
     {
-        try{await _svc.Update(key,value);return Ok(new ApiResponse<object>{Message="配置更新成功"});}
-        catch(Exception ex) when(ErrorText.IsHandled(ex)){return BadRequest(new ApiResponse<object>{Code=400,Message=ErrorText.Safe(ex),Success=false});}
+        try { await _svc.Update(key, value); return Ok(new ApiResponse<object> { Message = "配置更新成功" }); }
+        catch (Exception ex) when (ErrorText.IsHandled(ex)) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     ///<summary>删除管理员自建的配置项（核心业务参数受保护，只能改值不能删）</summary>
     [HttpDelete("{key}")]
     public async Task<IActionResult> DeleteSystemConfig(string key)
     {
-        try{await _svc.Delete(key);return Ok(new ApiResponse<object>{Message="配置项已删除"});}
-        catch(Exception ex) when(ErrorText.IsHandled(ex)){return BadRequest(new ApiResponse<object>{Code=400,Message=ErrorText.Safe(ex),Success=false});}
+        try { await _svc.Delete(key); return Ok(new ApiResponse<object> { Message = "配置项已删除" }); }
+        catch (Exception ex) when (ErrorText.IsHandled(ex)) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     //数据字典
 
     [HttpGet("dict")]
-    public async Task<IActionResult> QueryDictItems()=>Ok(new ApiResponse<object>{Data=await _svc.GetDict()});
+    public async Task<IActionResult> QueryDictItems() => Ok(new ApiResponse<object> { Data = await _svc.GetDict() });
 
     [HttpPost("dict")]
     public async Task<IActionResult> AddDictItem([FromBody] DictRequest req)
     {
-        try{return Ok(new ApiResponse<object>{Data=await _svc.AddDict(req),Message="字典项已添加"});}
-        catch(Exception ex) when(ErrorText.IsHandled(ex)){return BadRequest(new ApiResponse<object>{Code=400,Message=ErrorText.Safe(ex),Success=false});}
+        try { return Ok(new ApiResponse<object> { Data = await _svc.AddDict(req), Message = "字典项已添加" }); }
+        catch (Exception ex) when (ErrorText.IsHandled(ex)) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpPut("dict/{id:int}")]
-    public async Task<IActionResult> UpdateDictItem(int id,[FromBody] DictRequest req)
+    public async Task<IActionResult> UpdateDictItem(int id, [FromBody] DictRequest req)
     {
-        try{await _svc.UpdateDict(id,req);return Ok(new ApiResponse<object>{Message="字典项已更新"});}
-        catch(Exception ex) when(ErrorText.IsHandled(ex)){return BadRequest(new ApiResponse<object>{Code=400,Message=ErrorText.Safe(ex),Success=false});}
+        try { await _svc.UpdateDict(id, req); return Ok(new ApiResponse<object> { Message = "字典项已更新" }); }
+        catch (Exception ex) when (ErrorText.IsHandled(ex)) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     [HttpDelete("dict/{id:int}")]
     public async Task<IActionResult> DeleteDictItem(int id)
     {
-        try{await _svc.DeleteDict(id);return Ok(new ApiResponse<object>{Message="字典项已删除"});}
-        catch(Exception ex) when(ErrorText.IsHandled(ex)){return BadRequest(new ApiResponse<object>{Code=400,Message=ErrorText.Safe(ex),Success=false});}
+        try { await _svc.DeleteDict(id); return Ok(new ApiResponse<object> { Message = "字典项已删除" }); }
+        catch (Exception ex) when (ErrorText.IsHandled(ex)) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     ///<summary>字典自更新：扫描车辆品牌、维保故障类型、会员权益等级，把库中实际值同步进字典</summary>
@@ -77,16 +77,16 @@ public class ConfigController(
     {
         try
         {
-            var result=await _svc.SyncDictFromDbAsync(CurrentUserId);
-            var added=result.Sum(r=>r.Added);
-            var detail=string.Join("、",result.Select(r=>$"{r.GroupName}+{r.Added}"));
+            var result = await _svc.SyncDictFromDbAsync(CurrentUserId);
+            var added = result.Sum(r => r.Added);
+            var detail = string.Join("、", result.Select(r => $"{r.GroupName}+{r.Added}"));
             return Ok(new ApiResponse<object>
             {
-                Message=added>0?$"同步完成，新增 {added} 项（{detail}）":"数据库与字典已一致，无需更新",
-                Data=result.Select(r=>new{group=r.Group,groupName=r.GroupName,added=r.Added})
+                Message = added > 0 ? $"同步完成，新增 {added} 项（{detail}）" : "数据库与字典已一致，无需更新",
+                Data = result.Select(r => new { group = r.Group, groupName = r.GroupName, added = r.Added })
             });
         }
-        catch(Exception ex) when(ErrorText.IsHandled(ex)){return BadRequest(new ApiResponse<object>{Code=400,Message=ErrorText.Safe(ex),Success=false});}
+        catch (Exception ex) when (ErrorText.IsHandled(ex)) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
     //ComfyUI 地址（AI 生图）
@@ -95,56 +95,56 @@ public class ConfigController(
     [HttpGet("comfyui")]
     public async Task<IActionResult> GetComfyConfig(CancellationToken ct)
     {
-        var(url,source)=await _comfyCfg.GetEffectiveAsync(ct);
-        var online=await _comfy.IsOnlineAsync(ct);
+        var (url, source) = await _comfyCfg.GetEffectiveAsync(ct);
+        var online = await _comfy.IsOnlineAsync(ct);
         return Ok(new ApiResponse<object>
         {
-            Data=new{url,source,defaultUrl=_comfyCfg.DefaultUrl,online}
+            Data = new { url, source, defaultUrl = _comfyCfg.DefaultUrl, online }
         });
     }
 
     ///<summary>保存 ComfyUI 地址：换端口/换机器后在这里更新，保存后即时生效</summary>
     [HttpPut("comfyui")]
-    public async Task<IActionResult> SetComfyConfig([FromBody] ComfyUiUrlRequest req,CancellationToken ct)
+    public async Task<IActionResult> SetComfyConfig([FromBody] ComfyUiUrlRequest req, CancellationToken ct)
     {
         try
         {
-            var url=await _comfyCfg.SetAsync(req.Url,ct);
-            return Ok(new ApiResponse<object>{Data=new{url},Message="ComfyUI 地址已保存，立即生效"});
+            var url = await _comfyCfg.SetAsync(req.Url, ct);
+            return Ok(new ApiResponse<object> { Data = new { url }, Message = "ComfyUI 地址已保存，立即生效" });
         }
-        catch(Exception ex) when(ErrorText.IsHandled(ex))
+        catch (Exception ex) when (ErrorText.IsHandled(ex))
         {
-            return BadRequest(new ApiResponse<object>{Code=400,Message=ErrorText.Safe(ex),Success=false});
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false });
         }
     }
 
     ///<summary>测试连接：不保存，直接探测填的地址通不通（给「先测再存」用）</summary>
     [HttpPost("comfyui/test")]
     [SkipAudit]   //纯连通性探测，不改任何数据，记进操作日志只会淹没真正的配置变更
-    public async Task<IActionResult> TestComfyConnection([FromBody] ComfyUiUrlRequest req,CancellationToken ct)
+    public async Task<IActionResult> TestComfyConnection([FromBody] ComfyUiUrlRequest req, CancellationToken ct)
     {
-        var url=req.Url.Trim();
-        if(url.Length==0)
-            return BadRequest(new ApiResponse<object>{Code=400,Message="请先填写地址",Success=false});
+        var url = req.Url.Trim();
+        if (url.Length == 0)
+            return BadRequest(new ApiResponse<object> { Code = 400, Message = "请先填写地址", Success = false });
         try
         {
             //命名客户端 comfy-probe：绕开系统代理+6 秒超时
-            var client=_httpFactory.CreateClient("comfy-probe");
-            var resp=await client.GetAsync(url.TrimEnd('/')+"/system_stats",ct);
-            var ok=resp.IsSuccessStatusCode;
+            var client = _httpFactory.CreateClient("comfy-probe");
+            var resp = await client.GetAsync(url.TrimEnd('/') + "/system_stats", ct);
+            var ok = resp.IsSuccessStatusCode;
             return Ok(new ApiResponse<object>
             {
-                Data=new{ok},
-                Message=ok?"连接成功：ComfyUI 在线":$"ComfyUI 无响应（HTTP {(int)resp.StatusCode}）"
+                Data = new { ok },
+                Message = ok ? "连接成功：ComfyUI 在线" : $"ComfyUI 无响应（HTTP {(int)resp.StatusCode}）"
             });
         }
-        catch(Exception ex)
+        catch (Exception ex)
         {
             //连接失败也走 200+ok=false：这是「测试结果」不是「接口错误」
             return Ok(new ApiResponse<object>
             {
-                Data=new{ok=false},
-                Message=$"连接失败：{ErrorText.Safe(ex)}"
+                Data = new { ok = false },
+                Message = $"连接失败：{ErrorText.Safe(ex)}"
             });
         }
     }
@@ -155,10 +155,10 @@ public class ConfigController(
     {
         try
         {
-            var ip=HttpContext.Connection.RemoteIpAddress?.ToString();
-            var(tables,rows)=await _svc.ResetDatabaseAsync(CurrentUserId,ip);
-            return Ok(new ApiResponse<object>{Message=$"初始化完成：已清空 {tables} 张表（共 {rows} 行），管理员账号、系统配置与支付配置保留"});
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var (tables, rows) = await _svc.ResetDatabaseAsync(CurrentUserId, ip);
+            return Ok(new ApiResponse<object> { Message = $"初始化完成：已清空 {tables} 张表（共 {rows} 行），管理员账号、系统配置与支付配置保留" });
         }
-        catch(Exception ex) when(ErrorText.IsHandled(ex)){return BadRequest(new ApiResponse<object>{Code=400,Message=ErrorText.Safe(ex),Success=false});}
+        catch (Exception ex) when (ErrorText.IsHandled(ex)) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 }

@@ -85,6 +85,23 @@ public class SettleOrderBriefDto
 }
 
 /// <summary>
+/// 结算结果投影：前端只需要单号与金额构成来决定是否弹收款窗，
+/// 不再下发 SettleRecord 实体（实体变更会连带把内部字段暴露到响应里）。
+/// </summary>
+public class SettleResultDto
+{
+    public int SettleId { get; init; }
+    public int OrderId { get; init; }
+    public decimal ActualRent { get; init; }
+    public decimal OverdueFee { get; init; }
+    public decimal DamageFee { get; init; }
+    public decimal RefundAmount { get; init; }
+    public decimal SupplementAmount { get; init; }
+    /// <summary>是否还需要向顾客收取补缴款</summary>
+    public bool NeedCollect { get; init; }
+}
+
+/// <summary>
 /// 补缴账单：一笔结算单产生的「未缴清补缴款」。
 /// ── 为什么单独一个 DTO ──
 /// 前台需要的不是"结算单"本身，而是**这张单还欠多少钱、现在能不能收、怎么收**。

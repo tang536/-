@@ -5,7 +5,7 @@ namespace ERental.Filters;
 
 /// <summary>
 /// 全局入参 XSS 清洗（模型绑定之后、动作方法之前执行）。
-/// 挂在 <see cref="Microsoft.Extensions.DependencyInjection.MvcCoreMvcBuilderExtensions"/> 的
+/// 挂在 <see cref="MvcCoreMvcBuilderExtensions"/> 的
 /// 全局过滤器上，17 个控制器、100 多个接口一次性覆盖，
 /// 不需要（也不允许）由各控制器自己记得调用——「靠自觉」的安全措施等于没有。
 /// 只清不改语义：<see cref="InputSanitizer.Clean"/> 剥离的是 HTML 标签与脚本伪协议，

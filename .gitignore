@@ -40,6 +40,14 @@ Thumbs.db
 
 # 项目工作记忆/本地缓存（工具生成，非源码）
 .workbuddy/
+.taste-skill/
+backup/
+
+# 其它临时备份/交换文件
+*.bak
+*.old
+*.orig
+*~
 
 # SonarQube 本地扫描工具链（脚本内含明文令牌与本机绝对路径，禁止入库）
 Sonar扫描*.bat

@@ -31,7 +31,10 @@ Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
 // 数据库上下文
 var erentalDb = ResolveConnectionString(builder.Configuration);
-builder.Services.AddDbContext<AppDbContext>(options => options.UseMySQL(erentalDb));
+builder.Services.AddDbContext<AppDbContext>(options => options
+    .UseMySQL(erentalDb)
+    // 让数据库会话时区与应用进程一致：视图里的 NOW() 与应用层 DateTime.Now 需要同一口径
+    .AddInterceptors(new MySqlSessionTimeZoneInterceptor()));
 
 // JWT 认证
 var jwtKey = SigningKeyProvider.Resolve(builder.Configuration, builder.Environment, out var jwtKeySource);

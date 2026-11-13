@@ -93,7 +93,9 @@ public sealed class AuditLogFilter(IServiceScopeFactory scopeFactory, ILogger<Au
     /// <summary>取真实响应状态码；未显式设置时按 200 处理（MVC 的返回值最终会被包装成 200）。</summary>
     private static int StatusOf(IActionResult? result) => result switch
     {
-        ObjectResult o => o.StatusCode ?? StatusCodes.Status200OK, StatusCodeResult s => s.StatusCode, _ => StatusCodes.Status200OK
+        ObjectResult o => o.StatusCode ?? StatusCodes.Status200OK,
+        StatusCodeResult s => s.StatusCode,
+        _ => StatusCodes.Status200OK
     };
 
     /// <summary>

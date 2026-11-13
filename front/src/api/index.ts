@@ -595,10 +595,9 @@ export const messageApi = {
 // 续租
 export const renewalApi = {
   list: (orderId?: number) => api.get('/renewal', { params: { orderId } }),
-  // 界面按「天」录入，后端按「小时」计费（RenewalRequest.Hours）：
-  // 换算放在这一层，调用方继续传 days，避免界面与接口口径各写一遍。
+  // 界面与接口都按「天」：续租天数直接提交，费用由数据库按日租金核算
   create: (data: { orderId: number; days: number }) =>
-    api.post('/renewal', { orderId: data.orderId, hours: data.days * 24 })
+    api.post('/renewal', { orderId: data.orderId, days: data.days })
 }
 
 // 车辆盘点
