@@ -29,15 +29,15 @@ public class ComfyConfigService(AppDbContext db, IOptions<AiImageOptions> opt) :
     ///<summary>当前生效地址：库里配了用库里的，没配用 appsettings 默认值</summary>
     public async Task<string> GetBaseUrlAsync(CancellationToken ct = default)
     {
-        if (_cache != null && DateTime.UtcNow - _cacheAt < CacheTtl) return _cache;
+        if (_cache != null && AppClock.UtcNow - _cacheAt < CacheTtl) return _cache;
         await _gate.WaitAsync(ct);
         try
         {
-            if (_cache != null && DateTime.UtcNow - _cacheAt < CacheTtl) return _cache;
+            if (_cache != null && AppClock.UtcNow - _cacheAt < CacheTtl) return _cache;
             var row = await _db.SystemConfigs.AsNoTracking().FirstOrDefaultAsync(c => c.ConfigKey == Key, ct);
             var value = row?.ConfigValue;
             _cache = Normalize(string.IsNullOrWhiteSpace(value) ? _opt.BaseUrl : value);
-            _cacheAt = DateTime.UtcNow;
+            _cacheAt = AppClock.UtcNow;
             return _cache;
         }
         finally { _gate.Release(); }

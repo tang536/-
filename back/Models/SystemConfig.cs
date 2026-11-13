@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using ERental.Services;
+using ERental.Data;
 namespace ERental.Models;
 
 [Table("system_config")]
@@ -24,7 +25,7 @@ public class SystemConfig
     public string? ConfigDesc { get; private set; }
 
     [Column("update_time")]
-    public DateTime UpdateTime { get; private set; } = DateTime.Now;
+    public DateTime UpdateTime { get; private set; } = AppClock.Now;
 
     ///<summary>新建配置项：配置键是全局唯一键，必须非空且去空格</summary>
     public static SystemConfig Create(string configKey, string? configValue, string? configDesc)
@@ -36,7 +37,7 @@ public class SystemConfig
             ConfigKey = configKey.Trim(),
             ConfigValue = configValue,
             ConfigDesc = string.IsNullOrWhiteSpace(configDesc) ? null : configDesc.Trim(),
-            UpdateTime = DateTime.Now,
+            UpdateTime = AppClock.Now,
         };
     }
 
@@ -44,7 +45,7 @@ public class SystemConfig
     public void SetValue(string? value)
     {
         ConfigValue = value;
-        UpdateTime = DateTime.Now;
+        UpdateTime = AppClock.Now;
     }
 
     ///<summary>改配置说明（不刷新修改时间：说明是给人看的注记，不参与业务生效判定）</summary>

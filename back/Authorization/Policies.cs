@@ -37,10 +37,22 @@ public static class Policies
     /// <summary>管理员或前台：订单、客户档案、车辆查询与状态流转</summary>
     public const string AdminOrReception = "AdminOrReception";
 
-    /// <summary>管理员或财务：财务报表、结算查询</summary>
-    public const string AdminOrFinance = "AdminOrFinance";
+    /// <summary>
+    /// 报表只读（管理员 + 财务）：统计报表汇总、车辆运营统计、维保费用统计、损坏赔付成本。
+    /// 名字里带 Read 是刻意的——这一组只挂 GET 查询，任何写操作都不许用；
+    /// 历史上这里的注释写成「结算查询」，而结算列表实际走的是 <see cref="SettleRead"/>，
+    /// 两处口径分家后会让人误以为给这个策略加接口就能顺带开放结算，故改名收口。
+    /// </summary>
+    public const string ReportRead = "ReportRead";
 
-    /// <summary>管理员或前台或财务：统计报表总览（三类员工都看得到经营数据）</summary>
+    /// <summary>
+    /// 结算只读（管理员 + 前台 + 财务）：结算记录列表、单张订单的验车快照查询。
+    /// 管理员核账、财务对赔、前台查自己办的结算都要看这张表，但**只给看**：
+    /// 结算发起 / 收款 / 催缴仍是 <see cref="ReceptionOnly"/>，写接口不认管理员与财务。
+    /// </summary>
+    public const string SettleRead = "SettleRead";
+
+    /// <summary>管理员或前台或财务：经营数据看板、跨角色的只读汇总</summary>
     public const string AnyStaff = "AnyStaff";
 
     /// <summary>管理员或顾客：顾客注销（管理员代为操作、顾客本人操作）</summary>
@@ -81,7 +93,8 @@ public static class AuthorizationSetup
         // 兜底要求：所有策略都建立在「已认证」之上。匿名访问必须显式标注 [AllowAnonymous]。
         options.AddPolicy(Policies.AdminOnly, p => p.RequireRole(RoleNames.Admin));
         options.AddPolicy(Policies.AdminOrReception, p => p.RequireRole(RoleNames.Admin, RoleNames.Reception));
-        options.AddPolicy(Policies.AdminOrFinance, p => p.RequireRole(RoleNames.Admin, RoleNames.Finance));
+        options.AddPolicy(Policies.ReportRead, p => p.RequireRole(RoleNames.Admin, RoleNames.Finance));
+        options.AddPolicy(Policies.SettleRead, p => p.RequireRole(RoleNames.Admin, RoleNames.Reception, RoleNames.Finance));
         options.AddPolicy(Policies.AnyStaff, p => p.RequireRole(RoleNames.Admin, RoleNames.Reception, RoleNames.Finance));
         options.AddPolicy(Policies.AdminOrCustomer, p => p.RequireRole(RoleNames.Admin, RoleNames.Customer));
         options.AddPolicy(Policies.ReceptionOnly, p => p.RequireRole(RoleNames.Reception));

@@ -31,9 +31,12 @@ export const ROUTE_ROLES: Record<string, string[]> = {
   '/orders': [ROLE.ADMIN, ROLE.RECEPTION],
   // 旧路径：创建订单已并入「租赁订单」页（/orders?view=create），仅保留登记以兼容旧链接跳转
   '/orders/create': [ROLE.RECEPTION],
-  // 归还结算：仅前台。用况3 的发起者就是前台，管理员不参与资金办理——
-  // 管理员要看经营数据走 /reports（统计报表），与后端 SettlementController 的 ReceptionOnly 对齐
-  '/settlements': [ROLE.RECEPTION],
+  // 归还结算：前台可办理，管理员与财务**只读**查看。
+  // 用况3 的发起者仍是前台（发起结算、确认收款、催缴都在前台手里），
+  // 管理员要核对每一笔结算账目、财务要按结算单对账退款，所以页面按只读放开；
+  // 写操作（preview / settle / 收款 / 催缴）在后端仍是 ReceptionOnly，前端也按
+  // Settlements.tsx 里的 canOperate 把按钮整列收掉——「看得到」与「办得了」是两件事。
+  '/settlements': [ROLE.ADMIN, ROLE.RECEPTION, ROLE.FINANCE],
   '/customers': [ROLE.ADMIN, ROLE.RECEPTION],
   '/members': [ROLE.ADMIN],
   // 车辆管理页含「车辆档案 / 车辆盘点 / 维保管理」三页签：

@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using ERental.Data;
 
 namespace ERental.DTOs;
 
@@ -14,5 +15,5 @@ public class CheckRequest
 /// <summary>生成盘点报告入参：Date 缺省为当天</summary>
 public class GenReportRequest
 {
-    public DateTime Date { get; init; } = DateTime.Now;
+    public DateTime Date { get; init; } = AppClock.Now;
 }

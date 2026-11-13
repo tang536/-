@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using ERental.Data;
 
 namespace ERental.Services;
 
@@ -21,7 +22,7 @@ public class LoginIpGuard
     {
         lock (_gate)
         {
-            if (_states.TryGetValue(ip, out var s) && s.LockUntil is { } u && u > DateTime.Now)
+            if (_states.TryGetValue(ip, out var s) && s.LockUntil is { } u && u > AppClock.Now)
             {
                 until = u;
                 return true;
@@ -36,7 +37,7 @@ public class LoginIpGuard
     {
         lock (_gate)
         {
-            var now = DateTime.Now;
+            var now = AppClock.Now;
             var prev = _states.TryGetValue(ip, out var cur) ? cur : new FailState(0, null, now);
             var expired = prev.LockUntil is { } old && old <= now;
             var count = expired ? 1 : prev.Count + 1;

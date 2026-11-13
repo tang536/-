@@ -2,6 +2,7 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Text.Json.Serialization;
 using ERental.Services;
+using ERental.Data;
 
 namespace ERental.Models;
 
@@ -59,7 +60,7 @@ public class RentalOrder
     public string OrderStatus { get; private set; } = "待支付";
 
     [Column("create_time")]
-    public DateTime CreateTime { get; init; } = DateTime.Now;
+    public DateTime CreateTime { get; init; } = AppClock.Now;
 
     [MaxLength(200)]
     [Column("cancel_reason")]

@@ -115,9 +115,12 @@ public class MySqlIntegrationTests
         db.SettleRecords.Add(settle);
         await db.SaveChangesAsync();
 
+        // 结算列表从 GetAll 改成服务端分页（GetPaged），构造参数也多了 logs / images 等依赖；
+        // 本用例只验证结算账单视图的字段口径，其余依赖传 null 即可，不要让它们真的被调用。
         var service = new SettlementService(
-            db, null!, null!, null!, NullLogger<SettlementService>.Instance);
-        var rows = await service.GetAll();
+            db, null!, null!, null!, null!, null!, NullLogger<SettlementService>.Instance);
+        var page = await service.GetPaged(null, null, 1, 50);
+        var rows = page.Items;
 
         var row = Assert.Single(rows);
         Assert.Equal(order.OrderNo, row.RentalOrder!.OrderNo);

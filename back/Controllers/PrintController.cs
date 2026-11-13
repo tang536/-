@@ -1,10 +1,11 @@
-﻿using ERental.Models;
+using ERental.Models;
 using ERental.Services;
 using ERental.Authorization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 using System.Text;
+using ERental.Data;
 
 namespace ERental.Controllers;
 
@@ -78,7 +79,7 @@ public class PrintController(
 
     ///<summary>报表打印视图：管理员/财务，返回带打印样式的 HTML</summary>
     [HttpGet("report-view")]
-    [Authorize(Policy = Policies.AdminOrFinance)]
+    [Authorize(Policy = Policies.ReportRead)]
     public async Task<IActionResult> PrintReport(DateTime? from = null, DateTime? to = null) => Content(await _svc.ReportHtml(from, to), "text/html; charset=utf-8");
 
     ///<summary>订单明细导出：订单查询与打印</summary>
@@ -95,6 +96,6 @@ public class PrintController(
     private FileContentResult CsvFile(string content, string name)
     {
         var bytes = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Encoding.UTF8.GetBytes(content)).ToArray();
-        return File(bytes, "text/csv; charset=utf-8", $"{name}_{DateTime.Now:yyyyMMdd}.csv");
+        return File(bytes, "text/csv; charset=utf-8", $"{name}_{AppClock.Now:yyyyMMdd}.csv");
     }
 }

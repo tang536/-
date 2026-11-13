@@ -21,11 +21,11 @@ public class CustomerController(CustomerService svc) : ControllerBase
     ///<summary>客户列表：仅工作人员可查（顾客不可遍历他人档案）</summary>
     [HttpGet]
     [Authorize(Policy = Policies.AdminOrReception)]
-    public async Task<IActionResult> GetCustomerInfo(string? keyword, string? level, string? accountStatus, int page = 0, int pageSize = 0)
+    public async Task<IActionResult> GetCustomerInfo(string? keyword, string? level, string? accountStatus, string? profile, int page = 0, int pageSize = 0)
     {
         if (pageSize > 0)
         {
-            var (items, total) = await _svc.GetPaged(keyword, level, accountStatus, page, pageSize);
+            var (items, total) = await _svc.GetPaged(keyword, level, accountStatus, profile, page, pageSize);
             var (p, size, _, _) = Paging.Normalize(page, pageSize);
             return Ok(new ApiResponse<PagedResult<CustomerDto>>
             {

@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using ERental.Data;
 
 namespace ERental.DTOs;
 
@@ -194,6 +195,15 @@ public class RentEstimateDto
     public decimal Discount { get; init; }
     public decimal TotalRent { get; init; }
     public decimal Payable { get; init; }
+
+    /// <summary>未受信用影响的原始押金（Deposit 是乘以信用倍数后的实收押金）</summary>
+    public decimal DepositBase { get; init; }
+
+    /// <summary>信用受限说明（无限制时为空）：为什么要多收押金 / 为什么只能租几天</summary>
+    public string? CreditNote { get; init; }
+
+    /// <summary>单次租期上限（天，0 表示不限）——前端据此提示「最长可租 N 天」</summary>
+    public int MaxLeaseDays { get; init; }
 }
 
 /// <summary>预警/通知条目（首页预警提醒区、顶栏通知中心）</summary>
@@ -207,7 +217,7 @@ public class NotificationDto
     public string Category { get; init; } = string.Empty;
     public string Title { get; init; } = string.Empty;
     public string Description { get; init; } = string.Empty;
-    public DateTime Time { get; init; } = DateTime.Now;
+    public DateTime Time { get; init; } = AppClock.Now;
     /// <summary>点击后跳转的前端路由</summary>
     public string? Link { get; init; }
     /// <summary>当前登录用户是否已读（按通用 message 表的消息行判定，逐条独立）</summary>

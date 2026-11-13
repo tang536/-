@@ -347,7 +347,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
     ///<summary>最近热销车辆：按近 days 天的成单量排名，供顾客线上租车页展示</summary>
     public async Task<List<PopularVehicleDto>> GetPopular(int days = 30, int limit = 6)
     {
-        var since = DateTime.Now.AddDays(-days);
+        var since = AppClock.Now.AddDays(-days);
         var ranked = await _db.RentalOrders.AsNoTracking().Where(o => o.CreateTime >= since && o.OrderStatus != "已取消").GroupBy(o => o.VehicleId).Select(g => new { VehicleId = g.Key, OrderCount = g.Count() }).OrderByDescending(x => x.OrderCount).Take(limit).ToListAsync();
 
         var ids = ranked.Select(x => x.VehicleId).ToList();
@@ -388,7 +388,7 @@ public class VehicleService(AppDbContext db, ImageStorage images, LogService log
         var vehicles = await q.OrderBy(v => v.VehicleNo).ToListAsync();
 
         //近 30 天成单量：仅用于在「全部车辆」里展示热度，不参与排序（列表按车牌号稳定排列）
-        var since = DateTime.Now.AddDays(-30);
+        var since = AppClock.Now.AddDays(-30);
         var counts = await _db.RentalOrders.AsNoTracking().Where(o => o.CreateTime >= since && o.OrderStatus != "已取消").GroupBy(o => o.VehicleId).Select(g => new { VehicleId = g.Key, OrderCount = g.Count() }).ToDictionaryAsync(x => x.VehicleId, x => x.OrderCount);
 
         var cfgs = await _db.SystemConfigs.Where(c => c.ConfigKey == CfgKeyDailyRent || c.ConfigKey == CfgKeyDeposit).ToListAsync();

@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using ERental.Data;
 
 namespace ERental.Services;
 
@@ -17,7 +18,7 @@ public class AiProgressState
     ///<summary>done=成品图 URL</summary>
     public string? Message { get; set; }
 
-    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = AppClock.UtcNow;
 }
 
 ///<summary>生成进度跟踪器（进程内单例）</summary>
@@ -32,7 +33,7 @@ public class AiProgressTracker
     private AiProgressState Entry(string jobId)
     {
         //注意别再递归调自己：这里必须真正落到 _map.GetOrAdd
-        var s = _map.GetOrAdd(jobId, _ => new AiProgressState { UpdatedAt = DateTime.UtcNow });
+        var s = _map.GetOrAdd(jobId, _ => new AiProgressState { UpdatedAt = AppClock.UtcNow });
         EvictIfNeeded();
         return s;
     }
@@ -57,7 +58,7 @@ public class AiProgressTracker
         var s = Entry(jobId);
         s.Percent = Math.Max(s.Percent, Math.Clamp(percent, 0, 99));
         s.Stage = stage;
-        s.UpdatedAt = DateTime.UtcNow;
+        s.UpdatedAt = AppClock.UtcNow;
     }
 
     ///<summary>完成：100% + 成品图地址</summary>
@@ -69,7 +70,7 @@ public class AiProgressTracker
         s.Percent = 100;
         s.Stage = "生成完成";
         s.Message = url;
-        s.UpdatedAt = DateTime.UtcNow;
+        s.UpdatedAt = AppClock.UtcNow;
     }
 
     ///<summary>失败：记录原因，前端轮询到即停止等待</summary>
@@ -80,7 +81,7 @@ public class AiProgressTracker
         s.State = "error";
         s.Stage = "生成失败";
         s.Message = message;
-        s.UpdatedAt = DateTime.UtcNow;
+        s.UpdatedAt = AppClock.UtcNow;
     }
 
     ///<summary>查进度</summary>
@@ -89,7 +90,7 @@ public class AiProgressTracker
         if (string.IsNullOrEmpty(jobId)) return null;
         if (_map.TryGetValue(jobId, out var s))
         {
-            if (DateTime.UtcNow - s.UpdatedAt > TimeSpan.FromMinutes(30))
+            if (AppClock.UtcNow - s.UpdatedAt > TimeSpan.FromMinutes(30))
             {
                 _map.TryRemove(jobId, out _);
                 return null;
@@ -97,7 +98,7 @@ public class AiProgressTracker
             return s;
         }
         foreach (var kv in _map)
-            if (DateTime.UtcNow - kv.Value.UpdatedAt > TimeSpan.FromMinutes(30)) _map.TryRemove(kv.Key, out _);
+            if (AppClock.UtcNow - kv.Value.UpdatedAt > TimeSpan.FromMinutes(30)) _map.TryRemove(kv.Key, out _);
         return null;
     }
 }

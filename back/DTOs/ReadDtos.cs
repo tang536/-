@@ -64,6 +64,15 @@ public class CustomerDto
     /// <summary>租车资料是否已完善（身份证 + 手机号）</summary>
     public bool ProfileCompleted { get; init; }
 
+    /// <summary>历史逾期次数（有逾期费的结算单数）——信用标签之一，服务层按结算视图现算</summary>
+    public int OverdueCount { get; set; }
+
+    /// <summary>累计损坏赔付金额——信用标签之一</summary>
+    public decimal DamageTotal { get; set; }
+
+    /// <summary>补缴未清的结算单数——信用标签之一，直接影响下次能不能免押</summary>
+    public int UnpaidSupplementCount { get; set; }
+
     public static CustomerDto From(Customer c) => new()
     {
         CustomerId = c.CustomerId,

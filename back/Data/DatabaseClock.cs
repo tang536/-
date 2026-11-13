@@ -6,7 +6,7 @@ namespace ERental.Data;
 /// <summary>
 /// 启动自检：确认「数据库会话时区」与「应用进程本地时区」是同一个口径。
 /// <para>
-/// v_order_overview 的 is_overdue / billable_hours 用 NOW() 计算，而服务层用 DateTime.Now
+/// v_order_overview 的 is_overdue / billable_hours 用 NOW() 计算，而服务层用 AppClock.Now
 /// 判定「今天到期」「逾期几个小时」。两者只要偏移不同，同一条订单会在列表里显示逾期、
 /// 在结算试算里却不逾期（或反过来）。连接建立时已由 <see cref="MySqlSessionTimeZoneInterceptor"/>
 /// 统一会话时区；这里再读一次数据库时钟做端到端校验，避免拦截器未注册、连接被代理复用

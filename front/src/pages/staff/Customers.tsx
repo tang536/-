@@ -5,6 +5,7 @@ import { customerApi, memberApi } from '@/api'
 import type { Customer, MemberRights } from '@/types'
 import Icon from '@/components/Icon'
 import DictThFilter from '@/components/DictThFilter'
+import Pagination from '@/components/Pagination'
 import { fmtD, fmtDT, recentDateRange } from '@/utils/datetime'
 
 const EMPTY = { idCard: '', fullName: '', contactPhone: '', memberLevel: '普通会员', memberDiscount: 1 }
@@ -64,16 +65,38 @@ export default function Customers() {
   const [levelFilter, setLevelFilter] = useState('')
   // 状态筛选：全部 / 正常 / 已注销 / 待完善
   const [statusFilter, setStatusFilter] = useState('')
+  /**
+   * 服务端分页：原来一次取全量再在前端筛，
+   * 门店客户上千后首屏要等整包 JSON 落地，而且计数（待完善/已注销）只能靠前端数，
+   * 与后端总量必然漂移。现在筛选条件（含"资料是否完善"这个派生条件）全部下推，
+   * 列表与总数都由后端算，翻页只取当前页。
+   */
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [total, setTotal] = useState(0)
+  /** 角标计数（与当前筛选无关，独立统计），列表分页后前端拿不到全集，只能单独问后端 */
+  const [counts, setCounts] = useState({ deactivated: 0, incomplete: 0 })
+
+  /** 状态筛选 → 后端查询参数（'active' 是"正常且有完整租车资料"，两个条件同时下推） */
+  const statusQuery = (): { accountStatus?: string; profile?: 'completed' | 'incomplete' } => {
+    if (statusFilter === 'active') return { accountStatus: '正常', profile: 'completed' }
+    if (statusFilter === 'incomplete') return { profile: 'incomplete' }
+    if (statusFilter === 'deactivated') return { accountStatus: '已注销' }
+    return {}
+  }
 
   const load = async () => {
     setLoading(true)
     try {
-      // 客户列表暂按全量取：页面上「账号状态 / 租车资料」两个筛选是**派生条件**
-      // （已注销 = 登录账号停用，资料不全 = profileCompleted 为空），后端还没有对应查询参数。
-      // 接口本身已支持 page/pageSize（见 customerApi.page），等派生条件落到后端再切分页，
-      // 否则只对当前页筛选会让总数与页码失真。
-      const res: any = await customerApi.list(keyword || undefined)
-      setList(res.data || [])
+      const res: any = await customerApi.page({
+        keyword: keyword || undefined,
+        level: levelFilter || undefined,
+        ...statusQuery(),
+        page,
+        pageSize,
+      })
+      setList(res.data?.items || [])
+      setTotal(res.data?.total || 0)
     } catch (e: any) {
       toast(e?.message || '客户列表加载失败', 'error')
     } finally {
@@ -81,7 +104,17 @@ export default function Customers() {
     }
   }
 
-  useEffect(() => { load() }, [keyword])
+  useEffect(() => { load() }, [keyword, levelFilter, statusFilter, page, pageSize])
+
+  // 角标：只问总数（pageSize=1），不拉列表——这两个数字是标题栏上的提示，不需要明细
+  useEffect(() => {
+    Promise.all([
+      customerApi.page({ accountStatus: '已注销', page: 1, pageSize: 1 }),
+      customerApi.page({ profile: 'incomplete', page: 1, pageSize: 1 }),
+    ])
+      .then(([a, b]: any) => setCounts({ deactivated: a?.data?.total || 0, incomplete: b?.data?.total || 0 }))
+      .catch(() => setCounts({ deactivated: 0, incomplete: 0 }))
+  }, [])
   // 会员类型一次性拉取：编辑弹窗的等级下拉与折扣联动都以它为准
   useEffect(() => {
     memberApi.rights().then((r: any) => setRights(r.data || [])).catch(() => setRights([]))
@@ -244,16 +277,16 @@ export default function Customers() {
     fetchRecords(recordOf.customer, recordDraft)
   }
 
-  const incomplete = list.filter(c => !c.profileCompleted).length
+  const incomplete = counts.incomplete
   // 注销是逻辑注销：记录保留、不物理删除（需求 7.1 可追溯），只在此处标记状态
   const isDeactivated = (c: Customer) => c.accountStatus === '已注销'
-  const deactivated = list.filter(isDeactivated).length
+  const deactivated = counts.deactivated
 
   return (
     <div className="card">
       <div className="card-title">
         <Icon name="customers" size={18} chip />客户档案
-        <span className="card-title-count">共 {list.length} 位</span>
+        <span className="card-title-count">共 {total} 位</span>
         {deactivated > 0 && (
           <span className="status-tag status-danger" title="顾客自主注销为逻辑注销，档案与历史订单保留，仅停用账号">
             {deactivated} 位已注销
@@ -274,9 +307,9 @@ export default function Customers() {
           <input
             placeholder="搜索姓名 / 用户名 / 身份证号 / 手机号"
             value={keyword}
-            onChange={e => setKeyword(e.target.value)}
+            onChange={e => { setKeyword(e.target.value); setPage(1) }}
           />
-          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+          <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1) }}>
             <option value="">全部状态</option>
             <option value="active">正常</option>
             <option value="incomplete">待完善</option>
@@ -284,7 +317,7 @@ export default function Customers() {
           </select>
           {(keyword || statusFilter) && (
             <button className="btn-sm btn-sm-default" title="重置筛选条件"
-              onClick={() => { setKeyword(''); setStatusFilter('') }}>
+              onClick={() => { setKeyword(''); setStatusFilter(''); setPage(1) }}>
               <Icon name="refresh" size={14} /><span className="btn-label">重置</span>
             </button>
           )}
@@ -301,20 +334,15 @@ export default function Customers() {
                 <DictThFilter
                   options={rights.map(r => r.memberLevel)}
                   value={levelFilter}
-                  onChange={setLevelFilter}
+                  onChange={v => { setLevelFilter(v); setPage(1) }}
                 />
               </th>
-              <th>账号状态</th><th>租车资料</th><th className="col-hide-lg">注册时间</th><th>操作</th>
+              <th>账号状态</th><th>租车资料</th><th>信用</th><th className="col-hide-lg">注册时间</th><th>操作</th>
             </tr>
           </thead>
           <tbody>
-            {list.filter(c => {
-              if (levelFilter && c.memberLevel !== levelFilter) return false
-              if (statusFilter === 'active' && (isDeactivated(c) || !c.profileCompleted)) return false
-              if (statusFilter === 'incomplete' && c.profileCompleted) return false
-              if (statusFilter === 'deactivated' && !isDeactivated(c)) return false
-              return true
-            }).map(c => (
+            {/* 筛选已在后端做（含"资料是否完善"这类派生条件），这里直接渲染当前页 */}
+            {list.map(c => (
               <tr key={c.customerId}>
                 <td className="mono col-hide-md">{c.loginAccount || '—'}</td>
                 <td>{c.fullName}</td>
@@ -337,6 +365,32 @@ export default function Customers() {
                     ? <span className="status-tag status-success">已完善</span>
                     : <span className="status-tag status-warning">待完善</span>}
                 </td>
+                {/* 信用标签：只显示「确实发生过」的项，干净的客户给一个「良好」，
+                    免得整列都是 0 次/¥0 反而看不出谁有问题。
+                    这三项是门店判断「要不要收押金、要不要免押」的实际依据。 */}
+                <td>
+                  {(c.unpaidSupplementCount || 0) > 0 || (c.overdueCount || 0) > 0 || Number(c.damageTotal || 0) > 0 ? (
+                    <div className="credit-tags">
+                      {(c.unpaidSupplementCount || 0) > 0 && (
+                        <span className="status-tag status-danger" title="还有补缴款没收清">
+                          欠缴 {c.unpaidSupplementCount} 笔
+                        </span>
+                      )}
+                      {(c.overdueCount || 0) > 0 && (
+                        <span className="status-tag status-warning" title="历史逾期次数（按结算单统计）">
+                          逾期 {c.overdueCount} 次
+                        </span>
+                      )}
+                      {Number(c.damageTotal || 0) > 0 && (
+                        <span className="status-tag status-warning" title="累计损坏赔付金额">
+                          损坏 ¥{Number(c.damageTotal).toFixed(0)}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="status-tag status-success" title="无逾期、无损坏赔付、无欠缴">良好</span>
+                  )}
+                </td>
                 <td className="cell-time col-hide-lg">{fmtD(c.createTime)}</td>
                 <td>
                   <div className="btn-group">
@@ -353,6 +407,13 @@ export default function Customers() {
       </div>
 
       {loading && <div className="loading-line"><Icon name="refresh" size={18} />数据加载中…</div>}
+      {!loading && total > 0 && (
+        <Pagination
+          total={total} page={page} pageSize={pageSize}
+          onChange={setPage}
+          onPageSizeChange={n => { setPageSize(n); setPage(1) }}
+        />
+      )}
       {!loading && list.length === 0 && (
         <div className="empty">
           <Icon name="empty" size={40} chip />

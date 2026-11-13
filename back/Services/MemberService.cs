@@ -80,7 +80,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
         var no = BusinessNumber.New("HY");
 
         //顺手清理超过有效期的遗留意向（含已完成标记的）
-        var stale = await _db.SystemConfigs.Where(x => x.ConfigKey.StartsWith(PayPrefix) && x.UpdateTime < DateTime.Now.AddHours(-PendingExpireHours)).ToListAsync();
+        var stale = await _db.SystemConfigs.Where(x => x.ConfigKey.StartsWith(PayPrefix) && x.UpdateTime < AppClock.Now.AddHours(-PendingExpireHours)).ToListAsync();
         _db.SystemConfigs.RemoveRange(stale);
 
         //暂存意向
@@ -91,7 +91,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
             ["p"] = price.ToString("0.00"),
             ["t"] = pay,
             ["old"] = c.MemberLevel,
-            ["ts"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+            ["ts"] = AppClock.Now.ToString("yyyy-MM-dd HH:mm:ss")
         });
         _db.SystemConfigs.Add(SystemConfig.Create(PayPrefix + no, json, "会员购买待支付意向（勿在参数页维护）"));
         await _db.SaveChangesAsync();
@@ -125,7 +125,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
     {
         if (!intent.TryGetValue("ts", out var ts)) return false;
         if (!DateTime.TryParse(ts, CultureInfo.InvariantCulture, DateTimeStyles.None, out var t)) return false;
-        return DateTime.Now - t > TimeSpan.FromHours(PendingExpireHours);//NOSONAR 本地时区时间戳与本地时间比较，语义要求一致
+        return AppClock.Now - t > TimeSpan.FromHours(PendingExpireHours);//NOSONAR 本地时区时间戳与本地时间比较，语义要求一致
     }
 
     ///<summary>入账本体（容器事务由调用方持有，这里只读锁内的最新值并做业务判定）</summary>
@@ -196,7 +196,7 @@ public class MemberService(AppDbContext db, LogService log, ILogger<MemberServic
             ["done"] = "1",
             ["p"] = price.ToString("0.00"),
             ["alipay"] = alipayTradeNo,
-            ["ts"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+            ["ts"] = AppClock.Now.ToString("yyyy-MM-dd HH:mm:ss")
         }));
     }
 

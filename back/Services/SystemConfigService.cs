@@ -19,6 +19,11 @@ public class SystemConfigService(AppDbContext db)
         ["max_login_fail"] = (1m, 100m, true),//最大登录失败次数
         ["lock_minutes"] = (1m, 10000m, true),//锁定时长（分钟）
         ["maintain_cycle_days"] = (0m, 3650m, true),//保养周期（天，0=关闭保养提醒）
+        ["damage_maintenance_threshold"] = (0m, 100000m, false),//归还损坏费达到该金额自动转入维保（元，0=一律不转）
+        ["credit_deposit_multiplier"] = (1m, 10m, false),//信用受限客户（逾期/损坏多）的押金倍数
+        ["credit_overdue_threshold"] = (0m, 100m, true),//逾期次数达到该值即押金加倍+限租期（0=关闭）
+        ["credit_max_lease_days"] = (0m, 365m, true),//信用受限客户单次租期上限（天，0=不限）
+        ["upload_archive_days"] = (0m, 3650m, true),//验车/维保照片归档天数（0=不归档）
         ["member_default_price"] = (0m, 100000m, false) //会员默认价格（元，新增会员类型时表单预填）
     };
 

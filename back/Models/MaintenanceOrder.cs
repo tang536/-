@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using ERental.Services;
+using ERental.Data;
 namespace ERental.Models;
 
 [Table("maintenance_order")]
@@ -36,7 +37,7 @@ public class MaintenanceOrder
     public string Status { get; private set; } = "待处理";
 
     [Column("create_time")]
-    public DateTime CreateTime { get; init; } = DateTime.Now;
+    public DateTime CreateTime { get; init; } = AppClock.Now;
 
     [Column("finish_time")]
     public DateTime? FinishTime { get; private set; }

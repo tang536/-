@@ -2,6 +2,7 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Text.Json.Serialization;
 using ERental.Services;
+using ERental.Data;
 
 namespace ERental.Models;
 
@@ -17,7 +18,7 @@ public class CheckReport
     public string ReportNo { get; private set; } = string.Empty;
 
     [Column("check_date")]
-    public DateTime CheckDate { get; private set; } = DateTime.Now;
+    public DateTime CheckDate { get; private set; } = AppClock.Now;
 
     [Column("total_count")]
     public int TotalCount { get; private set; }
@@ -33,7 +34,7 @@ public class CheckReport
     public string? ReportContent { get; private set; }
 
     [Column("generate_time")]
-    public DateTime GenerateTime { get; private set; } = DateTime.Now;
+    public DateTime GenerateTime { get; private set; } = AppClock.Now;
 
     [Column("operator_id")]
     public int? OperatorId { get; private set; }

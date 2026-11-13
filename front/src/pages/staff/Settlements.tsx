@@ -6,9 +6,11 @@ import PayBrandIcon from '@/components/PayBrandIcon'
 import ReceiptModal from '@/components/ReceiptModal'
 import CopyText from '@/components/CopyText'
 import SkeletonRows from '@/components/SkeletonRows'
+import Pagination from '@/components/Pagination'
 import SortTh, { type SortDir } from '@/components/SortTh'
 import { useAuth, ROLE } from '@/hooks/useAuth'
 import { fmtDT, recentDateRange } from '@/utils/datetime'
+import { compressImage } from '@/utils/image'
 import VehicleQrLookup from '@/pages/staff/components/VehicleQrLookup'
 import SupplementCollectModal, { SUPPLEMENT_CHANNELS, supplementMeta } from '@/pages/staff/components/SupplementCollectModal'
 
@@ -16,8 +18,14 @@ import SupplementCollectModal, { SUPPLEMENT_CHANNELS, supplementMeta } from '@/p
  * 结算弹窗的初始值：逾期费/损坏费默认 0，备注空。
  * 补缴收款方式默认「现金」——门店最常见的就是当场收现金；
  * 选另外三种（支付宝/微信/银行卡）会在结算时预生成一张待支付补缴单，顾客可自助在线缴。
+ *
+ * 还车验车三项（电量 / 车况备注 / 现场照片）与结算同屏，是因为损坏费本来就是凭车况定的：
+ * 前台一边看车一边填钱，证据和金额必须一起落库，分两步很容易只填了钱没留证。
  */
-const emptyForm = () => ({ orderId: 0, overdueFee: 0, damageFee: 0, remark: '', supplementPayMethod: '现金' })
+const emptyForm = () => ({
+  orderId: 0, overdueFee: 0, damageFee: 0, remark: '', supplementPayMethod: '现金',
+  batteryLevel: '' as string, conditionNote: '', hoPhotos: [] as string[],
+})
 
 export default function Settlements() {
   const { toast, confirm } = useUI()
@@ -29,6 +37,13 @@ export default function Settlements() {
   const { hasRole } = useAuth()
   const canOperate = hasRole([ROLE.RECEPTION])
   const [list, setList] = useState<any[]>([])
+  /**
+   * 服务端分页：原来是一次全量返回 + 前端本地过滤，结算单一年就上千行，
+   * 首屏迟早被这一坨 JSON 拖住。现在「日期区间 + 关键词 + 页码」都由后端裁，前端只渲染当页。
+   */
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
@@ -60,6 +75,18 @@ export default function Settlements() {
   const [collect, setCollect] = useState<{ settleId: number; amount: number } | null>(null)
 
   /**
+   * 验车记录弹窗：管理员/财务只查看照片与电量（核对损坏费是否赔得其所），
+   * 前台还能补登「取车」快照——顾客取车时那份证据最容易漏。
+   */
+  const [handover, setHandover] = useState<{ orderId: number; orderNo: string } | null>(null)
+  const [handoverList, setHandoverList] = useState<any[]>([])
+  const [handoverLoading, setHandoverLoading] = useState(false)
+  const [hoForm, setHoForm] = useState<{ phase: string; battery: string; note: string; photos: string[] }>(
+    { phase: '还车', battery: '', note: '', photos: [] })
+  const [hoSaving, setHoSaving] = useState(false)
+  const [hoUploading, setHoUploading] = useState(false)
+
+  /**
    * 结算记录筛选：关键词 + 结算时间区间，纯本地过滤（列表由接口一次全量返回）。
    *
    * 日期默认带出**近 30 天**（含今天）而不是留空：留空时两个日期框只显示「年/月/日」占位，
@@ -79,18 +106,36 @@ export default function Settlements() {
   const [sortBy, setSortBy] = useState('')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
-  const load = async () => {
+  /** 拉当页结算记录：日期区间、关键词、页码全部交给后端裁，不再本地过滤 */
+  const loadRecords = async () => {
     setLoading(true)
     try {
-      // 待结算订单列表只对前台有意义（财务若不发起结算就不必请求，也避免越权调用订单接口）。
-      // 可结算订单含「已支付 / 租赁中」两类（见 SettlementService.Settle 状态口径），
-      // 故两类都拉下来合并去重——这样扫码归还时，正在租赁中的车辆其订单也在待选列表里。
-      const [s, o1, o2]: any[] = await Promise.all([
-        settleApi.list(),
-        canOperate ? orderApi.waitReturn() : Promise.resolve({ data: [] }),
-        canOperate ? orderApi.list('租赁中') : Promise.resolve({ data: [] }),
-      ])
-      setList(s.data || [])
+      const res: any = await settleApi.list({
+        from: filterFrom || undefined,
+        to: filterTo || undefined,
+        keyword: filterKw.trim() || undefined,
+        page,
+        pageSize,
+      })
+      setList(res?.data?.items || [])
+      setTotal(res?.data?.total || 0)
+    } catch (e: any) {
+      toast(e?.message || '结算数据加载失败', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  /**
+   * 拉「可结算订单」：只对前台有意义（管理员/财务不发起结算，
+   * 也就不必请求订单接口，避免用只读角色去撞 AdminOrReception）。
+   * 可结算订单含「已支付 / 租赁中」两类（见 SettlementService.Settle 状态口径），
+   * 故两类都拉下来合并去重——这样扫码归还时，正在租赁中的车辆其订单也在待选列表里。
+   */
+  const loadOrders = async () => {
+    if (!canOperate) return
+    try {
+      const [o1, o2]: any[] = await Promise.all([orderApi.waitReturn(), orderApi.list('租赁中')])
       /**
        * 到期未还的订单排到最前：租期一到，这笔单子就该出现在结算流程里，
        * 让前台一眼看到要先处理谁，而不是按创建时间埋在一堆单子中间。
@@ -108,11 +153,25 @@ export default function Settlements() {
       setOrders([...merged].sort((a, b) => weight(b) - weight(a)))
     } catch (e: any) {
       toast(e?.message || '结算数据加载失败', 'error')
-    } finally {
-      setLoading(false)
     }
   }
-  useEffect(() => { load() }, [])
+
+  /** 结算完成或筛选变化后统一刷新：单据列表 + 待结算订单 */
+  const load = async () => {
+    await Promise.all([loadRecords(), loadOrders()])
+  }
+
+  /** 首次进页面只拉订单；记录由下面的副作用（含 300ms 防抖）负责 */
+  useEffect(() => { loadOrders() }, [])
+
+  /**
+   * 筛选/翻页触发重新查询。关键词是边打字边查，300ms 防抖足够，
+   * 否则每敲一个字就打一次库；日期与页码不用防抖，但走同一个副作用便于统一。
+   */
+  useEffect(() => {
+    const t = window.setTimeout(() => { loadRecords() }, 300)
+    return () => window.clearTimeout(t)
+  }, [page, pageSize, filterFrom, filterTo, filterKw])
 
   /**
    * 拉「待收款」账单。silent = 轮询用：不显示 loading、失败不弹错，
@@ -143,29 +202,15 @@ export default function Settlements() {
     return () => window.clearInterval(t)
   }, [canOperate])
 
-  /** 是否处于筛选态：决定空状态文案与计数展示（日期回到默认区间不算筛选） */
+  /** 是否处于筛选态：决定空状态文案（日期回到默认区间不算筛选） */
   const hasFilter = !!(filterKw.trim() || filterFrom !== DEF_FROM || filterTo !== DEF_TO)
 
+  /**
+   * 排序仍留在前端，但只作用在**当页**：筛选和分页已交给后端，
+   * 「点表头看这笔单里金额最大的几笔」这个柜台习惯要继续可用。
+   */
   const filteredList = useMemo(() => {
-    const kw = filterKw.trim().toLowerCase()
-    const rows = list.filter(s => {
-      if (kw) {
-        // 结算单号按界面展示的 JS000001 形式参与匹配，输入 JS 开头也能命中
-        const hay = [
-          `js${String(s.settleId).padStart(6, '0')}`,
-          s.rentalOrder?.orderNo,
-          s.rentalOrder?.vehicleNo,
-          // 客户名由后端投影成 rentalOrder.customerName（扁平字段，不再嵌套整个客户对象）
-          s.rentalOrder?.customerName,
-        ].filter(Boolean).join(' ').toLowerCase()
-        if (!hay.includes(kw)) return false
-      }
-      // settleTime 形如 "2026-10-24 17:14:00"，取前 10 位按日历日比较
-      const day = String(s.settleTime || '').slice(0, 10)
-      if (filterFrom && day < filterFrom) return false
-      if (filterTo && day > filterTo) return false
-      return true
-    })
+    const rows = list
     // 排序在筛选之后做：先圈出这批单，再按金额/时间排，符合「先看范围再比大小」的习惯
     if (!sortBy) return rows
     const dir = sortDir === 'asc' ? 1 : -1
@@ -185,7 +230,7 @@ export default function Settlements() {
       if (typeof x === 'string' || typeof y === 'string') return String(x).localeCompare(String(y)) * dir
       return (x - y) * dir
     })
-  }, [list, filterKw, filterFrom, filterTo, sortBy, sortDir])
+  }, [list, sortBy, sortDir])
 
   /** 点表头：同列翻转方向，换列默认从大到小（先看金额最大的那几笔） */
   const toggleSort = (key: string) => {
@@ -365,10 +410,87 @@ export default function Settlements() {
     setErrors({ ...errors, orderId: '' })
   }
 
+  /** 打开验车记录弹窗：先拉该订单已登记的快照 */
+  const openHandover = async (s: any) => {
+    setHandover({ orderId: s.orderId, orderNo: s.rentalOrder?.orderNo || `#${s.orderId}` })
+    setHoForm({ phase: '还车', battery: '', note: '', photos: [] })
+    await loadHandovers(s.orderId)
+  }
+
+  const loadHandovers = async (orderId: number) => {
+    setHandoverLoading(true)
+    try {
+      const res: any = await settleApi.handovers(orderId)
+      setHandoverList(res?.data || [])
+    } catch (e: any) {
+      toast(e?.message || '验车记录加载失败', 'error')
+    } finally {
+      setHandoverLoading(false)
+    }
+  }
+
+  /** 上传验车照片：先压缩再落盘拿 URL，最后随快照一起提交（每阶段最多 3 张） */
+  const uploadHoPhoto = async (file: File | undefined | null, target: 'settle' | 'modal') => {
+    if (!file) return
+    if ((target === 'settle' ? form.hoPhotos : hoForm.photos).length >= 3) {
+      toast('每个阶段最多 3 张照片', 'warning')
+      return
+    }
+    setHoUploading(true)
+    try {
+      //先压到长边 1280：手机原图 3–8MB，压完通常 200KB 上下，验车看划痕足够
+      const compressed = await compressImage(file)
+      //带上订单号与阶段，后端据此把文件名编成 Handover_订单_阶段_时间 并按年月分目录
+      const res: any = await settleApi.uploadHandoverPhoto(
+        compressed,
+        target === 'settle' ? form.orderId : handover?.orderId,
+        target === 'settle' ? '还车' : hoForm.phase,
+      )
+      const url = res?.data?.url
+      if (!url) throw new Error('照片上传失败')
+      if (target === 'settle') setForm(f => ({ ...f, hoPhotos: [...f.hoPhotos, url] }))
+      else setHoForm(f => ({ ...f, photos: [...f.photos, url] }))
+    } catch (e: any) {
+      toast(e?.message || '照片上传失败', 'error')
+    } finally {
+      setHoUploading(false)
+    }
+  }
+
+  /** 保存验车快照（弹窗里的补登/更新） */
+  const saveHandover = async () => {
+    if (!handover) return
+    setHoSaving(true)
+    try {
+      await settleApi.saveHandover({
+        orderId: handover.orderId,
+        phase: hoForm.phase,
+        batteryLevel: hoForm.battery === '' ? null : Number(hoForm.battery),
+        photoPaths: hoForm.photos.join(',') || null,
+        conditionNote: hoForm.note || null,
+      })
+      toast(`${hoForm.phase}验车记录已保存`, 'success')
+      setHoForm({ phase: hoForm.phase, battery: '', note: '', photos: [] })
+      await loadHandovers(handover.orderId)
+    } catch (e: any) {
+      toast(e?.message || '验车记录保存失败', 'error')
+    } finally {
+      setHoSaving(false)
+    }
+  }
+
   const handleSettle = async () => {
     const e: Record<string, string> = {}
     if (!form.orderId) e.orderId = '请选择需要归还结算的订单'
     if (form.damageFee < 0) e.damageFee = '损坏费不能为负数'
+    /**
+     * 收损坏费必须有车况依据：门店最吃亏的场景就是「钱收了、说不清哪坏了」，
+     * 顾客一闹只能退。要求前台写一句车况（划痕位置/损坏部位），照片建议拍但不必强制。
+     */
+    if (form.damageFee > 0 && !form.conditionNote.trim())
+      e.conditionNote = '收损坏费需写明车况（划痕位置 / 损坏部位），顾客质疑时这是唯一依据'
+    if (form.batteryLevel !== '' && (Number(form.batteryLevel) < 0 || Number(form.batteryLevel) > 100))
+      e.batteryLevel = '归还电量只能是 0~100 之间的整数'
     setErrors(e)
     if (Object.keys(e).length) return
 
@@ -382,6 +504,23 @@ export default function Settlements() {
     if (!ok) return
 
     try {
+      /**
+       * 先把「还车验车」落库（电量 / 照片 / 车况），再走结算。
+       * 顺序不能反：结算一提交订单就变「已完结」，之后再补登记等于事后编证据；
+       * 快照失败不阻断结算（钱的事优先），但必须当场告诉前台证据没留下。
+       */
+      try {
+        await settleApi.saveHandover({
+          orderId: form.orderId,
+          phase: '还车',
+          batteryLevel: form.batteryLevel === '' ? null : Number(form.batteryLevel),
+          photoPaths: form.hoPhotos.join(',') || null,
+          conditionNote: form.conditionNote.trim() || null,
+        })
+      } catch (err: any) {
+        toast('还车验车快照未保存：' + (err?.message || '未知错误'), 'warning')
+      }
+
       // 结算 = 核算 + 调支付通道原路退款，慢的是后者；期间显示环形进度并锁住弹窗
       setSettling(true)
       setSettleSec(0)
@@ -438,7 +577,7 @@ export default function Settlements() {
       <div className="card-title settle-card-title">
         <span className="settle-title-main">
           <Icon name="settlements" size={18} chip />归还结算
-          <span className="card-title-count">共 {list.length} 条记录</span>
+          <span className="card-title-count">共 {total} 条记录</span>
           {!canOperate && <span className="card-title-count">· 只读视图</span>}
         </span>
         {canOperate && (
@@ -504,29 +643,29 @@ export default function Settlements() {
             className="settle-filter-kw"
             placeholder="搜索结算单号 / 订单号 / 车牌 / 客户"
             value={filterKw}
-            onChange={e => setFilterKw(e.target.value)}
+            onChange={e => { setFilterKw(e.target.value); setPage(1) }}
           />
           <span className="settle-filter-sep" />
           {/* 与订单页同一套结构：标签+日期框成组，手机端两列等宽、标签不丢 */}
           <span className="settle-filter-date-group">
             <span className="settle-filter-tilde">结算</span>
             <input type="date" className="settle-filter-date" value={filterFrom} max={filterTo || undefined}
-                   onChange={e => setFilterFrom(e.target.value)} title="结算时间起" />
+                   onChange={e => { setFilterFrom(e.target.value); setPage(1) }} title="结算时间起" />
           </span>
           <span className="settle-filter-date-group">
             <span className="settle-filter-tilde">至</span>
             <input type="date" className="settle-filter-date" value={filterTo} min={filterFrom || undefined}
-                   onChange={e => setFilterTo(e.target.value)} title="结算时间止" />
+                   onChange={e => { setFilterTo(e.target.value); setPage(1) }} title="结算时间止" />
           </span>
           {hasFilter && (
             <button className="btn-sm btn-sm-default" title="重置筛选条件"
-              onClick={() => { setFilterKw(''); setFilterFrom(DEF_FROM); setFilterTo(DEF_TO) }}>
+              onClick={() => { setFilterKw(''); setFilterFrom(DEF_FROM); setFilterTo(DEF_TO); setPage(1) }}>
               <Icon name="refresh" size={13} /><span className="btn-label">重置</span>
             </button>
           )}
         </div>
         <span className="settle-filter-count">
-          {hasFilter ? `筛选出 ${filteredList.length} / 共 ${list.length} 条` : `共 ${list.length} 条`}
+          {hasFilter ? `筛选出 ${total} 条` : `共 ${total} 条`}
         </span>
       </div>
 
@@ -572,12 +711,19 @@ export default function Settlements() {
                 <td className="cell-time">{fmtDT(s.settleTime)}</td>
                 <td className="col-hide-md">{s.remark || '—'}</td>
                 <td>
-                  {/* 操作列三个按钮放在同一个 flex 容器里：原来两个按钮靠 marginLeft 分隔，
-                      单元格一宽就被拉开一大截，看着像两件不相干的事。 */}
+                  {/* 操作列按钮放在同一个 flex 容器里：原来两个按钮靠 marginLeft 分隔，
+                      单元格一宽就被拉开一大截，看着像两件不相干的事。
+
+                      「验车」对所有角色开放：这张单的损坏费凭什么收，就看这单的取车/还车快照，
+                      管理员核账、财务核赔都需要看；只有前进台能在里面补登取车快照。
+                      小票 / 收款 / 催缴是柜台动作，受 canOperate 控制——只读角色这里不出现按钮。 */}
                   <div className="row-actions">
-                    <button className="btn-sm btn-sm-default" onClick={() => handlePrint(s.settleId)}>小票</button>
+                    <button className="btn-sm btn-sm-default" onClick={() => openHandover(s)}>验车</button>
+                    {canOperate && (
+                      <button className="btn-sm btn-sm-default" onClick={() => handlePrint(s.settleId)}>小票</button>
+                    )}
                     {/* 收款 / 催缴只在「有补缴且没收清」时出现——与顶部入口同一条件，收清了自动消失 */}
-                    {s.supplementAmount > 0 && !s.supplementCollected && (
+                    {canOperate && s.supplementAmount > 0 && !s.supplementCollected && (
                       <>
                         <button
                           className="btn-sm btn-sm-primary"
@@ -611,12 +757,23 @@ export default function Settlements() {
           {hasFilter && (
             <button
               className="btn-sm btn-sm-default" style={{ marginTop: 10 }}
-              onClick={() => { setFilterKw(''); setFilterFrom(''); setFilterTo('') }}
+              onClick={() => { setFilterKw(''); setFilterFrom(''); setFilterTo(''); setPage(1) }}
             >
               清除筛选条件
             </button>
           )}
         </div>
+      )}
+
+      {/* 分页：记录由后端按区间 + 关键词裁好再下发，翻页即重新查询（不再一次拉全量） */}
+      {total > 0 && (
+        <Pagination
+          total={total}
+          page={page}
+          pageSize={pageSize}
+          onChange={setPage}
+          onPageSizeChange={n => { setPageSize(n); setPage(1) }}
+        />
       )}
 
       {/* 还车申请单汇总表：在租订单的申请一览，审核入口在行内 */}
@@ -876,6 +1033,59 @@ export default function Settlements() {
                 {errors.damageFee && <div className="field-error">{errors.damageFee}</div>}
               </div>
 
+              {/* 归还验车：电量 + 车况 + 现场照片。与损坏费同屏，是因为损坏费本来就是凭车况定的——
+                  证据和金额必须一起落库，分两步很容易只填了钱没留证（顾客一闹就退钱）。 */}
+              <div className="form-group">
+                <label>归还验车 <span className="field-hint-inline">电量 / 车况 / 照片（收损坏费必填车况）</span></label>
+                <div className="ho-inputs">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    className={errors.batteryLevel ? 'has-error' : ''}
+                    placeholder="归还电量 %"
+                    value={form.batteryLevel}
+                    onChange={e => { setForm({ ...form, batteryLevel: e.target.value }); setErrors({ ...errors, batteryLevel: '' }) }}
+                  />
+                  <input
+                    type="text"
+                    className={errors.conditionNote ? 'has-error' : ''}
+                    placeholder="车况备注：划痕位置 / 损坏部位 / 随车配件"
+                    value={form.conditionNote}
+                    onChange={e => { setForm({ ...form, conditionNote: e.target.value }); setErrors({ ...errors, conditionNote: '' }) }}
+                  />
+                </div>
+                {errors.batteryLevel && <div className="field-error">{errors.batteryLevel}</div>}
+                {errors.conditionNote && <div className="field-error">{errors.conditionNote}</div>}
+                <div className="ho-photos">
+                  {form.hoPhotos.map(url => (
+                    <span key={url} className="ho-photo">
+                      <img src={url} alt="验车照片" />
+                      <button
+                        type="button"
+                        className="ho-photo-del"
+                        onClick={() => setForm({ ...form, hoPhotos: form.hoPhotos.filter(p => p !== url) })}
+                        aria-label="移除照片"
+                      >×</button>
+                    </span>
+                  ))}
+                  {form.hoPhotos.length < 3 && (
+                    <label className="ho-photo-add">
+                      <Icon name="camera" size={16} />
+                      <span>{hoUploading ? '上传中…' : '拍照上传'}</span>
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        hidden
+                        disabled={hoUploading}
+                        onChange={e => { uploadHoPhoto(e.target.files?.[0], 'settle'); e.target.value = '' }}
+                      />
+                    </label>
+                  )}
+                </div>
+                <div className="field-hint">照片会与本次结算单绑定，最多 3 张、单张 5MB 以内；顾客对损坏费有异议时可当场调出。</div>
+              </div>
+
               {/* 订单快照：只放「约定的时间事实」。
                   预收租金、押金交给下面的结算实算区显示——同一笔钱在一屏里出现两次，
                   前台报数时反而要停下来分辨哪个才是当前口径。 */}
@@ -1109,6 +1319,108 @@ export default function Settlements() {
                 <Icon name="refresh" size={13} />刷新
               </button>
               <button className="btn-sm btn-sm-default" onClick={() => setShowBills(false)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 验车记录：一张单的损坏费凭什么收，就看这两条快照（取车 / 还车） */}
+      {handover && (
+        <div className="modal-overlay" onClick={() => setHandover(null)}>
+          <div className="modal modal-lg" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span>验车记录 · 订单 {handover.orderNo}</span>
+              <button className="close-btn" onClick={() => setHandover(null)}><Icon name="close" size={15} /></button>
+            </div>
+            <div className="modal-body">
+              {handoverLoading ? (
+                <div className="loading-line"><Icon name="refresh" size={16} />验车记录加载中…</div>
+              ) : (
+                <>
+                  {['取车', '还车'].map(phase => {
+                    const rec = handoverList.find(h => h.phase === phase)
+                    return (
+                      <div className="ho-card" key={phase}>
+                        <div className="ho-card-head">
+                          <strong>{phase}验车</strong>
+                          {rec
+                            ? <span className="card-title-count">{fmtDT(rec.createTime)} · 电量 {rec.batteryLevel ?? '未记录'}%</span>
+                            : <span className="card-title-count">未登记</span>}
+                        </div>
+                        {rec ? (
+                          <>
+                            {rec.conditionNote && <div className="ho-note">车况：{rec.conditionNote}</div>}
+                            {rec.photos?.length > 0 ? (
+                              <div className="ho-photos">
+                                {rec.photos.map((u: string) => (
+                                  <a key={u} className="ho-photo" href={u} target="_blank" rel="noreferrer">
+                                    <img src={u} alt={`${phase}验车照片`} />
+                                  </a>
+                                ))}
+                              </div>
+                            ) : <div className="field-hint">未上传照片（照片是损坏费最直接的说服力，下次建议随手拍两张）</div>}
+                          </>
+                        ) : (
+                          <div className="field-hint">
+                            {phase === '取车'
+                              ? '交车时没有留证：顾客还车后若对划痕提出异议，门店拿不出「交车时就有的证据」。'
+                              : '还车时没有留证：这笔结算的损坏费无法回溯现场。'}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+
+                  {canOperate && (
+                    <div className="form-group" style={{ marginTop: 16 }}>
+                      <label>补登 / 更新验车记录</label>
+                      <div className="ho-inputs">
+                        <select value={hoForm.phase} onChange={e => setHoForm({ ...hoForm, phase: e.target.value })}>
+                          <option value="取车">取车</option>
+                          <option value="还车">还车</option>
+                        </select>
+                        <input
+                          type="number" min={0} max={100} placeholder="电量 %"
+                          value={hoForm.battery}
+                          onChange={e => setHoForm({ ...hoForm, battery: e.target.value })}
+                        />
+                        <input
+                          type="text" placeholder="车况备注：划痕位置 / 随车配件"
+                          value={hoForm.note}
+                          onChange={e => setHoForm({ ...hoForm, note: e.target.value })}
+                        />
+                      </div>
+                      <div className="ho-photos">
+                        {hoForm.photos.map(url => (
+                          <span key={url} className="ho-photo">
+                            <img src={url} alt="待登记照片" />
+                            <button type="button" className="ho-photo-del"
+                              onClick={() => setHoForm({ ...hoForm, photos: hoForm.photos.filter(p => p !== url) })}
+                              aria-label="移除照片">×</button>
+                          </span>
+                        ))}
+                        {hoForm.photos.length < 3 && (
+                          <label className="ho-photo-add">
+                            <Icon name="camera" size={16} />
+                            <span>{hoUploading ? '上传中…' : '拍照上传'}</span>
+                            <input type="file" accept="image/jpeg,image/png,image/webp" hidden disabled={hoUploading}
+                              onChange={e => { uploadHoPhoto(e.target.files?.[0], 'modal'); e.target.value = '' }} />
+                          </label>
+                        )}
+                      </div>
+                      <div className="field-hint">同一阶段重复提交会覆盖原记录，照片按追加合并。</div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="modal-footer">
+              {canOperate && (
+                <button className="btn-sm btn-sm-primary" onClick={saveHandover} disabled={hoSaving}>
+                  <Icon name="success" size={13} color="#fff" />{hoSaving ? '保存中…' : '保存验车记录'}
+                </button>
+              )}
+              <button className="btn-sm btn-sm-default" onClick={() => setHandover(null)}>关闭</button>
             </div>
           </div>
         </div>

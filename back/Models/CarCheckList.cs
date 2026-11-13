@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using ERental.Services;
+using ERental.Data;
 namespace ERental.Models;
 
 [Table("car_check_list")]
@@ -15,7 +16,7 @@ public class CarCheckList
     public string CheckNo { get; private set; } = string.Empty;
 
     [Column("check_date")]
-    public DateTime CheckDate { get; private set; } = DateTime.Now;
+    public DateTime CheckDate { get; private set; } = AppClock.Now;
 
     [Column("vehicle_id")]
     public int VehicleId { get; private set; }

@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using ERental.Services;
+using ERental.Data;
 
 namespace ERental.Models;
 
@@ -79,7 +80,7 @@ public class AppMessage
     public bool IsRead { get; private set; }
 
     [Column("created_at")]
-    public DateTime CreatedAt { get; private set; } = DateTime.Now;
+    public DateTime CreatedAt { get; private set; } = AppClock.Now;
 
     [Column("read_at")]
     public DateTime? ReadAt { get; private set; }
@@ -138,7 +139,7 @@ public class AppMessage
 
         IsRead = false;
         ReadAt = null;
-        CreatedAt = DateTime.Now;//内容变了就重新排到收件箱顶部
+        CreatedAt = AppClock.Now;//内容变了就重新排到收件箱顶部
     }
 
     ///<summary>标记已读</summary>
@@ -146,14 +147,14 @@ public class AppMessage
     {
         if (IsRead) return;
         IsRead = true;
-        ReadAt = at ?? DateTime.Now;
+        ReadAt = at ?? AppClock.Now;
     }
 
     ///<summary>忽略（软删）：只写一次忽略时间，重复点击不改变原有排序位置</summary>
     public void Dismiss(DateTime? at = null)
     {
         if (DismissedAt.HasValue) return;
-        DismissedAt = at ?? DateTime.Now;
+        DismissedAt = at ?? AppClock.Now;
     }
 
     private static string Clip(string? text, int max)

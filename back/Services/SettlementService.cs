@@ -6,25 +6,62 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-public class SettlementService(AppDbContext db, PaymentService payment, MessageService messages, SupplementService supplement, ILogger<SettlementService> logger)
+public class SettlementService(AppDbContext db, PaymentService payment, MessageService messages, SupplementService supplement, ImageStorage images, LogService logs, ILogger<SettlementService> logger)
 {
     ///<summary>支付记录的业务类型：补缴</summary>
     private const string BizTypeSupplement = "supplement";
+
+    ///<summary>损坏费自动转维保的阈值配置键（元；0 表示一律不转）</summary>
+    private const string KeyDamageMaintThreshold = "damage_maintenance_threshold";
 
     private readonly AppDbContext _db = db;
     private readonly PaymentService _payment = payment;
     private readonly MessageService _messages = messages;
     private readonly SupplementService _supplement = supplement;
+    private readonly ImageStorage _images = images;
+    private readonly LogService _logs = logs;
     private readonly ILogger<SettlementService> _logger = logger;
 
-    ///<summary>结算记录列表（对账用）：联表与补缴聚合由数据库视图 v_settlement_bill 一次算好</summary>
-    public async Task<List<SettleListDto>> GetAll()
+    ///<summary>
+    /// 结算记录分页查询（对账用）：联表与补缴聚合由数据库视图 v_settlement_bill 一次算好。
+    ///
+    /// 为什么从「一次全量返回」改成分页：结算单只会越攒越多（门店一天几单，一年就是上千行），
+    /// 全量塞给浏览器再由前端本地筛选，首屏迟早会被这一坨 JSON 拖住；日期区间也该由库来裁。
+    /// 口径不变：仍按结算时间倒序，`from/to` 传空即全部历史。
+    ///</summary>
+    public async Task<SettlePageDto> GetPaged(DateTime? from, DateTime? to, int page, int pageSize, string? keyword = null)
     {
-        //排序留在库里、口径与原来完全一致（只按结算时间倒序，不再追加任何 tie-breaker）
-        return await _db.SettlementBills
-            .AsNoTracking()
-            .OrderByDescending(b => b.SettleTime)
-            .Select(b => new SettleListDto
+        var q = _db.SettlementBills.AsNoTracking();
+        //区间用 [from 当天 00:00, to 次日 00:00)：日期框只给到天，按「含当天」理解才不会漏掉当天最后几单
+        if (from is { } f) { var start = f.Date; q = q.Where(b => b.SettleTime >= start); }
+        if (to is { } t) { var end = t.Date.AddDays(1); q = q.Where(b => b.SettleTime < end); }
+        //关键词也交给库：订单号 / 车牌 / 客户名，前端只保留输入框，不再拿全量数据在本地筛。
+        //结算单号按「JS000074」展示，搜的时候把前缀剥掉直接比 ID（库里的字符串拼接没法翻译成 SQL）
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            var k = keyword.Trim();
+            var raw = k.StartsWith("JS", StringComparison.OrdinalIgnoreCase) ? k[2..] : k;
+            var sid = raw.Length > 0 && raw.All(char.IsDigit) && int.TryParse(raw, out var parsed) ? parsed : (int?)null;
+
+            q = q.Where(b =>
+                (b.OrderNo != null && b.OrderNo.Contains(k)) ||
+                (b.VehicleNo != null && b.VehicleNo.Contains(k)) ||
+                (b.CustomerName != null && b.CustomerName.Contains(k)) ||
+                (sid != null && b.SettleId == sid));
+        }
+
+        var total = await q.CountAsync();
+        var (_, _, skip, take) = Paging.Normalize(page, pageSize);
+        //取 0 表示「不分页」（Paging.Normalize 的既有约定），对账导出类调用才用得到
+        var ordered = q.OrderByDescending(b => b.SettleTime).ThenByDescending(b => b.SettleId);
+        var rows = take > 0 ? await ordered.Skip(skip).Take(take).ToListAsync() : await ordered.ToListAsync();
+
+        return new SettlePageDto
+        {
+            Total = total,
+            Page = page < 1 ? 1 : page,
+            PageSize = pageSize,
+            Items = rows.Select(b => new SettleListDto
             {
                 SettleId = b.SettleId,
                 OrderId = b.OrderId,
@@ -46,9 +83,80 @@ public class SettlementService(AppDbContext db, PaymentService payment, MessageS
                     VehicleNo = b.VehicleNo,
                     CustomerName = b.CustomerName,
                 }
-            })
-            .ToListAsync();
+            }).ToList()
+        };
     }
+
+    ///<summary>某订单的交接验车记录（取车 / 还车各最多一条，按登记顺序返回）</summary>
+    public async Task<List<HandoverDto>> ListHandovers(int orderId)
+    {
+        var rows = await _db.OrderHandovers.AsNoTracking()
+            .Where(h => h.OrderId == orderId)
+            .OrderBy(h => h.HandoverId)
+            .ToListAsync();
+        return rows.Select(ToHandoverDto).ToList();
+    }
+
+    ///<summary>
+    /// 登记 / 覆盖一条交接快照：同一订单同一阶段只留一条（唯一键 uk_order_phase），
+    /// 照片与备注按「追加」合并——门店往往是先拍两张，再补一张划痕特写。
+    /// </summary>
+    public async Task<HandoverDto> SaveHandover(SaveHandoverDto dto, int operatorId)
+    {
+        //订单必须先存在，否则就是前端串单了；这里不做状态限制：
+        //取车快照在「已支付」时登记，还车快照在结算瞬间登记，两种状态都要能写。
+        if (!await _db.RentalOrders.AnyAsync(o => o.OrderId == dto.OrderId))
+            throw new BusinessException("订单不存在，无法登记验车");
+
+        var existing = await _db.OrderHandovers
+            .FirstOrDefaultAsync(h => h.OrderId == dto.OrderId && h.Phase == dto.Phase);
+        if (existing == null)
+        {
+            existing = OrderHandover.Create(dto.OrderId, dto.Phase, dto.BatteryLevel, dto.PhotoPaths, dto.ConditionNote, operatorId);
+            _db.OrderHandovers.Add(existing);
+        }
+        else
+        {
+            /*
+             * 覆盖时留审计：验车快照正是损坏费的唯一依据，
+             * 「谁在什么时候把电量从 35% 改成 90%、把照片从 1 张补到 3 张」必须能查。
+             * 这不是怀疑前台，而是顾客投诉时门店能自证流程没被改过。
+             */
+            var before = $"电量 {existing.BatteryLevel?.ToString() ?? "未记"}%、照片 {CountPhotos(existing.PhotoPaths)} 张";
+            existing.Overwrite(dto.BatteryLevel, dto.PhotoPaths, dto.ConditionNote, operatorId);
+            var after = $"电量 {dto.BatteryLevel?.ToString() ?? "未记"}%、照片 {CountPhotos(dto.PhotoPaths ?? existing.PhotoPaths)} 张";
+            if (before != after)
+            {
+                await _db.SaveChangesAsync();//先落库再写日志：日志失败不该让覆盖操作回滚
+                await _logs.WriteLog(operatorId, $"覆盖订单 {dto.OrderId} 的{dto.Phase}验车：{before} → {after}", "验车审计", "成功");
+                return ToHandoverDto(existing);
+            }
+        }
+        await _db.SaveChangesAsync();
+        return ToHandoverDto(existing);
+    }
+
+    ///<summary>照片张数（逗号分隔）</summary>
+    private static int CountPhotos(string? paths) =>
+        string.IsNullOrWhiteSpace(paths) ? 0 : paths.Split(',', StringSplitOptions.RemoveEmptyEntries).Length;
+
+    ///<summary>验车照片落盘：子目录 handover，文件名带「订单号_阶段」，出事后不用反查数据库</summary>
+    public async Task<string> SaveHandoverPhoto(IFormFile? file, int orderId, string? phase) =>
+        await _images.SaveAsync(file, "handover", $"Handover_{orderId}_{(string.IsNullOrWhiteSpace(phase) ? "unknown" : phase)}");
+
+    private static HandoverDto ToHandoverDto(OrderHandover h) => new()
+    {
+        HandoverId = h.HandoverId,
+        OrderId = h.OrderId,
+        Phase = h.Phase,
+        BatteryLevel = h.BatteryLevel,
+        Photos = string.IsNullOrWhiteSpace(h.PhotoPaths)
+            ? []
+            : h.PhotoPaths.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList(),
+        ConditionNote = h.ConditionNote,
+        OperatorId = h.OperatorId,
+        CreateTime = h.CreateTime,
+    };
 
     ///<summary>顾客侧结算单列表：只返回自己订单的结算结果</summary>
     public async Task<List<MySettleDto>> GetMineAsync(int customerId)
@@ -104,10 +212,29 @@ public class SettlementService(AppDbContext db, PaymentService payment, MessageS
     ///<summary>结算所需的订单快照：试算从视图取，正式结算从锁内实体取，核算逻辑只认这几列</summary>
     private readonly record struct SettleSnapshot(int VehicleId, DateTime LeaseStart, DateTime LeaseEnd, decimal TotalRent, decimal Deposit);
 
-    ///<summary>统一的结算核算：正常租金只算到约定还车时间，超出部分按超时倍数计为逾期费</summary>
+    ///<summary>损坏理赔工单号：WB+时间戳，撞号重试（与 MaintenanceService 同一套规则，轮换同一个号段）</summary>
+    private async Task<string> NextDamageWorkOrderNoAsync()
+    {
+        for (var i = 0; i < 5; i++)
+        {
+            var no = "WB" + AppClock.Now.ToString("yyyyMMddHHmmssfff");
+            if (!await _db.MaintenanceOrders.AnyAsync(x => x.WorkOrderNo == no)) return no;
+            await Task.Delay(2);
+        }
+        return "WB" + Guid.NewGuid().ToString("N")[..17];
+    }
+
+    ///<summary>损坏费转维保的金额门槛（读系统配置，缺项按 ¥100 兜底）</summary>
+    private async Task<decimal> DamageThresholdAsync()
+    {
+        var cfgs = await _db.SystemConfigs.Where(c => c.ConfigKey == KeyDamageMaintThreshold).ToListAsync();
+        return ConfigValue.Decimal(cfgs, KeyDamageMaintThreshold, 100m);
+    }
+
+    ///<summary>统一结算核算：正常租金只算到约定还车时间，超出部分按超时倍数计为逾期费</summary>
     private async Task<SettleCalc> CalculateAsync(SettleSnapshot order, decimal damageFee)
     {
-        var now = DateTime.Now;
+        var now = AppClock.Now;
         //计费粒度与下单一致：按小时（向上取整，最少 1 小时）
         var (_, hourlyRent, _) = await PricingResolver.ResolveHourlyAsync(_db, order.VehicleId);
 
@@ -205,7 +332,7 @@ public class SettlementService(AppDbContext db, PaymentService payment, MessageS
             var c = await CalculateAsync(
                 new SettleSnapshot(order.VehicleId, order.LeaseStart, order.LeaseEnd, order.TotalRent, order.Deposit),
                 dto.DamageFee);
-            var now = DateTime.Now;
+            var now = AppClock.Now;
 
             //本单成功支付的那条记录
             var paid = await _db.PaymentRecords.Where(p => p.OrderId == order.OrderId && (p.PayStatus == "已支付" || p.PayStatus == "部分退款")).OrderByDescending(p => p.PayId).FirstOrDefaultAsync();
@@ -228,6 +355,36 @@ public class SettlementService(AppDbContext db, PaymentService payment, MessageS
             //车辆释放走统一闸门
             await VehicleLeaseGuard.TryReleaseAsync(_db, order.VehicleId, order.OrderId);
 
+            /*
+             * 损坏费 > 0 就要留下「这车得修」的证据链。
+             * 门店最常见的漏损是：赔偿收了、车带伤继续出租，下一位顾客再赔一次，
+             * 同一处划痕收三遍钱，最后账上有收入、车却一直没修。
+             * 所以工单一定建（可追溯、维修费能与赔偿对账）；
+             * 只有金额达到阈值（默认 ¥100，系统配置 damage_maintenance_threshold）才把车锁进「维保中」——
+             * 小额划痕门店通常根本不修，不该因为一笔赔偿就让车下线。
+             */
+            if (dto.DamageFee > 0)
+            {
+                var damageOrder = MaintenanceOrder.Report(
+                    await NextDamageWorkOrderNoAsync(),
+                    order.VehicleId,
+                    "归还损坏",
+                    $"归还结算 JS{settle.SettleId:D6} · 订单 {order.OrderNo}，损坏费 ¥{dto.DamageFee:0.00}"
+                    + (string.IsNullOrWhiteSpace(dto.Remark) ? "" : $"；备注：{dto.Remark.Trim()}"),
+                    null,
+                    operatorId);
+                _db.MaintenanceOrders.Add(damageOrder);
+                await _db.SaveChangesAsync();
+
+                var threshold = await DamageThresholdAsync();
+                if (threshold > 0 && dto.DamageFee >= threshold
+                    && !await VehicleStateGuard.TryEnterMaintenanceAsync(_db, order.VehicleId))
+                {
+                    //车已经被别的在途工单锁着、或刚被租走：工单照留，不抢状态
+                    _logger.LogWarning("损坏费转维保：车辆 {VehicleId} 未能进入「维保中」（已有在途工单或状态已变更）", order.VehicleId);
+                }
+            }
+
             //退款必须和结算同进同退：· 支付宝真实通道 → 在这里调网关原路退回
             string note;
             if (c.Supplement > 0)
@@ -247,6 +404,40 @@ public class SettlementService(AppDbContext db, PaymentService payment, MessageS
             }
 
             await tx.CommitAsync();
+
+            //结算之后的旁路动作（审计 + 通知）不能让已提交的结算变成失败，
+            //所以单独 try：写不进去只记 warning，账已经落了。
+            try
+            {
+                //结算审计：改的是哪笔钱、由谁定的、构成如何——财务对账/顾客投诉都要能追到人
+                await _logs.WriteLog(operatorId,
+                    $"结算 JS{settle.SettleId:D6} · 订单 {order.OrderNo}：实际租金 ¥{c.ActualRent:0.00}（{c.ActualHours} 小时）、"
+                    + $"逾期费 ¥{c.OverdueFee:0.00}（{c.OverdueHours} 小时×{c.Multiplier}）、损坏费 ¥{dto.DamageFee:0.00}、"
+                    + $"退款 ¥{c.Refund:0.00}、补缴 ¥{c.Supplement:0.00}",
+                    "结算审计", "成功");
+
+                //赔付/逾期明细主动告知顾客：钱被扣了却没人解释，是差评的最大来源。
+                //消息里点明「可调取验车照片核对」，把争执从柜台拉到证据上。
+                if (dto.DamageFee > 0 || c.OverdueFee > 0)
+                {
+                    var parts = new List<string>();
+                    if (c.OverdueFee > 0) parts.Add($"逾期 {c.OverdueHours} 小时，逾期费 ¥{c.OverdueFee:0.00}");
+                    if (dto.DamageFee > 0) parts.Add($"车辆损坏赔付 ¥{dto.DamageFee:0.00}");
+                    var tail = c.Supplement > 0
+                        ? $"本次需补缴 ¥{c.Supplement:0.00}"
+                        : (c.Refund > 0 ? $"应退 ¥{c.Refund:0.00}" : "无需退款或补缴");
+                    await _messages.SendAsync(
+                        ("customer", order.CustomerId),
+                        ("settle-detail", settle.SettleId.ToString()),
+                        ("结算费用明细", $"订单 {order.OrderNo} 已结算：{string.Join("；", parts)}。{tail}。如对损坏费有异议，可到门店调取取车/还车验车照片核对。"),
+                        ("warning", "/my-orders", false));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "结算 {SettleId} 的审计/通知写入失败（结算本身已成功）", settle.SettleId);
+            }
+
             return new SettleResult(ToResultDto(settle), note);
         }
         catch (DbUpdateException ex) when (DbConcurrency.IsDuplicateKey(ex))

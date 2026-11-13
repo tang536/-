@@ -4,7 +4,7 @@ import { customerApi, vehicleApi, orderApi, printApi } from '@/api'
 import Icon from '@/components/Icon'
 import ReceiptModal from '@/components/ReceiptModal'
 import VehicleQrLookup from './VehicleQrLookup'
-import type { VehicleQrDetail } from '@/types'
+import type { VehicleQrDetail, CreateOrderPayload } from '@/types'
 import { nowDatetimeInput, afterDaysDatetimeInput, isBeforeNow, clampLeaseStart } from '@/utils/datetime'
 
 const PAY_TYPES = ['微信', '支付宝', '现金', '银行卡']
@@ -80,8 +80,8 @@ export default function CreateOrderPanel({ onBack }: { onBack: () => void }) {
   // 一旦管理员改了租金/押金或在车辆上单独定价，试算与实际入账就会对不上。
   // 服务器没响应（接口异常/网络断开）时保留上次结果并给出提示，不阻塞开单本身。
   const [preview, setPreview] = useState<{
-    hours: number; hourlyRent: number; deposit: number; discount: number;
-    rent: number; total: number; stale?: boolean
+    hours: number; hourlyRent: number; deposit: number; depositBase: number; discount: number;
+    rent: number; total: number; creditNote?: string | null; maxLeaseDays?: number | null; stale?: boolean
   } | null>(null)
 
   useEffect(() => {
@@ -97,7 +97,9 @@ export default function CreateOrderPanel({ onBack }: { onBack: () => void }) {
         const d = res.data
         setPreview({
           hours: d.hours, hourlyRent: d.hourlyRent, deposit: d.deposit,
+          depositBase: d.depositBase ?? d.deposit,
           discount: d.discount, rent: d.totalRent, total: d.payable,
+          creditNote: d.creditNote ?? null, maxLeaseDays: d.maxLeaseDays ?? null,
         })
       })
       .catch(() => { if (alive) setPreview(p => (p ? { ...p, stale: true } : null)) })
@@ -167,7 +169,9 @@ export default function CreateOrderPanel({ onBack }: { onBack: () => void }) {
 
     setLoading(true)
     try {
-      const payload: any = {
+      // 一次成型地构造请求体：customerId 是后端必填字段（0 = 线下新客户），
+      // 分成「先建对象再赋值」会让 TS 检查不到 customerId 漏传——这里两个分支各自给全。
+      const payload: CreateOrderPayload = {
         vehicleId: form.vehicleId,
         // ⚠️ 必须传 datetime-local 的**本地时间字符串**，不能 toISOString()：
         // 后者会转成 UTC（东八区少 8 小时），后端按本地时间比对与落库，
@@ -175,19 +179,23 @@ export default function CreateOrderPanel({ onBack }: { onBack: () => void }) {
         leaseStart: form.leaseStart,
         leaseEnd: form.leaseEnd,
         payType: form.payType,
-      }
-      if (mode === 'new') {
-        payload.customerId = 0
-        payload.newCustomerName = newCustomer.name.trim()
-        payload.newCustomerIdCard = newCustomer.idCard.trim()
-        payload.newCustomerPhone = newCustomer.phone.trim()
-      } else {
-        payload.customerId = form.customerId
-        if (needProfile) {
-          payload.idCard = profile.idCard.trim()
-          payload.contactPhone = profile.contactPhone.trim()
-          payload.fullName = profile.fullName.trim()
-        }
+        ...(mode === 'new'
+          ? {
+              customerId: 0,
+              newCustomerName: newCustomer.name.trim(),
+              newCustomerIdCard: newCustomer.idCard.trim(),
+              newCustomerPhone: newCustomer.phone.trim(),
+            }
+          : {
+              customerId: form.customerId,
+              ...(needProfile
+                ? {
+                    idCard: profile.idCard.trim(),
+                    contactPhone: profile.contactPhone.trim(),
+                    fullName: profile.fullName.trim(),
+                  }
+                : {}),
+            }),
       }
 
       const res: any = await orderApi.createStaff(payload)
@@ -446,9 +454,30 @@ export default function CreateOrderPanel({ onBack }: { onBack: () => void }) {
             <div><span>租赁时长</span><strong>{preview.hours} 小时</strong></div>
             <div><span>小时租金</span><strong>¥{preview.hourlyRent.toFixed(2)}</strong></div>
             <div><span>会员折扣</span><strong>{(preview.discount * 10).toFixed(1)} 折</strong></div>
-            <div><span>押金</span><strong>¥{preview.deposit.toFixed(2)}</strong></div>
+            <div>
+              <span>押金</span>
+              {/* 信用受限时押金是乘过倍数的，把基数一并显示，免得顾客以为门店乱加钱 */}
+              <strong>
+                ¥{preview.deposit.toFixed(2)}
+                {preview.depositBase && preview.deposit > preview.depositBase
+                  ? <span className="field-hint-inline">（基础 ¥{preview.depositBase.toFixed(2)}）</span>
+                  : null}
+              </strong>
+            </div>
           </div>
           <div className="estimate-total">合计应收 <strong>¥{preview.total.toFixed(2)}</strong></div>
+          {preview.creditNote && (
+            <p className="estimate-tip" style={{ color: 'var(--warning-text, #b45309)' }}>
+              <Icon name="info" size={13} chip />信用提示：{preview.creditNote}
+            </p>
+          )}
+          {preview.maxLeaseDays && preview.hours > preview.maxLeaseDays * 24 && (
+            <p className="estimate-tip" style={{ color: 'var(--danger-text, #C0392B)' }}>
+              <Icon name="error" size={13} chip />
+              租期超出信用上限：该客户单次租期不能超过 {preview.maxLeaseDays} 天（当前 {Math.ceil(preview.hours / 24)} 天），
+              请缩短到期时间或改由信用正常的人承租。
+            </p>
+          )}
           <p className="estimate-tip">
             {preview.stale
               ? '试算服务暂时不可用，以上为最近一次结果；开单成功后以服务端核算为准。'

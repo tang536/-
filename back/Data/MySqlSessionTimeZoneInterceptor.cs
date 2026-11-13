@@ -7,7 +7,7 @@ namespace ERental.Data;
 /// 把 MySQL 会话时区同步为应用进程的本地时区。
 /// <para>
 /// v_order_overview 里的 <c>is_overdue</c>、<c>billable_hours</c> 使用数据库的 NOW()，
-/// 而应用层的「今天」「逾期预警」使用 DateTime.Now。两者只有在数据库会话时区
+/// 而应用层的「今天」「逾期预警」使用 AppClock.Now。两者只有在数据库会话时区
 /// 与应用时区一致时才会得到相同结论。连接串不保证这一点（MySQL 默认跟随服务端
 /// 的 system_time_zone），因此每次物理连接建立后显式设置一次会话时区。
 /// </para>

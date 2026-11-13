@@ -7,12 +7,14 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-public class OrderService(AppDbContext db, ILogger<OrderService> logger)
+public class OrderService(AppDbContext db, CreditPolicy credit, MessageService messages, ILogger<OrderService> logger)
 {
     ///<summary>订单不存在时的统一提示</summary>
     private const string MsgOrderNotFound = "订单不存在";
 
     private readonly AppDbContext _db = db;
+    private readonly CreditPolicy _credit = credit;
+    private readonly MessageService _messages = messages;
     private readonly ILogger<OrderService> _logger = logger;
 
     ///<summary>超时单回收的单批上限</summary>
@@ -45,7 +47,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
     ///<summary>【兜底回收】把所有超时未支付的订单批量取消并释放车辆</summary>
     public async Task<int> ReleaseExpiredPendingOrders()
     {
-        var deadline = DateTime.Now.AddMinutes(-PendingPayTimeoutMinutes);
+        var deadline = AppClock.Now.AddMinutes(-PendingPayTimeoutMinutes);
 
         //快速失败：绝大多数请求到达时并没有超时单，不必为它们拿锁、开事务
         if (!await _db.RentalOrders.AsNoTracking().AnyAsync(o => o.OrderStatus == "待支付" && o.CreateTime < deadline))
@@ -67,7 +69,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
     ///<summary>惰性回收的节流版本：30 秒内只真正扫一次库</summary>
     private async Task ThrottledRelease()
     {
-        var now = DateTime.UtcNow.Ticks;
+        var now = AppClock.UtcNow.Ticks;
         var last = Interlocked.Read(ref _lastLazyReleaseTicks);
         if (now - last < TimeSpan.TicksPerSecond * LazyReleaseIntervalSeconds) return;
         if (Interlocked.CompareExchange(ref _lastLazyReleaseTicks, now, last) != last) return;
@@ -209,7 +211,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
     ///<summary>给待支付单补上支付截止时间与剩余秒数（其余状态保持 null，前端据此不显示倒计时）</summary>
     private static void ApplyPayDeadline(List<OrderDto> rows)
     {
-        var now = DateTime.Now;
+        var now = AppClock.Now;
         foreach (var dto in rows)
         {
             if (dto.OrderStatus != "待支付") continue;
@@ -260,16 +262,22 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         //3NF：折扣按等级关联权益表（档案不再冗余存储）
         var discount = customer == null ? 1.00m : await MemberDiscountLookup.OfLevelAsync(_db, customer.MemberLevel);
         var totalRent = Math.Round(hours * hourlyRent * discount, 2);
+        //试算就把信用加价算进去，顾客/前台看到的是「实际要交多少」，
+        //而不是下单那一刻凭空多出一笔押金
+        var verdict = await _credit.EvaluateAsync(customerId);
         return new RentEstimateDto
         {
             Hours = hours,
             Days = hours,//兼容旧字段：仍表示计费单位数
             DailyRent = dailyRent,
             HourlyRent = hourlyRent,
-            Deposit = deposit,
+            DepositBase = deposit,
+            Deposit = verdict.ApplyToDeposit(deposit),
             Discount = discount,
             TotalRent = totalRent,
-            Payable = totalRent + deposit
+            Payable = totalRent + verdict.ApplyToDeposit(deposit),
+            CreditNote = verdict.Note,
+            MaxLeaseDays = verdict.MaxLeaseDays
         };
     }
 
@@ -339,7 +347,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         if (leaseEnd.Kind == DateTimeKind.Utc) leaseEnd = leaseEnd.ToLocalTime();
 
         //租期合理性：起租时间早于当前则自动回落到当前时刻（业务约定，与前端一致），而不是抛错
-        var now = DateTime.Now;
+        var now = AppClock.Now;
         var nowMinute = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Local);
         if (leaseStart < nowMinute) leaseStart = now;
         //还车时间必须晚于起租时间
@@ -347,9 +355,20 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
 
         var hours = CalcHours(leaseStart, leaseEnd);
         //计价按车辆取：每辆车有自己的日租金与押金，留空才回退全局配置
-        var (_, hourlyRent, deposit) = await PricingResolver.ResolveHourlyAsync(_db, vehicle.VehicleId);
+        var (_, hourlyRent, depositBase) = await PricingResolver.ResolveHourlyAsync(_db, vehicle.VehicleId);
         var discount = await MemberDiscountLookup.OfLevelAsync(_db, customer.MemberLevel);
         var totalRent = Math.Round(hours * hourlyRent * discount, 2);
+
+        /*
+         * 信用体检放在「报价之前」：押金倍数与租期上限都要落进订单金额，
+         * 事后再改就得动已生成的订单，等于把脏数据留给对账。
+         * 两个后果：欠缴未清直接拒单；逾期多的客户押金加倍、租期封顶。
+         */
+        var verdict = await _credit.EvaluateAsync(customer.CustomerId);
+        if (verdict.BlockReason != null) throw new BusinessException(verdict.BlockReason);
+        if (verdict.MaxLeaseDays > 0 && hours > verdict.MaxLeaseDays * 24)
+            throw new BusinessException($"该客户信用受限（{verdict.Note}），单次租期不能超过 {verdict.MaxLeaseDays} 天，请先缩短还车时间或结清历史账款");
+        var deposit = verdict.ApplyToDeposit(depositBase);
 
         //── 从这里开始的一次性提交：占车+订单+支付记录 ──为什么必须包在同一个事务里：① 原实现是「先写订单、再改车辆状态、再写支付记录」三次独立提交
         await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
@@ -361,7 +380,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             if (!await VehicleLeaseGuard.TryClaimAsync(_db, vehicle.VehicleId)) throw new BusinessException($"车辆 {vehicle.VehicleNo} 刚被他人租走，请重新选择车辆");
 
             //② 占车成功后才写订单：订单号冲突等任何异常都会整体回滚
-            var orderNo = "ZL" + DateTime.Now.ToString("yyyyMMddHHmmss")
+            var orderNo = "ZL" + AppClock.Now.ToString("yyyyMMddHHmmss")
                 + (Interlocked.Increment(ref _orderSeq) % 10_000).ToString("D4")
                 + RandomNumberGenerator.GetHexString(8);
             var order = RentalOrder.Create(
@@ -376,7 +395,7 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
             var fallbackChannel = paidImmediately ? "现金" : PayTypePlaceholder;
             var pay = PaymentRecord.Create(order.OrderId, totalRent + deposit, string.IsNullOrWhiteSpace(payType) ? fallbackChannel : payType.Trim(), "order", null, paidImmediately ? "已支付" : "待支付");
             //真实支付流水号在支付宝回调时写入
-            if (paidImmediately) pay.MarkPaid("现金", DateTime.Now, "TX" + DateTime.Now.ToString("yyyyMMddHHmmss"));
+            if (paidImmediately) pay.MarkPaid("现金", AppClock.Now, "TX" + AppClock.Now.ToString("yyyyMMddHHmmss"));
             _db.PaymentRecords.Add(pay);
             await _db.SaveChangesAsync();
 
@@ -488,10 +507,60 @@ public class OrderService(AppDbContext db, ILogger<OrderService> logger)
         }
     }
 
+    ///<summary>
+    /// 确认取车（把车交给顾客）：前台在柜台点一次，订单从「已支付」转「租赁中」。
+    ///
+    /// 硬门槛：必须先登记取车验车，且**至少 1 张整车照 + 电量**。
+    /// 为什么卡这么死：还车时的损坏费全靠这张对照证据。没有交车原样，
+    /// 顾客一句「我拿到时就这样」就能让赔偿作废；拍照这一步一旦留给"自觉"，
+    /// 现实里就是十单九单不拍。
+    ///</summary>
+    public async Task<string> Pickup(int orderId, int operatorId)
+    {
+        await using var tx = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+        try
+        {
+            await DbRowLock.PrepareAsync(_db);
+            var order = await DbRowLock.LockOrderAsync(_db, orderId) ?? throw new BusinessException(MsgOrderNotFound);
+            if (order.OrderStatus != "已支付")
+                throw new BusinessException($"订单当前状态为「{order.OrderStatus}」，只有「已支付」的订单可以取车");
+
+            //取车验车是交车的前置凭证：没有这张快照，还车损坏就无从对照
+            var snap = await _db.OrderHandovers
+                .FirstOrDefaultAsync(h => h.OrderId == orderId && h.Phase == OrderHandover.PhasePickup)
+                ?? throw new BusinessException("请先登记取车验车（整车照 + 电量）再确认取车");
+            if (string.IsNullOrWhiteSpace(snap.PhotoPaths))
+                throw new BusinessException("取车验车至少需要 1 张整车照，请拍照后再确认取车");
+            if (snap.BatteryLevel == null)
+                throw new BusinessException("请登记交车时电量（0-100），这是还车电量的对照基准");
+
+            order.ChangeStatus("租赁中");
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+
+            //谁把车交出去的，出纠纷时要能追到人
+            _logger.LogInformation("订单 {OrderNo} 由操作员 {OperatorId} 确认取车，状态转「租赁中」", order.OrderNo, operatorId);
+
+            //取车是顾客感知最强的一步：告诉他从几点开始算钱，比事后解释逾期费有用得多
+            await _messages.SendAsync(
+                ("customer", order.CustomerId),
+                ("pickup", order.OrderNo),
+                ("取车成功", $"订单 {order.OrderNo} 已交车，计费自 {AppClock.Now:yyyy-MM-dd HH:mm} 起。请按约定时间还车，逾期部分按小时租金倍数计收逾期费。"),
+                ("success", "/my-orders", false));
+
+            return "取车成功，已开始计费";
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
+    }
+
     ///<summary>订单到期预警：返回「即将到期（3天内）」和「已逾期」的在租订单</summary>
     public async Task<OrderWarningListDto> GetWarnings(int warnDays = 3)
     {
-        var now = DateTime.Now;
+        var now = AppClock.Now;
         var warnThreshold = now.AddDays(warnDays);
 
         //联表与到期判定都走订单总览视图，不再 Include 客户/车辆整实体

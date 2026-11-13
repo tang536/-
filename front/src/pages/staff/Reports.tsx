@@ -186,6 +186,10 @@ export default function Reports() {
   const [maintStats, setMaintStats] = useState<any>(null)
   const [maintLoading, setMaintLoading] = useState(false)
   const [maintError, setMaintError] = useState<string | null>(null)
+  /** 损坏赔付 vs 维修成本（同区间口径） */
+  const [damageStats, setDamageStats] = useState<any>(null)
+  const [damageLoading, setDamageLoading] = useState(false)
+  const [damageError, setDamageError] = useState<string | null>(null)
 
   const loadVehStats = useCallback(async (r: Range, f: { keyword: string; status: string }) => {
     setVehLoading(true)
@@ -222,8 +226,29 @@ export default function Reports() {
     }
   }, [])
 
+  /**
+   * 损坏赔付 vs 维修成本：与维保统计同区间、同刷新节奏。
+   * 单独一张卡而不是塞进维保统计，是因为口径不同（只取「归还损坏」类工单的成本），
+   * 混着看会得出「维保费很高」这种没有结论的结论，真正要回答的是「赔的钱够不够修」。
+   */
+  const loadDamageStats = useCallback(async (r: Range) => {
+    setDamageLoading(true)
+    setDamageError(null)
+    try {
+      const res: any = await reportApi.damageCost({ from: r.from || undefined, to: r.to || undefined })
+      if (res?.data?.success === false) { setDamageError(res?.data?.message || '赔付成本统计加载失败'); setDamageStats(null); return }
+      setDamageStats(res.data)
+    } catch (e: any) {
+      setDamageError(errMessage(e, '赔付成本统计加载失败'))
+      setDamageStats(null)
+    } finally {
+      setDamageLoading(false)
+    }
+  }, [])
+
   useEffect(() => { loadVehStats(range, vehFilter) }, [loadVehStats, range, vehFilter])
   useEffect(() => { loadMaintStats(range) }, [loadMaintStats, range])
+  useEffect(() => { loadDamageStats(range) }, [loadDamageStats, range])
 
   const applyRange = (r: Range) => {
     if (r.from && r.to && r.from > r.to) {
@@ -502,6 +527,28 @@ export default function Reports() {
   const vehRows: any[] = vehStats?.rows || []
   const faultRows: any[] = maintStats?.faultTypes || []
   const rankRows: any[] = maintStats?.topVehicles || []
+  /** 赔付 vs 成本：月度双柱（收入与支出并排，差额一眼是正是负） */
+  const damageMonthly: any[] = damageStats?.monthly || []
+  const damageOption = {
+    grid: { left: 52, right: 24, top: 30, bottom: 32 },
+    tooltip: {
+      trigger: 'axis', valueFormatter: (v: number) => `¥${Number(v).toFixed(2)}`,
+      backgroundColor: tc.tooltipBg, borderColor: tc.tooltipBorder, textStyle: { color: tc.tooltipText },
+    },
+    legend: { data: ['损坏赔付收入', '维修成本'], textStyle: { color: tc.axisLabel }, top: 0 },
+    xAxis: {
+      type: 'category', data: damageMonthly.map(m => m.month),
+      axisLine: { lineStyle: { color: tc.axisLine } }, axisLabel: { color: tc.axisLabel },
+    },
+    yAxis: {
+      type: 'value', name: '元', nameTextStyle: { color: tc.nameText },
+      splitLine: { lineStyle: { color: tc.splitLine } }, axisLabel: { color: tc.axisLabel },
+    },
+    series: [
+      { name: '损坏赔付收入', type: 'bar', barMaxWidth: 22, itemStyle: { color: '#2563eb', borderRadius: [3, 3, 0, 0] }, data: damageMonthly.map(m => m.damageIncome) },
+      { name: '维修成本', type: 'bar', barMaxWidth: 22, itemStyle: { color: '#d97706', borderRadius: [3, 3, 0, 0] }, data: damageMonthly.map(m => m.repairCost) },
+    ],
+  }
 
   /** 下钻明细行是否为空（用于区分「查到了但没数据」与「加载失败」） */
   const drillRows: any[] = drill?.rows || []
@@ -898,6 +945,86 @@ export default function Reports() {
                     </div>
                   )}
               </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ===== 损坏赔付 vs 维修成本：赔的钱够不够修这车 ===== */}
+      <div className="card">
+        <div className="card-title">
+          <Icon name="maintenance" size={16} chip />赔付与维修成本对照
+          <span className="card-title-count">{rangeText}</span>
+          <div className="card-title-actions">
+            <button className="card-title-action" onClick={() => loadDamageStats(range)} disabled={damageLoading}>
+              <Icon name="refresh" size={14} />{damageLoading ? '加载中…' : '刷新'}
+            </button>
+          </div>
+        </div>
+
+        <BlockState loading={damageLoading} error={damageError}
+          empty={!damageLoading && !damageError && !damageStats}
+          emptyText="该区间内暂无损坏赔付与维修数据"
+          onRetry={() => loadDamageStats(range)} height={140} />
+
+        {!damageLoading && !damageError && damageStats && (
+          <>
+            <div className="dash-layout">
+              <div className="dash-primary">
+                <div className="chart-container">
+                  <ReactEChartsCore echarts={echarts} option={damageOption} style={{ height: '100%' }} />
+                </div>
+              </div>
+              <div className="dash-secondary">
+                <div className="stats-grid stats-rail">
+                  <div className="stat-card tone-sky">
+                    <div className="label">损坏赔付收入</div>
+                    <div className="value">{money(damageStats.damageIncome)}</div>
+                    <div className="hint">{damageStats.damageSettleCount} 笔结算单</div>
+                  </div>
+                  <div className="stat-card tone-amber">
+                    <div className="label">维修成本</div>
+                    <div className="value">{money(damageStats.repairCost)}</div>
+                    <div className="hint">{damageStats.repairOrderCount} 张归还损坏工单</div>
+                  </div>
+                  <div className={`stat-card ${Number(damageStats.gap) < 0 ? 'tone-rose' : 'tone-emerald'}`}>
+                    <div className="label">{Number(damageStats.gap) < 0 ? '赔付缺口' : '结余'}</div>
+                    <div className="value">{money(Math.abs(Number(damageStats.gap || 0)))}</div>
+                    <div className="hint">
+                      成本覆盖率 {damageStats.coverage}%
+                      {Number(damageStats.gap) < 0 ? ' · 赔付不足以覆盖维修' : ' · 赔付可覆盖维修'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {damageMonthly.length === 0
+              ? <div className="empty" style={{ marginTop: 12 }}><Icon name="empty" size={34} chip /><div>该区间内没有赔付或维修记录</div></div>
+              : (
+                <div className="table-wrap" style={{ marginTop: 16 }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr><th>月份</th><th className="num">损坏赔付收入</th><th className="num">维修成本</th><th className="num">差额</th></tr>
+                    </thead>
+                    <tbody>
+                      {damageMonthly.map((m: any) => (
+                        <tr key={m.month}>
+                          <td>{m.month}</td>
+                          <td className="num">{money(m.damageIncome)}</td>
+                          <td className="num">{money(m.repairCost)}</td>
+                          <td className="num" style={{ color: Number(m.gap) < 0 ? 'var(--danger, #C0392B)' : undefined }}>
+                            {Number(m.gap) < 0 ? `-${money(Math.abs(Number(m.gap)))}` : money(m.gap)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            <div className="field-hint" style={{ marginTop: 8 }}>
+              口径：赔付取结算单上的损坏费（按结算时间）；成本只认「归还损坏」类工单的实际维修费（按完工时间）。
+              差值为负说明该月收到的赔偿不够修车，需要调整定损标准或押金策略。
             </div>
           </>
         )}

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using ERental.Data;
 
 namespace ERental.Services;
 
@@ -31,7 +32,7 @@ internal static class BusinessNumber
         if (hexLength is < 4 or > 32) throw new BusinessException("随机段长度需在 4 ~ 32 之间");
 
         return prefix
-            + (stamp ?? DateTime.Now).ToString(stampFormat, CultureInfo.InvariantCulture)
+            + (stamp ?? AppClock.Now).ToString(stampFormat, CultureInfo.InvariantCulture)
             + RandomNumberGenerator.GetHexString(hexLength);
     }
 
@@ -41,7 +42,7 @@ internal static class BusinessNumber
         if (string.IsNullOrWhiteSpace(middle)) throw new BusinessException("复合单号缺少业务键");
 
         return prefix + separator + middle + separator
-            + DateTime.Now.ToString(stampFormat, CultureInfo.InvariantCulture)
+            + AppClock.Now.ToString(stampFormat, CultureInfo.InvariantCulture)
             + separator + RandomNumberGenerator.GetHexString(hexLength);
     }
 }

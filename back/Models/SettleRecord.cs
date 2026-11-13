@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using ERental.Services;
+using ERental.Data;
 
 namespace ERental.Models;
 
@@ -33,7 +34,7 @@ public class SettleRecord
     public decimal RefundAmount { get; private set; }
 
     [Column("settle_time")]
-    public DateTime SettleTime { get; private set; } = DateTime.Now;
+    public DateTime SettleTime { get; private set; } = AppClock.Now;
 
     [Column("operator_id")]
     public int? OperatorId { get; private set; }
@@ -72,7 +73,7 @@ public class SettleRecord
             SupplementAmount = supplementAmount,
             Remark = string.IsNullOrWhiteSpace(remark) ? null : remark.Trim(),
             OperatorId = operatorId,
-            SettleTime = settleTime ?? DateTime.Now,
+            SettleTime = settleTime ?? AppClock.Now,
         };
     }
 }

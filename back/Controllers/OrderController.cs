@@ -182,6 +182,18 @@ public class OrderController(OrderService svc, SettlementService settlement) : C
         catch (Exception ex) when (ErrorText.IsHandled(ex)) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
     }
 
+    ///<summary>
+    /// 确认取车（柜台交车）：订单「已支付」→「租赁中」，开始计费。
+    /// 后端硬性要求先有取车验车（整车照 + 电量），缺一项直接 400。
+    ///</summary>
+    [HttpPost("{id:int}/pickup")]
+    [Authorize(Policy = Policies.ReceptionOnly)]
+    public async Task<IActionResult> PickupOrder(int id)
+    {
+        try { return Ok(new ApiResponse<object> { Message = await _svc.Pickup(id, CurrentUserId) }); }
+        catch (Exception ex) when (ErrorText.IsHandled(ex)) { return BadRequest(new ApiResponse<object> { Code = 400, Message = ErrorText.Safe(ex), Success = false }); }
+    }
+
     ///<summary>订单到期预警：返回即将到期（默认3天内）和已逾期的在租订单，前台工作台置顶提醒</summary>
     [HttpGet("warnings")]
     [Authorize(Policy = Policies.AdminOrReception)]

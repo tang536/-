@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using ERental.Data;
 namespace ERental.Models;
 
 [Table("renewal_record")]
@@ -28,7 +29,7 @@ public class RenewalRecord
     public DateTime NewEndTime { get; private set; }
 
     [Column("renewal_time")]
-    public DateTime RenewalTime { get; private set; } = DateTime.Now;
+    public DateTime RenewalTime { get; private set; } = AppClock.Now;
 
     [Column("operator_id")]
     public int? OperatorId { get; private set; }

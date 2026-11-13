@@ -84,7 +84,7 @@ public sealed class SessionRegistry(AppDbContext db, ILogger<SessionRegistry> lo
             }
         }
 
-        await _db.SystemConfigs.Where(c => c.ConfigKey == key).ExecuteUpdateAsync(s => s.SetProperty(c => c.ConfigValue, json).SetProperty(c => c.UpdateTime, DateTime.Now));
+        await _db.SystemConfigs.Where(c => c.ConfigKey == key).ExecuteUpdateAsync(s => s.SetProperty(c => c.ConfigValue, json).SetProperty(c => c.UpdateTime, AppClock.Now));
     }
 
     private static string Serialize(Payload p) => JsonSerializer.Serialize(p);

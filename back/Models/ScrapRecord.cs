@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using ERental.Services;
+using ERental.Data;
 namespace ERental.Models;
 
 [Table("scrap_record")]
@@ -21,7 +22,7 @@ public class ScrapRecord
     public string? ScrapReason { get; private set; }
 
     [Column("scrap_time")]
-    public DateTime ScrapTime { get; private set; } = DateTime.Now;
+    public DateTime ScrapTime { get; private set; } = AppClock.Now;
 
     [Column("operator_id")]
     public int? OperatorId { get; private set; }
@@ -37,7 +38,7 @@ public class ScrapRecord
             VehicleId = vehicleId,
             ScrapReason = string.IsNullOrWhiteSpace(scrapReason) ? null : scrapReason.Trim(),
             OperatorId = operatorId,
-            ScrapTime = scrapTime ?? DateTime.Now,
+            ScrapTime = scrapTime ?? AppClock.Now,
         };
     }
 }

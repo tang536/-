@@ -116,5 +116,5 @@ internal static class StoredProcedures
         row.TryGetValue(column, out var v) && v is not null ? Convert.ToDecimal(v) : 0m;
 
     private static DateTime ReadDateTime(Dictionary<string, object?> row, string column) =>
-        row.TryGetValue(column, out var v) && v is not null ? Convert.ToDateTime(v) : DateTime.Now;
+        row.TryGetValue(column, out var v) && v is not null ? Convert.ToDateTime(v) : AppClock.Now;
 }

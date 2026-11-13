@@ -1,5 +1,12 @@
 import axios from 'axios'
-import type { UserInfo } from '../types'
+import type { InternalAxiosRequestConfig } from 'axios'
+import type {
+  UserInfo,
+  CreateUserPayload, UpdateUserPayload,
+  CreateCustomerPayload, UpdateCustomerPayload,
+  SaveVehiclePayload, BatchVehicleUpdatePayload,
+  CreateOrderPayload, SettleOrderPayload,
+} from '../types'
 import { clearAuth, setAuth } from '../hooks/useAuth'
 
 const api = axios.create({ baseURL: '/api', timeout: 15000 })
@@ -96,7 +103,9 @@ api.interceptors.response.use(
     if (status === 401) {
       // 先尝试静默续期并重放一次：典型场景是用户填表超过 2 小时，
       // access token 已过期但会话仍然有效，此时直接踢回登录页会丢掉全部输入。
-      const cfg: any = err.config
+      // 用 axios 的 InternalAxiosRequestConfig 而不是 any：__authRetried 是本文件给配置对象
+      // 打的「已重放过」私有标记，声明在类型里，避免拼错名字还静默失效（会变成无限重放）。
+      const cfg = err.config as (InternalAxiosRequestConfig & { __authRetried?: boolean }) | undefined
       if (cfg && !cfg.__authRetried && !String(cfg.url || '').includes('/auth/refresh')) {
         cfg.__authRetried = true
         const fresh = await refreshAccessToken()
@@ -141,8 +150,10 @@ api.interceptors.response.use(
     // 500 分两种来源：后端自己抛的业务异常（body 是 ApiResponse，有中文 message），
     // 以及代理层转发失败（body 是纯文本/空）。后者绝不能把 axios 的英文
     // "Request failed with status code 500" 直接抛给用户，统一兜底成中文提示。
-    const data: any = err.response.data
-    const serverMsg = typeof data === 'string' ? '' : data?.message
+    // 这里用 unknown 收口：body 可能是对象、也可能是代理给的纯文本，先判类型再取字段，
+    // 不要再用 any 直接点 message，否则后端返回字符串时又是一次隐性崩溃。
+    const data: unknown = err.response.data
+    const serverMsg = typeof data === 'string' ? '' : (data as { message?: string } | null)?.message
     if (status >= 500) {
       return Promise.reject({
         message: serverMsg || '服务器内部错误，请稍后重试'
@@ -190,8 +201,8 @@ export const authApi = {
 // 用户管理
 export const userApi = {
   list: () => api.get('/user'),
-  create: (data: any) => api.post('/user', data),
-  update: (id: number, data: any) => api.put(`/user/${id}`, data),
+  create: (data: CreateUserPayload) => api.post('/user', data),
+  update: (id: number, data: UpdateUserPayload) => api.put(`/user/${id}`, data),
   /** 停用账号（系统操作「停用员工账号」）：后端同时吊销该账号全部在线会话 */
   disable: (id: number) => api.put(`/user/${id}/disable`),
   remove: (id: number) => api.delete(`/user/${id}`)
@@ -201,11 +212,15 @@ export const userApi = {
 export const customerApi = {
   list: (keyword?: string) => api.get('/customer', { params: { keyword } }),
   /** 服务端分页：返回 { items, total, page, pageSize, pageCount }；不传 pageSize 则后端返回全量数组 */
-  page: (params: { keyword?: string; level?: string; accountStatus?: string; page: number; pageSize: number }) =>
-    api.get('/customer', { params }),
+  page: (params: {
+    keyword?: string; level?: string; accountStatus?: string
+    /** 租车资料完善度（派生条件也下推给后端）：completed=已完善 incomplete=待完善 */
+    profile?: 'completed' | 'incomplete'
+    page: number; pageSize: number
+  }) => api.get('/customer', { params }),
   get: (id: number) => api.get(`/customer/${id}`),
-  create: (data: any) => api.post('/customer', data),
-  update: (id: number, data: any) => api.put(`/customer/${id}`, data),
+  create: (data: CreateCustomerPayload) => api.post('/customer', data),
+  update: (id: number, data: UpdateCustomerPayload) => api.put(`/customer/${id}`, data),
   remove: (id: number) => api.delete(`/customer/${id}`),
   /**
    * 客户消费记录（需求 4.2.3）：全量租赁、消费与支付记录，
@@ -229,12 +244,12 @@ export const vehicleApi = {
   /** 各状态车辆数（页签角标）：分页后前端没有全集，角标由后端分组统计 */
   stats: (params?: { keyword?: string; brand?: string }) => api.get('/vehicle/stats', { params }),
   get: (id: number) => api.get(`/vehicle/${id}`),
-  create: (data: any) => api.post('/vehicle', data),
+  create: (data: SaveVehiclePayload) => api.post('/vehicle', data),
   /**
    * 车辆档案更新。若本次同时改动了「车辆状态」，需带 opPassword
    * （当前登录管理员密码）——后端对状态变更做二次校验（用况4 扩展用况3）。
    */
-  update: (id: number, data: any, opPassword?: string) =>
+  update: (id: number, data: SaveVehiclePayload, opPassword?: string) =>
     api.put(`/vehicle/${id}`, data, opPassword
       ? { headers: { 'X-Op-Password': opPassword } }
       : undefined),
@@ -264,12 +279,12 @@ export const vehicleApi = {
    * 批量新增车辆：传入车辆数组，后端逐条创建、逐条校验，返回逐条结果
    * （Data 为 { total, successCount, items }）。
    */
-  batchCreate: (list: any[]) => api.post('/vehicle/batch', list),
+  batchCreate: (list: SaveVehiclePayload[]) => api.post('/vehicle/batch', list),
   /**
-   * 批量编辑车辆：仅覆盖被勾选的字段（dto 内 Apply* 开关）。
+   * 批量编辑车辆：仅覆盖被勾选的字段（Apply* 开关）。
    * 若本批含状态变更，需带 opPassword（当前登录管理员密码，后端二次校验）。
    */
-  batchUpdate: (dto: any, opPassword?: string) =>
+  batchUpdate: (dto: BatchVehicleUpdatePayload, opPassword?: string) =>
     api.put('/vehicle/batch', dto, opPassword
       ? { headers: { 'X-Op-Password': opPassword } }
       : undefined)
@@ -353,7 +368,7 @@ export const orderApi = {
    * 柜台开单（系统操作「线下开单」）：后端建档 + 置车在租 + 当场收款同一步完成。
    * 客户不存在时后端自动建档。
    */
-  createStaff: (data: any) => api.post('/order/staff', data),
+  createStaff: (data: CreateOrderPayload) => api.post('/order/staff', data),
   /** 待还车订单（前台归还台）：后端固定按「已支付」筛选，免去前端重复传状态 */
   waitReturn: (params?: {
     keyword?: string; dateFrom?: string; dateTo?: string
@@ -371,6 +386,12 @@ export const orderApi = {
   staffEstimate: (customerId: number, leaseStart: string, leaseEnd: string, vehicleId?: number) =>
     api.get('/order/staff-estimate', { params: { customerId, leaseStart, leaseEnd, vehicleId } }),
   cancel: (id: number, reason: string) => api.put(`/order/${id}/cancel`, reason, { headers: { 'Content-Type': 'application/json' } }),
+  /**
+   * 确认取车（柜台交车）：订单「已支付」→「租赁中」。
+   * 后端硬性要求该单已有「取车验车」且含至少 1 张整车照 + 电量，
+   * 缺一项返回 400 并说明缺什么——前端把这条 message 原样弹出即可。
+   */
+  pickup: (id: number) => api.post(`/order/${id}/pickup`),
   /** 顾客自助取消自己的「待支付」订单，立即释放车辆 */
   cancelPending: (id: number) => api.post(`/order/${id}/cancel-pending`),
   /** 需前台审核 */
@@ -404,13 +425,18 @@ export const memberApi = {
 
 // 结算（仅结算本身；补缴相关的顾客自助/收银入口统一走 supplementApi）
 export const settleApi = {
-  list: () => api.get('/settlement'),
+  /**
+   * 结算记录：服务端分页。返回 { items, total, page, pageSize }。
+   * from/to 为结算日期区间（yyyy-MM-dd，含当天），keyword 命中订单号 / 车牌 / 客户名 / 结算单号。
+   */
+  list: (params?: { from?: string; to?: string; keyword?: string; page?: number; pageSize?: number }) =>
+    api.get('/settlement', { params }),
   /**
    * 结算试算：选定订单后拉取系统自动核算的逾期费（未逾期返回 0）。
    * 逾期费不再由前台手填，因此弹窗里必须先把金额显示出来。
    */
   preview: (orderId: number) => api.get(`/settlement/preview/${orderId}`),
-  settle: (data: any) => api.post('/settlement/settle', data),
+  settle: (data: SettleOrderPayload) => api.post('/settlement/settle', data),
   /** 顾客本人的结算单（前台审核还车后生成）：含租金构成 / 逾期费 / 损坏费 / 应退应补 */
   mine: () => api.get('/settlement/mine'),
   /** 顾客选择在线支付结算单的补缴款，返回收银台地址或二维码 */
@@ -418,6 +444,24 @@ export const settleApi = {
     api.post(`/settlement/${settleId}/pay-online`, JSON.stringify(channel), {
       headers: { 'Content-Type': 'application/json' },
     }),
+  /** 某订单的交接验车快照（取车 / 还车）：照片、电量、车况备注 */
+  handovers: (orderId: number) => api.get(`/settlement/handover/${orderId}`),
+  /** 登记 / 覆盖一条验车快照：同一订单同一阶段只留一条，照片按追加合并 */
+  saveHandover: (data: { orderId: number; phase: string; batteryLevel?: number | null; photoPaths?: string | null; conditionNote?: string | null }) =>
+    api.post('/settlement/handover', data),
+  /**
+   * 上传验车照片，返回 { url }，url 随快照一起提交。
+   * 带上 orderId / phase：后端据此把文件名编成「Handover_订单_阶段_时间_随机」并按年月分目录，
+   * 出事后凭文件名就能定位到哪一单哪一步，不必反查数据库。
+   */
+  uploadHandoverPhoto: (file: File, orderId?: number, phase?: string) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return api.post('/settlement/handover/upload', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: { orderId, phase },
+    })
+  },
 }
 
 // 维保（列表/工单均为 DTO，字段：workOrderNo、vehicleNo、faultDescription、maintainFee、status、faultImage）
@@ -465,7 +509,14 @@ export const reportApi = {
 
   /** 维保费用统计（需求 4.2.7）：月度维保总费用 + 故障类型费用分布 + 单台车辆费用排行 */
   maintenanceStats: (params?: { from?: string; to?: string }) =>
-    api.get('/report/maintenance', { params })
+    api.get('/report/maintenance', { params }),
+
+  /**
+   * 损坏赔付 vs 维修成本（按月）：判断「收的赔偿够不够修车」。
+   * 收入口径=区间内 damage_fee>0 的结算单；成本口径=区间内已完工的「归还损坏」工单维修费。
+   */
+  damageCost: (params?: { from?: string; to?: string }) =>
+    api.get('/report/damage-cost', { params })
 }
 
 // 配置
@@ -626,7 +677,7 @@ export const printApi = {
    * 因为浏览器新窗口不会带 Authorization 头，JWT 过不了后端鉴权。
    */
   reportView: (from?: string, to?: string) =>
-    api.get('/print/report-view', { params: { from, to }, responseType: 'text', transformResponse: [(d: any) => d] })
+    api.get('/print/report-view', { params: { from, to }, responseType: 'text', transformResponse: [(d: unknown) => d] })
 }
 
 export default api

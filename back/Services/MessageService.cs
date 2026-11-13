@@ -157,7 +157,7 @@ public class MessageService(AppDbContext db, ILogger<MessageService> logger)
         if (ids is { Count: > 0 }) q = q.Where(m => ids.Contains(m.MessageId));
 
         //一条 UPDATE ... WHERE 取代「查出实体 → 逐行赋值 → SaveChanges」：后者会把每行的正文（content）一并读进内存再按行发 UPDATE
-        var now = DateTime.Now;
+        var now = AppClock.Now;
         await q.ExecuteUpdateAsync(s => s.SetProperty(m => m.IsRead, true).SetProperty(m => m.ReadAt, now));
     }
 
@@ -178,7 +178,7 @@ public class MessageService(AppDbContext db, ILogger<MessageService> logger)
         var q = _db.Messages.Where(m => m.ReceiverType == receiverType && m.ReceiverId == receiverId && m.DismissedAt == null);
         if (ids is { Count: > 0 }) q = q.Where(m => ids.Contains(m.MessageId));
 
-        var now = DateTime.Now;
+        var now = AppClock.Now;
         //同样是单条 UPDATE：受影响行数即「实际忽略条数」
         return await q.ExecuteUpdateAsync(s => s.SetProperty(m => m.DismissedAt, now));
     }

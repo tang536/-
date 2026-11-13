@@ -18,15 +18,50 @@ public class CustomerService(AppDbContext db, LogService log)
     {
         var list = await BuildQuery(keyword).OrderByDescending(c => c.CreateTime).ToListAsync();
         await MemberDiscountLookup.FillAsync(_db, list);//3NF：展示折扣按等级关联，出参字段名不变
-        return list.Select(CustomerDto.From).ToList();
+        var dtos = list.Select(CustomerDto.From).ToList();
+        await FillCreditAsync(dtos);
+        return dtos;
+    }
+
+    ///<summary>
+    /// 给当前页客户补上信用标签：历史逾期次数 / 累计损坏赔付 / 补缴未清笔数。
+    ///
+    /// 为什么不落成表：这三项完全能从结算视图现算，落表就得维护双份口径
+    /// （顾客付清补缴后要回来改标记，漏一次就是一条永远清不掉的欠款）。
+    /// 一页只有 20 个人，一次只读查询 + 内存分组，代价远小于一致性风险。
+    /// 口径只算「已结算」的单据：还在租的订单逾期尚未定性，不该提前给顾客扣分。
+    /// </summary>
+    private async Task FillCreditAsync(List<CustomerDto> dtos)
+    {
+        if (dtos.Count == 0) return;
+        var ids = dtos.Select(d => d.CustomerId).ToList();
+        var rows = await _db.SettlementBills.AsNoTracking()
+            .Where(b => b.CustomerId != null && ids.Contains(b.CustomerId.Value))
+            .Select(b => new { b.CustomerId, b.OverdueFee, b.DamageFee, b.SupplementAmount, b.SupplementCollected })
+            .ToListAsync();
+
+        var map = rows.GroupBy(r => r.CustomerId!.Value).ToDictionary(g => g.Key, g => g.ToList());
+        foreach (var d in dtos)
+        {
+            if (!map.TryGetValue(d.CustomerId, out var bills)) continue;
+            d.OverdueCount = bills.Count(b => b.OverdueFee > 0);
+            d.DamageTotal = bills.Sum(b => b.DamageFee);
+            d.UnpaidSupplementCount = bills.Count(b => b.SupplementAmount > 0 && b.SupplementCollected != 1);
+        }
     }
 
     ///<summary>分页查询（管理端客户台账）：pageSize≤0 时等价于全量</summary>
-    public async Task<(List<CustomerDto> Items, int Total)> GetPaged(string? keyword, string? level, string? accountStatus, int page, int pageSize)
+    public async Task<(List<CustomerDto> Items, int Total)> GetPaged(string? keyword, string? level, string? accountStatus, string? profile, int page, int pageSize)
     {
         var q = BuildQuery(keyword);
         if (!string.IsNullOrEmpty(level)) q = q.Where(c => c.MemberLevel == level);
         if (!string.IsNullOrEmpty(accountStatus)) q = q.Where(c => c.AccountStatus == accountStatus);
+        //资料完善度是派生条件（身份证 + 电话是否齐全），原先只能在前端对当前页筛，
+        //分页后那样筛会让总数与实际条数对不上，所以在这里下推成查询条件
+        if (profile == "completed")
+            q = q.Where(c => c.IdCard != null && c.IdCard != "" && c.ContactPhone != null && c.ContactPhone != "");
+        else if (profile == "incomplete")
+            q = q.Where(c => c.IdCard == null || c.IdCard == "" || c.ContactPhone == null || c.ContactPhone == "");
 
         var total = await q.CountAsync();
         var (_, _, skip, take) = Paging.Normalize(page, pageSize);
@@ -34,7 +69,9 @@ public class CustomerService(AppDbContext db, LogService log)
         var items = take > 0 ? await ordered.Skip(skip).Take(take).ToListAsync() : await ordered.ToListAsync();
 
         await MemberDiscountLookup.FillAsync(_db, items);
-        return (items.Select(CustomerDto.From).ToList(), total);
+        var dtos = items.Select(CustomerDto.From).ToList();
+        await FillCreditAsync(dtos);
+        return (dtos, total);
     }
 
     ///<summary>客户列表的公共过滤条件（关键字命中姓名/账号/身份证/电话），全量与分页共用</summary>

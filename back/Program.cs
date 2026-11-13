@@ -33,7 +33,7 @@ Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 var erentalDb = ResolveConnectionString(builder.Configuration);
 builder.Services.AddDbContext<AppDbContext>(options => options
     .UseMySQL(erentalDb)
-    // 让数据库会话时区与应用进程一致：视图里的 NOW() 与应用层 DateTime.Now 需要同一口径
+    // 让数据库会话时区与应用进程一致：视图里的 NOW() 与应用层 AppClock.Now 需要同一口径
     .AddInterceptors(new MySqlSessionTimeZoneInterceptor()));
 
 // JWT 认证
@@ -317,6 +317,10 @@ static void RegisterBusinessServices(IServiceCollection services, IConfiguration
     services.AddScoped<CustomerService>();
     services.AddScoped<VehicleService>();
     services.AddScoped<OrderService>();
+    // 租前信用体检：把「逾期次数/损坏赔付/补缴未清」翻译成押金倍数与租期上限（见 CreditPolicy 注释）
+    services.AddScoped<CreditPolicy>();
+    // 证据照片归档：超保留期的验车/维保照片移入 uploads/_archive 并回写库内路径
+    services.AddScoped<EvidenceArchiveService>();
     services.AddScoped<PaymentService>();
     // 补缴（顾客自助 + 门店收银）统一服务；SettlementService 在结算生成线上补缴单时依赖它。
     services.AddScoped<SupplementService>();

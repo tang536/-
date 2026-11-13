@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useUI } from '@/components/UIProvider'
 import { vehicleApi } from '@/api'
+import type { BatchVehicleUpdatePayload } from '@/types'
 import Icon from '@/components/Icon'
 
 /** 批量编辑：仅覆盖被勾选的字段，未勾选保持原值，避免误伤 */
@@ -59,7 +60,7 @@ export default function BatchEditModal({ ids, onClose, onDone }: {
       pwd = p
     }
 
-    const dto: any = {
+    const dto: BatchVehicleUpdatePayload = {
       ids,
       applyStatus, vehicleStatus: applyStatus ? status : null,
       applyDailyRent, dailyRent: applyDailyRent ? (dailyRent === '' ? null : Number(dailyRent)) : null,

@@ -309,12 +309,17 @@ html[data-theme='dark'] .sidebar { background: var(--card); }
 .btn-secondary:hover { border-color: var(--text-muted); background: var(--surface-3); }
 
 /* ============================================================
-   表格：左对齐台账，表头降噪，数字右对齐
+   表格：表头与单元格一律水平居中，表头降噪
+   这一层原来写的是「左对齐台账 + 数字右对齐」，但同一张表的操作列
+   按钮组仍是居中、金额列却被推到了右边，表头与内容各自对齐，
+   「操作」「租金」这些列的表头压不到内容上，看起来是错位的。
+   统一居中：表头、文本列、金额列、操作列都居中，同一列上下一条线。
+   （数字用 tabular-nums 等宽，居中也对齐末位）
    ============================================================ */
 .data-table { font-size: 13px; }
 .data-table thead th {
   padding: 9px 12px;
-  text-align: left;
+  text-align: center;
   font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -324,19 +329,19 @@ html[data-theme='dark'] .sidebar { background: var(--card); }
 }
 .data-table tbody td {
   padding: 10px 12px;
-  text-align: left;
+  text-align: center;
   border-bottom: 1px solid var(--border);
   color: var(--text-secondary);
 }
 .data-table tbody tr:hover td { background: var(--surface-2); }
 .data-table tbody tr:last-child td { border-bottom: none; }
-/* 金额 / 数量列靠右，数字末尾对齐（配合 body 的 tabular-nums） */
+/* 金额 / 数量列：等宽数字，居中对齐表头 */
 .data-table th.num,
 .data-table td.num,
 .data-table th.money,
-.data-table td.money { text-align: right; font-family: var(--font-mono); }
-/* 操作列贴右：按钮组不跟着内容长度游动 */
-.data-table tbody td:last-child { text-align: right; }
+.data-table td.money { text-align: center; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* 操作列：与表头同列居中，按钮组不再贴左或贴右 */
+.data-table tbody td:last-child { text-align: center; }
 
 .table-wrap { border-radius: 4px; }
 
@@ -412,22 +417,32 @@ html[data-theme='dark'] .sidebar { background: var(--card); }
 .profile-avatar { border-radius: 6px; background: rgba(255, 255, 255, 0.18); backdrop-filter: none; }
 
 /* ============================================================
-   表头对齐修正
-   可排序表头是「整格都是按钮」，按钮自带 justify-content:center，
-   光改 th 的 text-align 没用，得把按钮的排布也改成靠左。
+   表头对齐
+   可排序表头是「整格都是按钮」，按钮自带 justify-content，
+   光改 th 的 text-align 没用，得把按钮的排布也一起改成居中。
    ============================================================ */
 .data-table thead th,
-.data-table th { text-align: left; }
-.th-sort-btn { justify-content: flex-start; }
+.data-table th { text-align: center; }
+.th-sort-btn { justify-content: center; }
 .data-table th:first-child,
 .data-table thead th:first-child,
 .data-table thead th:last-child { border-radius: 0; }
 
-/* 数字列靠右（金额、数量、天数），标签靠左 */
+/* 数字列（金额、数量、天数）与表头同列居中 */
 .data-table th.num,
-.data-table td.num { text-align: right; }
-.data-table th.th-sort.num .th-sort-btn { justify-content: flex-end; }
-.data-table td:last-child .btn-group { justify-content: flex-end; }
+.data-table td.num { text-align: center; }
+.data-table th.th-sort.num .th-sort-btn { justify-content: center; }
+
+/* ---------- 操作列：表头与按钮组同列居中 ----------
+   index.css 里 `.data-table tbody td:last-child .btn-group`（0,3,2）
+   写着 justify-content:center，本来就与居中的表头同列；下面这条
+   必须带上 tbody 才压得住，免得再出现「表头在中间、按钮贴边」的错位。
+   min-width 同步从 150px 收到 118px：只有一个按钮的列本来只需要
+   「按钮宽度 + 左右内边距」，多出来的那 30px 就是每行右侧那片空白。 */
+.data-table thead th:last-child { text-align: center; }
+.data-table tbody td:last-child .btn-group { justify-content: center; }
+.data-table thead th:last-child,
+.data-table tbody td:last-child { min-width: 118px; }
 
 /* ============================================================
    看板欢迎横幅：从「高饱和红渐变大色块」改成「台账抬头」

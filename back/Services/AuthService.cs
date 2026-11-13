@@ -100,7 +100,7 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
             throw new BusinessException("账号已被禁用，请联系管理员");
         }
         //账号侧 lock_until 不再由登录逻辑写入（自动锁账号=可被利用的拒绝服务，见方法注释）
-        if (user.LockUntil.HasValue && user.LockUntil > DateTime.Now) throw new BusinessException($"账号已锁定，请于 {user.LockUntil:HH:mm} 后重试");
+        if (user.LockUntil.HasValue && user.LockUntil > AppClock.Now) throw new BusinessException($"账号已锁定，请于 {user.LockUntil:HH:mm} 后重试");
 
         //角色分端隔离：登录页选的是「管理员/前台/财务」哪个页签，就必须是该角色的账号
         var actualRole = user.Role?.RoleName ?? RoleReception;
@@ -414,7 +414,7 @@ public class AuthService(AppDbContext db, IConfiguration config, SessionRegistry
             issuer: _config["Jwt:Issuer"],
             audience: _config["Jwt:Audience"],
             claims: claims,
-            expires: DateTime.Now.Add(lifetime ?? AccessLifetime()),
+            expires: AppClock.Now.Add(lifetime ?? AccessLifetime()),
             signingCredentials: creds
         );
         return new JwtSecurityTokenHandler().WriteToken(token);

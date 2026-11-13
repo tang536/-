@@ -1284,6 +1284,14 @@ a.header-icon-btn { color: inherit; text-decoration: none; }
    改成 flex:1 1 0% 后基准宽来自 flex-basis 而非内容，containment 不再咬人，
    容器查询也改按筛选条自己的宽度（toolbar 剩余宽）触发，窄栏按钮退化逻辑照旧。 */
 .toolbar > .filter-bar { flex: 1 1 0%; min-width: 0; }
+/*
+   改基准 680px：筛选条一整行至少要 ~670px（关键词框 180 + 状态下拉 100 + 起租/至两组日期 260 + 间距 + 计数 ≈ 60）。
+   基准设 0% 时它永远挤在页签右边的剩余空间里，855px 视口下只剩 598px，
+   于是「起租」留在第一行、「至」被挤到第二行左侧，中间一大片空白，计数又孤零零吊在右边。
+   改成 flex-basis 680px 后：剩余空间不足 680 时整块换行占满一行（内部就能排成一行）；
+   宽屏剩余空间够时仍与页签同行，靠 flex-grow 吃掉多余宽度。
+*/
+.toolbar > .filter-bar { flex: 1 1 680px; }
 .settle-filter-icon, .filter-icon { color: var(--text-muted); flex: none; }
 .settle-filter-kw, .filter-kw {
   flex: 1; min-width: 180px; max-width: 320px;
@@ -2801,12 +2809,28 @@ html[data-theme="dark"] .settle-busy { background: rgba(3, 7, 18, 0.68); }
 /* 表单里「输入 + 操作按钮」并排（选车 + 扫码选车） */
 .field-with-action { display: flex; align-items: center; gap: 9px; }
 .field-with-action select { flex: 1; min-width: 170px; }
-.field-with-action .btn-sm { flex: none; white-space: nowrap; }
+/*
+  与相邻下拉同高：表单控件是「14px 字号 + 11px 上下内边距」≈ 44px，
+  而 .btn-sm 是表格里用的 30px 小按钮，两者并排会矮一截、像没对齐。
+  这里不改 .btn-sm 全局尺寸（表格里 30px 是对的），只在本容器内让按钮服从行高：
+  align-items: stretch + height auto，控件多高按钮就多高，窄屏控件降到 38px 时也自动跟随。
+*/
+.field-with-action { align-items: stretch; }
+.field-with-action .btn-sm {
+  flex: none; white-space: nowrap;
+  height: auto; min-height: 0; padding: 0 14px; font-size: 14px;
+}
 
 /* 「选择车辆/订单」下拉 + 扫码按钮 并排：桌面端扫码按钮在右侧，
    窄屏（手机端）整组改为竖排、扫码按钮占满整行，避免挤成图标或被挤出。
    扫码按钮用普通 <span> 而非 .btn-label，任何尺寸都保留文字，不再退化成图标。 */
 .field-with-scan { display: flex; align-items: center; gap: 8px; }
+/* 同理：扫码按钮必须与相邻下拉/输入框同高（规则同 .field-with-action） */
+.field-with-scan { align-items: stretch; }
+.field-with-scan > .btn-sm {
+  flex: 0 0 auto; white-space: nowrap;
+  height: auto; min-height: 0; padding: 0 14px; font-size: 14px;
+}
 .field-with-scan > select,
 .field-with-scan > .scan-target { flex: 1 1 auto; min-width: 0; width: 100%; }
 .field-with-scan > .scan-btn { flex: 0 0 auto; white-space: nowrap; }
@@ -2847,9 +2871,15 @@ html[data-theme="dark"] .settle-busy { background: rgba(3, 7, 18, 0.68); }
 /* ---- 扫码查询弹窗 ---- */
 .qr-lookup-modal { width: 860px; max-width: calc(100vw - 40px); }
 .qr-lookup-input { display: flex; align-items: center; gap: 9px; }
-.qr-lookup-input > .ui-icon { flex: none; color: var(--text-muted); }
+/* 与输入框同高：输入框是表单控件尺寸（44px），.btn-sm 只有 30px，
+   并排时「主动扫码 / 查询」会比输入框矮一截。stretch + height auto 让按钮跟随行高。 */
+.qr-lookup-input { align-items: stretch; }
+.qr-lookup-input > .ui-icon { flex: none; color: var(--text-muted); align-self: center; }
 .qr-lookup-input input { flex: 1; }
-.qr-lookup-input .btn-sm { flex: none; white-space: nowrap; }
+.qr-lookup-input .btn-sm {
+  flex: none; white-space: nowrap;
+  height: auto; padding: 0 14px; font-size: 14px;
+}
 
 .qr-result { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
 .qr-result-no {
@@ -5454,9 +5484,13 @@ textarea,
 .customer-nav-item.active { color: var(--primary-text); background: var(--primary-bg); font-weight: 700; }
 
 .layout.is-customer .search-bar { width: 220px; flex: none; }
+/* 顾客端内容区宽度：原来卡在 1180px，在 1920px 的屏幕上左右各留出
+   约 180px 的空白带，页面像被夹在中间的一条窄栏，八列的订单表也被挤得
+   列距不均。放宽到 1600px（屏幕更窄时仍是 100%），1080p / 2K 屏基本铺满，
+   超宽屏才留出居中的边距。 */
 .layout.is-customer .content.customer-content {
   width: 100%;
-  max-width: 1180px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 28px 24px 42px;
 }
@@ -5502,3 +5536,50 @@ textarea,
   }
   .customer-tab.active { color: var(--primary-text); font-weight: 700; }
 }
+
+/* ============================================================
+   归还验车（交接快照）与客户信用标签
+   —— 2026-11 新增：损坏费的定责证据（电量/照片/车况）与客户信用标签
+   与旧样式无覆盖关系，全部用新类名，避免影响既有的 .status-tag / .form-group
+   ============================================================ */
+
+/* 验车表单：电量框窄、车况框宽，一行放得下（窄屏自动换行） */
+.ho-inputs { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.ho-inputs input[type="number"] { flex: 0 0 110px; }
+.ho-inputs input[type="text"], .ho-inputs select { flex: 1 1 200px; min-width: 0; }
+
+/* 照片缩略图：80×80 方形，删除按钮压在右上角 */
+.ho-photos { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.ho-photo, .ho-photo-add {
+  position: relative;
+  width: 80px; height: 80px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  background: var(--bg-subtle, #f7f7f8);
+}
+.ho-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ho-photo-del {
+  position: absolute; top: 2px; right: 2px;
+  width: 18px; height: 18px; line-height: 16px;
+  border: none; border-radius: 50%;
+  background: rgba(0, 0, 0, .55); color: #fff;
+  font-size: 13px; cursor: pointer; padding: 0;
+}
+.ho-photo-add {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; font-size: 12px; color: var(--text-secondary);
+  cursor: pointer; border-style: dashed;
+}
+.ho-photo-add:hover { border-color: var(--primary, #d92d20); color: var(--primary-text, #d92d20); }
+
+/* 验车记录卡片：取车/还车各一块，标题行放时间与电量 */
+.ho-card { padding: 12px; border: 1px solid var(--border-color); border-radius: 10px; margin-bottom: 12px; }
+.ho-card-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ho-note { margin-top: 6px; font-size: 13px; color: var(--text-secondary); }
+
+/* 标签内说明文字（label 后面跟一句小字） */
+.field-hint-inline { font-weight: 400; font-size: 12px; color: var(--text-muted); margin-left: 6px; }
+
+/* 客户信用标签：一行内可换行排布，窄屏不会把表格撑破 */
+.credit-tags { display: flex; gap: 4px; flex-wrap: wrap; }

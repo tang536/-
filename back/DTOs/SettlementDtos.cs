@@ -85,6 +85,43 @@ public class SettleOrderBriefDto
 }
 
 /// <summary>
+/// 结算记录的**分页信封**：total 是区间内的总条数（前端拿它算页数、显示「共 N 条」），
+/// items 才是当页数据。原来一次性返回全量数组，前端只能靠本地过滤，记录一多就整页变慢。
+/// </summary>
+public class SettlePageDto
+{
+    public int Total { get; set; }
+    public int Page { get; set; }
+    public int PageSize { get; set; }
+    public List<SettleListDto> Items { get; set; } = [];
+}
+
+/// <summary>交接验车快照（取车 / 还车）：照片已拆成数组，前端直接渲缩略图</summary>
+public class HandoverDto
+{
+    public int HandoverId { get; set; }
+    public int OrderId { get; set; }
+    public string Phase { get; set; } = string.Empty;
+    public int? BatteryLevel { get; set; }
+    public List<string> Photos { get; set; } = [];
+    public string? ConditionNote { get; set; }
+    public int? OperatorId { get; set; }
+    public DateTime CreateTime { get; set; }
+}
+
+/// <summary>登记 / 覆盖一条交接快照的入参（照片路径由上传接口先返回，这里只传路径）</summary>
+public class SaveHandoverDto
+{
+    public int OrderId { get; set; }
+    /// <summary>取车 / 还车</summary>
+    public string Phase { get; set; } = string.Empty;
+    public int? BatteryLevel { get; set; }
+    /// <summary>逗号分隔的照片路径，最多 3 张</summary>
+    public string? PhotoPaths { get; set; }
+    public string? ConditionNote { get; set; }
+}
+
+/// <summary>
 /// 结算结果投影：前端只需要单号与金额构成来决定是否弹收款窗，
 /// 不再下发 SettleRecord 实体（实体变更会连带把内部字段暴露到响应里）。
 /// </summary>

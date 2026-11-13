@@ -180,6 +180,24 @@ public static class DbInitializer
         UNIQUE KEY `uk_report_no` (`report_no`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='盘点报表表';
         """);
+
+        // 交接验车快照：取车 / 还车各一条，照片与电量是损坏费的定责依据。
+        // 订单每次结算都会写这一行（见 SettlementService），老库缺表会让归还结算直接 500。
+        EnsureTable(db, "order_handover", """
+        CREATE TABLE IF NOT EXISTS `order_handover` (
+        `handover_id` INT NOT NULL AUTO_INCREMENT,
+        `order_id` INT NOT NULL COMMENT '订单ID',
+        `phase` VARCHAR(6) NOT NULL COMMENT '阶段：取车 / 还车',
+        `battery_level` INT DEFAULT NULL COMMENT '电量（0-100）',
+        `photo_paths` VARCHAR(500) DEFAULT NULL COMMENT '现场照片路径（多张逗号分隔，最多3张）',
+        `condition_note` VARCHAR(200) DEFAULT NULL COMMENT '车况备注',
+        `operator_id` INT DEFAULT NULL COMMENT '经办人ID',
+        `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '登记时间',
+        PRIMARY KEY (`handover_id`),
+        UNIQUE KEY `uk_order_phase` (`order_id`, `phase`),
+        KEY `idx_handover_order` (`order_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单交接验车快照表';
+        """);
     }
 
     /// <summary>历史续租记录由「小时」折算为「天」</summary>
@@ -759,6 +777,13 @@ public static class DbInitializer
             ("max_login_fail", "5", "单IP最大登录失败次数（工作人员登录，达标后封锁该IP）"),
             ("lock_minutes", "10", "IP锁定时长（分钟，登录失败达标后封锁来源IP）"),
             ("maintain_cycle_days", "90", "保养周期（天，0 表示关闭保养提醒）"),
+    ("damage_maintenance_threshold", "100", "归还损坏费达到该金额时自动把车辆转入维保（元，0 表示一律不转）"),
+            // 租前信用体检的三条阈值（CreditPolicy 读）：逾期多的客户押金加倍并限租期，
+            // 欠缴未清的直接拒单。一个都不用是 0/1 就能关掉，不需要改代码
+            ("credit_deposit_multiplier", "2", "信用受限客户押金倍数（历史逾期次数达阈值或累计损坏赔付较高的客户）"),
+            ("credit_overdue_threshold", "3", "逾期次数阈值（历史逾期达该次数即视为高风险客户，0 表示关闭）"),
+            ("credit_max_lease_days", "7", "信用受限客户单次租期上限（天，0 表示不限）"),
+            ("upload_archive_days", "180", "验车/维保照片归档天数（超过该天数的证据图移入 uploads/_archive，仍可按原路径访问；0 表示不归档）"),
             ("member_default_price", "99", "会员默认价格（元，新增会员类型时表单预填）"),
             // AI 生图：ComfyUI 服务地址。桌面版默认 127.0.0.1:8188；换端口/换机器后
             // 管理员在系统配置页的「ComfyUI 设置」卡片改这里即可，无需改代码重启

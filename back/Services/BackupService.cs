@@ -103,7 +103,7 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
         {
             format = "erental-backup",
             version = 1,
-            createdAt = DateTime.Now,
+            createdAt = AppClock.Now,
             tableCount = Tables.Length,
             rowCount = rows,
             tables
@@ -113,7 +113,7 @@ public class BackupService(AppDbContext db, IConfiguration config, ILogger<Backu
         var encrypted = Encrypt(json);
 
         System.IO.Directory.CreateDirectory(Directory);
-        var fileName = $"{prefix}{DateTime.Now:yyyyMMdd_HHmmss}.erbk";
+        var fileName = $"{prefix}{AppClock.Now:yyyyMMdd_HHmmss}.erbk";
         var path = Path.Combine(Directory, fileName);
 
         //先写临时文件再改名：中途断电/磁盘满不会留下一个"看起来存在但内容残缺"的备份
@@ -430,7 +430,7 @@ public class BackupSchedulerService(
         {
             try
             {
-                var now = DateTime.Now;
+                var now = AppClock.Now;
                 var next = NextRun(now);
                 var wait = next - now;
                 logger.LogInformation("下次自动备份时间：{Next:yyyy-MM-dd HH:mm}", next);

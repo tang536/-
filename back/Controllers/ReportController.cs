@@ -1,4 +1,4 @@
-﻿using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.CodeAnalysis;
 using ERental.DTOs;
 using ERental.Models;
 using ERental.Services;
@@ -40,7 +40,7 @@ public class ReportController(ReportService svc, SettlementService settleSvc, IL
 
     ///<summary>统计报表主接口（管理员/财务）</summary>
     [HttpGet("summary")]
-    [Authorize(Policy = Policies.AdminOrFinance)]
+    [Authorize(Policy = Policies.ReportRead)]
     public async Task<IActionResult> QueryReport(DateTime? from, DateTime? to)
     {
         try
@@ -58,7 +58,7 @@ public class ReportController(ReportService svc, SettlementService settleSvc, IL
 
     ///<summary>车辆运营统计</summary>
     [HttpGet("vehicles")]
-    [Authorize(Policy = Policies.AdminOrFinance)]
+    [Authorize(Policy = Policies.ReportRead)]
     public async Task<IActionResult> QueryVehicleReport(string? keyword, string? status, DateTime? from, DateTime? to)
     {
         try
@@ -74,7 +74,7 @@ public class ReportController(ReportService svc, SettlementService settleSvc, IL
 
     ///<summary>维保费用统计</summary>
     [HttpGet("maintenance")]
-    [Authorize(Policy = Policies.AdminOrFinance)]
+    [Authorize(Policy = Policies.ReportRead)]
     public async Task<IActionResult> QueryMaintenanceReport(DateTime? from, DateTime? to)
     {
         try
@@ -84,6 +84,26 @@ public class ReportController(ReportService svc, SettlementService settleSvc, IL
         catch (Exception ex)
         {
             return Ok(new ApiResponse<MaintenanceStatDto> { Code = 500, Success = false, Message = ErrorText.Safe(ex), Data = null });
+        }
+    }
+
+    ///<summary>
+    /// 损坏赔付 vs 维修成本（按月）：回答「收的赔偿够不够修这台车」。
+    /// 与维保费用统计分开，是因为二者口径不同——这里只认「归还损坏」类工单的成本，
+    /// 赔付侧只认结算单上的 damage_fee，混在一起会算出没有意义的差额。
+    ///</summary>
+    [HttpGet("damage-cost")]
+    [Authorize(Policy = Policies.ReportRead)]
+    public async Task<IActionResult> QueryDamageCost(DateTime? from, DateTime? to)
+    {
+        try
+        {
+            return Ok(new ApiResponse<DamageCostDto> { Data = await _svc.GetDamageCostAsync(from, to) });
+        }
+        catch (Exception ex)
+        {
+            //与维保统计同处理：单块失败只让这张卡片显示异常，不拖垮整个报表页
+            return Ok(new ApiResponse<DamageCostDto> { Code = 500, Success = false, Message = ErrorText.Safe(ex), Data = null });
         }
     }
 

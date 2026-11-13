@@ -1,7 +1,7 @@
 ﻿import { useEffect, useRef, useState } from 'react'
 import { useUI } from '@/components/UIProvider'
 import { useSearchParams } from 'react-router-dom'
-import { orderApi, renewalApi, printApi } from '@/api'
+import { orderApi, renewalApi, printApi, settleApi } from '@/api'
 import type { Order } from '@/types'
 import Icon from '@/components/Icon'
 import ReceiptModal from '@/components/ReceiptModal'
@@ -11,6 +11,7 @@ import SkeletonRows from '@/components/SkeletonRows'
 import SortTh, { type SortDir } from '@/components/SortTh'
 import { useAuth, ROLE } from '@/hooks/useAuth'
 import { fmtDT, recentDateRange } from '@/utils/datetime'
+import { compressImage } from '@/utils/image'
 import { downloadBlob, todayStamp } from '@/utils/download'
 import CreateOrderPanel from './components/CreateOrderPanel'
 import OrderDetailModal from './components/OrderDetailModal'
@@ -121,6 +122,17 @@ export default function Orders() {
   const [view, setView] = useState<'list' | 'create'>(() =>
     searchParams.get('view') === 'create' && hasRole([ROLE.RECEPTION]) ? 'create' : 'list'
   )
+  /**
+   * 取车弹窗：交车 = 验车留证 + 状态转「租赁中」。
+   * 只对「已支付」且前台可见；后端还会再校验一遍（缺照片或电量直接 400），
+   * 所以这里的表单不是"建议"，而是必须填完才能把车放出去。
+   */
+  const [pickup, setPickup] = useState<Order | null>(null)
+  const [pickupForm, setPickupForm] = useState<{ battery: string; note: string; photos: string[] }>(
+    { battery: '', note: '', photos: [] })
+  const [pickupLoading, setPickupLoading] = useState(false)
+  const [pickupSaving, setPickupSaving] = useState(false)
+  const [pickupUploading, setPickupUploading] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -255,6 +267,83 @@ export default function Orders() {
       const res: any = await printApi.orderReceipt(id)
       setReceipt(res.content)
     } catch (e: any) { toast(e?.message || '获取小票失败', 'error') }
+  }
+
+  /** 打开取车弹窗：把已登记过的取车验车带出来，避免同一台车重复拍一遍 */
+  const openPickup = async (o: Order) => {
+    setPickup(o)
+    setPickupForm({ battery: '', note: '', photos: [] })
+    setPickupLoading(true)
+    try {
+      const res: any = await settleApi.handovers(o.orderId)
+      const rec = (res?.data || []).find((h: any) => h.phase === '取车')
+      if (rec) {
+        setPickupForm({
+          battery: rec.batteryLevel == null ? '' : String(rec.batteryLevel),
+          note: rec.conditionNote || '',
+          photos: rec.photos || [],
+        })
+      }
+    } catch {
+      // 读不到旧记录不挡流程：照样能登记，后端确认取车时会再校验一次
+    } finally {
+      setPickupLoading(false)
+    }
+  }
+
+  /** 取车照片上传：先压缩再落盘，文件名由后端按「订单 + 阶段」生成 */
+  const uploadPickupPhoto = async (file?: File | null) => {
+    if (!file || !pickup) return
+    if (pickupForm.photos.length >= 3) { toast('取车验车最多 3 张照片', 'warning'); return }
+    setPickupUploading(true)
+    try {
+      const compressed = await compressImage(file)
+      const res: any = await settleApi.uploadHandoverPhoto(compressed, pickup.orderId, '取车')
+      const url = res?.data?.url
+      if (!url) throw new Error('照片上传失败')
+      setPickupForm(f => ({ ...f, photos: [...f.photos, url] }))
+    } catch (e: any) {
+      toast(e?.message || '照片上传失败', 'error')
+    } finally {
+      setPickupUploading(false)
+    }
+  }
+
+  /**
+   * 提交取车：先落库验车快照，confirmStart=true 时紧接着把订单转「租赁中」。
+   * 前端先挡一道（照片/电量），是为了把话说在按钮上而不是让人点了才挨一次 400；
+   * 真正的门槛在后端，绕过界面直接调接口一样会被拦。
+   */
+  const submitPickup = async (confirmStart: boolean) => {
+    if (!pickup) return
+    if (confirmStart) {
+      if (!pickupForm.photos.length) { toast('请先拍至少 1 张整车照（要能看清车牌与车身）', 'warning'); return }
+      if (pickupForm.battery === '') { toast('请填写交车时电量（0-100）', 'warning'); return }
+    }
+    setPickupSaving(true)
+    try {
+      await settleApi.saveHandover({
+        orderId: pickup.orderId,
+        phase: '取车',
+        batteryLevel: pickupForm.battery === '' ? null : Number(pickupForm.battery),
+        photoPaths: pickupForm.photos.join(',') || null,
+        conditionNote: pickupForm.note || null,
+      })
+      if (!confirmStart) {
+        toast('取车验车已保存', 'success')
+        setPickup(null)
+        return
+      }
+      const res: any = await orderApi.pickup(pickup.orderId)
+      toast(res?.message || '取车成功，已开始计费', 'success')
+      setPickup(null)
+      load()
+      loadWarnings()
+    } catch (e: any) {
+      toast(e?.message || '取车失败', 'error')
+    } finally {
+      setPickupSaving(false)
+    }
   }
 
   /** 订单明细导出（需求 4.2.4）：按当前筛选条件导出，便于对账与归档 */
@@ -427,6 +516,9 @@ export default function Orders() {
                         const ops: any[] = []
                         // 详情常驻：任何状态的订单都要能查字段与续租记录（需求 4.2.4 订单查询）
                         ops.push({ key: 'detail', label: '详情', icon: 'orders', tone: 'default', onClick: () => setDetailOrder(o) })
+                        // 取车是柜台交车的必经动作：留在「已支付」不点取车，计费起点就永远说不清
+                        if (canOperate && o.orderStatus === '已支付')
+                          ops.push({ key: 'pickup', label: '取车', icon: 'camera', tone: 'primary', onClick: () => openPickup(o) })
                         if (canOperate && (o.orderStatus === '已支付' || o.orderStatus === '租赁中'))
                           ops.push({ key: 'renew', label: '续租', icon: 'refresh', tone: 'primary', onClick: () => handleRenewal(o.orderId) })
                         ops.push({ key: 'receipt', label: '小票', icon: 'print', tone: 'default', onClick: () => handlePrint(o.orderId) })
@@ -477,6 +569,87 @@ export default function Orders() {
           onClose={() => setReceipt(null)}
           hint="小票含订单号、车辆信息、租期与费用明细，可直接打印交付客户。"
         />
+      )}
+
+      {/* 取车验车：交车留证的唯一入口。缺照片或电量，后端不放车 */}
+      {pickup && (
+        <div className="modal-overlay" onClick={() => !pickupSaving && setPickup(null)}>
+          <div className="modal modal-lg" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span>取车验车 · 订单 {pickup.orderNo}</span>
+              <button className="close-btn" onClick={() => setPickup(null)}><Icon name="close" size={15} /></button>
+            </div>
+            <div className="modal-body">
+              <div className="callout callout-info" style={{ marginBottom: 14 }}>
+                <Icon name="info" size={18} chip />
+                <div className="callout-body">
+                  <div className="callout-head">交车必须留证：整车照 + 交车电量</div>
+                  <div className="field-hint">
+                    还车时的损坏费全靠这组照片比对。没有交车原样，顾客一句「我拿到时就这样」就能让赔偿作废，
+                    所以照片与电量缺一项，系统不会把车放出去。
+                  </div>
+                </div>
+              </div>
+
+              {pickupLoading ? (
+                <div className="loading-line"><Icon name="refresh" size={16} />正在读取已有验车记录…</div>
+              ) : (
+                <>
+                  <div className="form-group">
+                    <label>交车电量（%） <span className="req">*</span></label>
+                    <input
+                      type="number" min={0} max={100} placeholder="例如 88"
+                      style={{ maxWidth: 160 }}
+                      value={pickupForm.battery}
+                      onChange={e => setPickupForm(f => ({ ...f, battery: e.target.value }))}
+                      aria-label="交车电量"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>车况备注（现有划痕 / 随车配件）</label>
+                    <input
+                      type="text" placeholder="例如：左后视镜有旧划痕；随车头盔 1 个、充电器 1 个"
+                      value={pickupForm.note}
+                      onChange={e => setPickupForm(f => ({ ...f, note: e.target.value }))}
+                      aria-label="车况备注"
+                    />
+                  </div>
+                  <div className="ho-photos">
+                    {pickupForm.photos.map(url => (
+                      <span key={url} className="ho-photo">
+                        <img src={url} alt="取车验车照片" />
+                        <button type="button" className="ho-photo-del" aria-label="移除照片"
+                          onClick={() => setPickupForm(f => ({ ...f, photos: f.photos.filter(p => p !== url) }))}>
+                          <Icon name="close" size={12} />
+                        </button>
+                      </span>
+                    ))}
+                    {pickupForm.photos.length < 3 && (
+                      <label className="ho-photo-add">
+                        <Icon name={pickupUploading ? 'refresh' : 'camera'} size={16} />
+                        <span>{pickupUploading ? '上传中…' : '拍整车照'}</span>
+                        <input type="file" accept="image/*" hidden disabled={pickupUploading}
+                          onChange={e => { uploadPickupPhoto(e.target.files?.[0]); e.target.value = '' }} />
+                      </label>
+                    )}
+                  </div>
+                  <div className="field-hint" style={{ marginTop: 8 }}>
+                    建议拍 2–3 张：整车 45°、仪表盘（含电量读数）、已存在的划痕特写。最多 3 张。
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn-sm btn-sm-default" onClick={() => submitPickup(false)} disabled={pickupSaving}>
+                仅保存验车
+              </button>
+              <button className="btn-sm btn-sm-primary" onClick={() => submitPickup(true)} disabled={pickupSaving || pickupLoading}>
+                <Icon name="check" size={13} color="#fff" />{pickupSaving ? '处理中…' : '确认取车并开始计费'}
+              </button>
+              <button className="btn-sm btn-sm-default" onClick={() => setPickup(null)} disabled={pickupSaving}>关闭</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

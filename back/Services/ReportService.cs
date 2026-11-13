@@ -22,9 +22,9 @@ public class ReportService(AppDbContext db, MessageService messages) : INotifica
     ///<summary>统计看板</summary>
     public async Task<VisualReport> GetDashboard(DateTime? from = null, DateTime? to = null)
     {
-        var today = DateTime.Now.Date;
+        var today = AppClock.Now.Date;
         var tomorrow = today.AddDays(1);
-        var now = DateTime.Now;
+        var now = AppClock.Now;
         var soon = now.AddHours(24);
 
         //区间右端点取「当日 23:59:59」：日期选择器给的是当天 00:00
@@ -55,7 +55,7 @@ public class ReportService(AppDbContext db, MessageService messages) : INotifica
         else
         {
             //无区间：最近 7 天
-            await FillDailyTrendAsync(DateTime.Now.AddDays(-6).Date, DateTime.Now.Date.AddDays(1), monthlyRevenue, orderTrend);
+            await FillDailyTrendAsync(AppClock.Now.AddDays(-6).Date, AppClock.Now.Date.AddDays(1), monthlyRevenue, orderTrend);
         }
 
         //车辆状态分布
@@ -397,7 +397,7 @@ public class ReportService(AppDbContext db, MessageService messages) : INotifica
     ///<summary>本轮「应当存在」的实时预警键集合</summary>
     private async Task<HashSet<string>> AlertLiveKeysAsync(HashSet<string> liveGlobal)
     {
-        var now = DateTime.Now;
+        var now = AppClock.Now;
         var soon = now.AddHours(24);
         var live = new HashSet<string>();
 
@@ -447,7 +447,7 @@ public class ReportService(AppDbContext db, MessageService messages) : INotifica
     ///<summary>实时计算通知条目（不含已读状态，已读由 MessageService 读表时合并）</summary>
     private async Task<List<NotificationDto>> BuildNotifications()
     {
-        var now = DateTime.Now;
+        var now = AppClock.Now;
         var list = new List<NotificationDto>();
 
         //订单类预警：逾期/即将到期/待支付
@@ -791,6 +791,60 @@ public class ReportService(AppDbContext db, MessageService messages) : INotifica
             MonthlyFee = monthly.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToDictionary(kv => kv.Key, kv => Math.Round(kv.Value, 2)),
             FaultTypes = faultTypes,
             TopVehicles = topVehicles
+        };
+    }
+
+    ///<summary>
+    /// 损坏赔付 vs 维修成本（按月）。
+    ///
+    /// 赔付口径：区间内 <c>damage_fee &gt; 0</c> 的结算单；
+    /// 成本口径：区间内**已完工**的「归还损坏」工单的实际维修费（按完工时间归属）。
+    /// 为什么按完工时间而不是开单时间：钱是在修完那一刻花的，与服务费入账同月才便于对照。
+    /// </summary>
+    public async Task<DamageCostDto> GetDamageCostAsync(DateTime? from, DateTime? to)
+    {
+        var (rangeFrom, rangeTo, hasRange) = ResolveDateRange(from, to);
+
+        var settleQ = _db.SettleRecords.AsNoTracking().Where(s => s.DamageFee > 0);
+        if (hasRange) settleQ = settleQ.Where(s => s.SettleTime >= rangeFrom && s.SettleTime < rangeTo);
+        var incomeRows = await settleQ.Select(s => new { s.SettleTime, s.DamageFee }).ToListAsync();
+
+        var costQ = _db.MaintenanceOrders.AsNoTracking()
+            .Where(m => m.Status == "已完成" && m.FaultType == "归还损坏" && m.FinishTime != null);
+        if (hasRange) costQ = costQ.Where(m => m.FinishTime >= rangeFrom && m.FinishTime < rangeTo);
+        var costRows = await costQ.Select(m => new { m.FinishTime, m.MaintainFee }).ToListAsync();
+
+        //按月合并两条序列：先各自聚到字典，再按月份并集铺平，缺月补 0
+        var incomeByMonth = incomeRows
+            .GroupBy(r => r.SettleTime.ToString("yyyy-MM"))
+            .ToDictionary(g => g.Key, g => Math.Round(g.Sum(x => x.DamageFee), 2));
+        var costByMonth = costRows
+            .GroupBy(r => r.FinishTime!.Value.ToString("yyyy-MM"))
+            .ToDictionary(g => g.Key, g => Math.Round(g.Sum(x => x.MaintainFee), 2));
+
+        var income = Math.Round(incomeRows.Sum(r => r.DamageFee), 2);
+        var cost = Math.Round(costRows.Sum(r => r.MaintainFee), 2);
+
+        var months = incomeByMonth.Keys.Union(costByMonth.Keys).OrderBy(k => k, StringComparer.Ordinal).ToList();
+        var monthly = months.Select(m =>
+        {
+            var inc = incomeByMonth.GetValueOrDefault(m, 0m);
+            var cst = costByMonth.GetValueOrDefault(m, 0m);
+            return new DamageCostMonthDto { Month = m, DamageIncome = inc, RepairCost = cst, Gap = Math.Round(inc - cst, 2) };
+        }).ToList();
+
+        return new DamageCostDto
+        {
+            From = rangeFrom?.ToString(DateFormatDay) ?? "",
+            To = to?.ToString(DateFormatDay) ?? "",
+            DamageIncome = income,
+            DamageSettleCount = incomeRows.Count,
+            RepairCost = cost,
+            RepairOrderCount = costRows.Count,
+            Gap = Math.Round(income - cost, 2),
+            //没有维修支出时覆盖率记 100（没有成本就没有缺口），避免除以 0 与"无穷大"两个坑
+            Coverage = cost > 0 ? Math.Round(income / cost * 100, 1) : 100m,
+            Monthly = monthly
         };
     }
 

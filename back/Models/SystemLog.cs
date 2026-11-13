@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using ERental.Services;
+using ERental.Data;
 namespace ERental.Models;
 
 [Table("system_log")]
@@ -32,7 +33,7 @@ public class SystemLog
     public string? OperateContent { get; private set; }
 
     [Column("operate_time")]
-    public DateTime OperateTime { get; private set; } = DateTime.Now;
+    public DateTime OperateTime { get; private set; } = AppClock.Now;
 
     [MaxLength(10)]
     [Column("operate_result")]
@@ -71,7 +72,7 @@ public class SystemLog
             OperateModule = module,
             OperateResult = result,
             IpAddress = ip,
-            OperateTime = operateTime ?? DateTime.Now,
+            OperateTime = operateTime ?? AppClock.Now,
         };
     }
 }

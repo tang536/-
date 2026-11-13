@@ -381,7 +381,7 @@ public class SupplementService(AppDbContext db, MessageService messages, AlipayS
                 };
             }
 
-            var now = DateTime.Now;
+            var now = AppClock.Now;
             var cashPay = PaymentRecord.Create(settle.OrderId, remaining, "现金", BizTypeSupplement, BuildSupplementOutTradeNo($"JS{settleId}"));
             //现金没有通道流水号
             cashPay.MarkPaid("现金", now, $"CASH-{settleId}-{now:yyyyMMddHHmmss}");

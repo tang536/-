@@ -114,7 +114,7 @@ public class BalanceService(AppDbContext db, PayConfigService payConfig, WechatP
                 ["format"] = "JSON",
                 ["charset"] = "utf-8",
                 ["sign_type"] = "RSA2",
-                ["timestamp"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                ["timestamp"] = AppClock.Now.ToString("yyyy-MM-dd HH:mm:ss"),
                 ["version"] = "1.0",
                 //alipay.fund.account.query 的业务参数（依官方文档）：account_type=ACCTRANS_ACCOUNT 查询的账号类型
                 ["biz_content"] = $"{{\"account_type\":\"ACCTRANS_ACCOUNT\"," + $"\"alipay_user_id\":\"{rt.Pid}\"}}"
@@ -243,7 +243,7 @@ public class BalanceService(AppDbContext db, PayConfigService payConfig, WechatP
                 dto.TotalAmount = total;
                 dto.FrozenAmount = frozen;
                 dto.Source = "remote";
-                dto.FetchedAt = DateTime.Now;
+                dto.FetchedAt = AppClock.Now;
                 dto.RetryCount = retries;
                 dto.Message = $"查询成功（本次重试 {retries} 次）";
                 WriteCache(dto.Channel, dto);
@@ -296,7 +296,7 @@ public class BalanceService(AppDbContext db, PayConfigService payConfig, WechatP
     {
         lock (CacheLock)
         {
-            Cache[channel] = (Clone(value), DateTime.Now, Environment.TickCount64);
+            Cache[channel] = (Clone(value), AppClock.Now, Environment.TickCount64);
         }
     }
 
@@ -321,7 +321,7 @@ public class BalanceService(AppDbContext db, PayConfigService payConfig, WechatP
         fresh.Status = error == "请求超时" ? "timeout" : "error";
         fresh.Source = "none";
         fresh.RetryCount = retries;
-        fresh.FetchedAt = DateTime.Now;
+        fresh.FetchedAt = AppClock.Now;
         fresh.Message = $"查询失败：{error ?? "未知原因"}（已重试 {retries} 次）";
         //失败也写进缓存（负缓存）
         WriteCache(channel, fresh);

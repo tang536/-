@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Text.Json.Serialization;
+using ERental.Data;
 
 namespace ERental.Models;
 
@@ -60,7 +61,7 @@ public class Customer
     public string AccountStatus { get; private set; } = "正常";
 
     [Column("create_time")]
-    public DateTime CreateTime { get; init; } = DateTime.Now;
+    public DateTime CreateTime { get; init; } = AppClock.Now;
 
     ///<summary>乐观并发版本号：客户档案同时暴露给前台（客户管理）与管理员（会员调整/注销）</summary>
     [Column("version")]

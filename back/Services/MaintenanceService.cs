@@ -6,10 +6,12 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ERental.Services;
 
-public class MaintenanceService(AppDbContext db, ImageStorage images)
+public class MaintenanceService(AppDbContext db, ImageStorage images, LogService logs, ILogger<MaintenanceService> logger)
 {
     private readonly AppDbContext _db = db;
     private readonly ImageStorage _images = images;
+    private readonly LogService _logs = logs;
+    private readonly ILogger<MaintenanceService> _logger = logger;
 
     public async Task<string> SaveImage(IFormFile? file) => await _images.SaveAsync(file, "maintenance");
 
@@ -109,13 +111,30 @@ public class MaintenanceService(AppDbContext db, ImageStorage images)
 
             //先锁行、再改状态：两个前台同时点「完工」时，第二个会等锁，拿到锁后读到的是「已完成」
             var m = await DbRowLock.LockWorkOrderAsync(_db, id) ?? throw new BusinessException("工单不存在");
-            m.Complete(fee, DateTime.Now);
+            m.Complete(fee, AppClock.Now);
             await _db.SaveChangesAsync();
 
             //先落「已完成」再放行：放行判定要读工单状态，顺序颠倒会把自己算成未完成工单
             await VehicleStateGuard.TryReleaseAfterMaintenanceAsync(_db, m.VehicleId, id);
 
             await tx.CommitAsync();
+
+            /*
+             * 完工金额单独留审计：这是「损坏赔付」的对侧成本。
+             * 赔付报表要回答「收的赔偿够不够修这车」，靠的就是这里记下的实际维修费；
+             * 一旦被事后改掉又没有留痕，成本口径就永远说谎。
+             */
+            try
+            {
+                await _logs.WriteLog(null,
+                    $"工单 {m.WorkOrderNo}（{m.FaultType}）完工，维修费 ¥{fee:0.00}，车辆 ID {m.VehicleId}",
+                    "维保审计", "成功");
+            }
+            catch (Exception ex)
+            {
+                //审计是旁路：写不进去只影响追溯，不影响工单已完成的既成事实
+                _logger.LogWarning(ex, "工单 {WorkOrderNo} 完工审计写入失败", m.WorkOrderNo);
+            }
         }
         catch
         {
@@ -207,7 +226,7 @@ public class MaintenanceService(AppDbContext db, ImageStorage images)
                 throw new BusinessException($"车辆 {v.VehicleNo} {why}，请刷新后重试");
             }
 
-            _db.ScrapRecords.Add(ScrapRecord.Create(vehicleId, reason, operatorId, DateTime.Now));
+            _db.ScrapRecords.Add(ScrapRecord.Create(vehicleId, reason, operatorId, AppClock.Now));
             await _db.SaveChangesAsync();
             await tx.CommitAsync();
         }
@@ -223,7 +242,7 @@ public class MaintenanceService(AppDbContext db, ImageStorage images)
     {
         for (var i = 0; i < 5; i++)
         {
-            var no = "WB" + DateTime.Now.ToString("yyyyMMddHHmmssfff");
+            var no = "WB" + AppClock.Now.ToString("yyyyMMddHHmmssfff");
             if (!await _db.MaintenanceOrders.AnyAsync(x => x.WorkOrderNo == no)) return no;
             await Task.Delay(2);
         }

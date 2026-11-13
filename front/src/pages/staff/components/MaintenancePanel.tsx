@@ -8,6 +8,7 @@ import RowActions, { type RowAction } from '@/components/RowActions'
 import VehicleQrLookup from './VehicleQrLookup'
 import { downloadBlob, todayStamp } from '@/utils/download'
 import { fmtDT } from '@/utils/datetime'
+import { compressImage } from '@/utils/image'
 
 const statusMap: Record<string, string> = {
   '待处理': 'status-warning',
@@ -152,7 +153,9 @@ export default function MaintenancePanel() {
           toast(`「${f.name}」超过 5MB，已跳过`, 'warning')
           continue
         }
-        const res: any = await maintenanceApi.upload(f)
+        // 现场照片同样先压缩：手机直出 3–8MB，压到长边 1280 足够看清故障位置
+        const compressed = await compressImage(f)
+        const res: any = await maintenanceApi.upload(compressed)
         if (res?.data?.url) added.push(res.data.url)
       }
       if (added.length > 0) {

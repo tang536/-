@@ -375,6 +375,18 @@ export default function RentBike() {
                   <div><span>预收租金（预估）</span><strong>¥{estimate.totalRent.toFixed(2)}</strong></div>
                 </div>
                 <div className="estimate-total">合计预收（含押金 ¥{estimate.deposit.toFixed(2)}） <strong>¥{estimate.payable.toFixed(2)}</strong></div>
+                {estimate.creditNote && (
+                  <p className="estimate-tip" style={{ color: 'var(--warning-text, #b45309)' }}>
+                    <Icon name="info" size={13} chip />信用提示：{estimate.creditNote}
+                  </p>
+                )}
+                {estimate.maxLeaseDays && estimate.hours > estimate.maxLeaseDays * 24 && (
+                  <p className="estimate-tip" style={{ color: 'var(--danger-text, #C0392B)' }}>
+                    <Icon name="error" size={13} chip />
+                    租期超出信用上限：单次租期最长 {estimate.maxLeaseDays} 天（当前约 {Math.ceil(estimate.hours / 24)} 天），
+                    下单会被拒绝，请把到期时间改短。
+                  </p>
+                )}
                 <p className="estimate-tip">
                   这里按<strong>预计用车 {estimate.hours} 小时</strong>先预收，<strong>不是最终金额</strong>；
                   还车结算时按实际用车时长重算实际租金，多退少补。

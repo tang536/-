@@ -8,6 +8,7 @@ using ERental.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using ERental.Data;
 
 namespace ERental.Controllers;
 
@@ -551,8 +552,8 @@ public class PaymentController(PaymentService svc, AlipayService alipay, WechatP
         var statusText = view.Done ? "已支付" : "待支付";
         var alipayNo = view.AlipayTradeNo;
 
-        //时间戳由 MemberService 用 DateTime.Now 写入（本地时间、Kind=Unspecified）
-        if (!paid && DateTime.Now - view.CreateTime > TimeSpan.FromHours(MemberService.PendingExpireHours))   //NOSONAR 两端均为本地时间，改用 UtcNow 会改变过期判定结果
+        //时间戳由 MemberService 用 AppClock.Now 写入（本地时间、Kind=Unspecified）
+        if (!paid && AppClock.Now - view.CreateTime > TimeSpan.FromHours(MemberService.PendingExpireHours))   //NOSONAR 两端均为本地时间，改用 UtcNow 会改变过期判定结果
             statusText = "已过期";
 
         if (!paid && statusText == "待支付")

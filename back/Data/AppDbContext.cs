@@ -14,6 +14,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<RentalOrder> RentalOrders => Set<RentalOrder>();
     public DbSet<PaymentRecord> PaymentRecords => Set<PaymentRecord>();
     public DbSet<SettleRecord> SettleRecords => Set<SettleRecord>();
+    public DbSet<OrderHandover> OrderHandovers => Set<OrderHandover>();
     public DbSet<MaintenanceOrder> MaintenanceOrders => Set<MaintenanceOrder>();
     public DbSet<ScrapRecord> ScrapRecords => Set<ScrapRecord>();
     public DbSet<SystemConfig> SystemConfigs => Set<SystemConfig>();

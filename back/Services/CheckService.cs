@@ -41,7 +41,7 @@ public class CheckService(AppDbContext db)
         if ((diffDesc?.Length ?? 0) > 200) throw new BusinessException("差异说明不能超过 200 个字符");
         var record = CarCheckList.Create(
             BusinessNumber.New("PD"),
-            DateTime.Now, vehicleId, vehicle.VehicleStatus, actualStatus, diffDesc, operatorId);
+            AppClock.Now, vehicleId, vehicle.VehicleStatus, actualStatus, diffDesc, operatorId);
         _db.CarCheckLists.Add(record);
         await _db.SaveChangesAsync();
 
@@ -76,7 +76,7 @@ public class CheckService(AppDbContext db)
             var report = CheckReport.Create(
                 (BusinessNumber.New("RPT", stampFormat: "yyyyMMdd", stamp: date), date),
                 (totalCount, matchCount, diffCount),
-                ($"盘点日期：{date:yyyy-MM-dd}，共{totalCount}辆车，一致{matchCount}辆，差异{diffCount}辆", DateTime.Now, operatorId));
+                ($"盘点日期：{date:yyyy-MM-dd}，共{totalCount}辆车，一致{matchCount}辆，差异{diffCount}辆", AppClock.Now, operatorId));
             _db.CheckReports.Add(report);
             await _db.SaveChangesAsync();
 

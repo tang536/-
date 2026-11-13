@@ -81,6 +81,12 @@ export interface Customer {
   accountStatus?: string
   /** 乐观并发版本号：编辑提交时回传，后端比对拦截并发覆盖 */
   version?: number
+  /** 历史逾期次数（有逾期费的结算单数）——信用标签，后端按结算视图现算 */
+  overdueCount?: number
+  /** 累计损坏赔付金额——信用标签 */
+  damageTotal?: number
+  /** 补缴未清的结算单数——信用标签，直接影响下次能不能免押 */
+  unpaidSupplementCount?: number
 }
 
 /** 会员类型（权益表 member_rights）：「会员管理」页的唯一维护对象 */
@@ -244,7 +250,14 @@ export interface RentEstimate {
   dailyRent: number
   /** 小时租金 = 日租金 ÷ 24 */
   hourlyRent: number
+  /** 应收押金（已含信用倍数） */
   deposit: number
+  /** 押金基数（未乘信用倍数），用于向顾客解释为什么多收 */
+  depositBase?: number
+  /** 信用受限说明（押金倍数 / 租期上限的原因）；无受限时为空 */
+  creditNote?: string | null
+  /** 单次租期上限（天）；为空表示不受限 */
+  maxLeaseDays?: number | null
   discount: number
   totalRent: number
   payable: number
@@ -293,4 +306,106 @@ export interface PopularVehicle {
   deposit: number
   /** 统计区间内的成单量 */
   orderCount: number
+}
+
+/* ============================================================
+   请求体类型（payload）
+   ------------------------------------------------------------
+   为什么前端要单独维护一份：后端的入参契约是 DTO（DTOs/*.cs），
+   前端此前一律写成 `data: any`，等于把「哪些字段必填、哪些字段为空要传 null
+   而不是 0」这些规则只记在注释和调用处的 if 里，写错要在联调甚至线上才暴露。
+   这里逐个对齐后端 DTO 的字段名与可空性，只做类型约束、不加运行时逻辑。
+   ============================================================ */
+
+/** 新增员工账号（后端 DTOs/UserDtos.cs → CreateUserDto） */
+export interface CreateUserPayload {
+  loginAccount: string
+  password: string
+  userName: string
+  /** 仅 reception（前台）/ finance（财务）可建；管理员账号不由此接口创建 */
+  roleType: string
+}
+
+/** 编辑员工账号（UpdateUserDto）：password 留空表示不改密码 */
+export interface UpdateUserPayload {
+  userName?: string
+  password?: string
+  /** 1=启用 2=停用 */
+  userStatus?: number
+}
+
+/** 前台代客建档（CustomerDtos.cs → CustomerCreateDto） */
+export interface CreateCustomerPayload {
+  /** 登录用户名，可空：线下客户没有线上账号 */
+  loginAccount?: string
+  idCard?: string
+  fullName?: string
+  contactPhone?: string
+  memberLevel?: string
+}
+
+/** 编辑客户档案（CustomerUpdateDto）：version 必填，后端按它做乐观并发校验 */
+export interface UpdateCustomerPayload {
+  fullName?: string
+  idCard?: string
+  contactPhone?: string
+  memberLevel?: string
+  /** 打开表单时看到的版本号；冲突时后端报「刚被其他人员修改」 */
+  version: number
+}
+
+/** 新增 / 编辑车辆档案（VehicleDtos.cs → VehicleSaveDto） */
+export interface SaveVehiclePayload {
+  vehicleNo: string
+  frameNumber?: string | null
+  brand?: string | null
+  /** ISO 日期字符串；空 = 保留原值（历史车辆无采购日期不强求补录） */
+  buyTime?: string | null
+  buyPrice?: number | null
+  /** 空闲 / 维保 / 报废；「在租」由开单流程自动产生，不接受手工设置 */
+  vehicleStatus: string
+  /** 留空必须传 null（不是 0）：0 会被理解成「本车日租金 0 元」 */
+  dailyRent?: number | null
+  deposit?: number | null
+  imageUrl?: string | null
+}
+
+/** 批量编辑车辆（BatchVehicleUpdateDto）：每个字段一个 Apply 开关，只覆盖勾选项 */
+export interface BatchVehicleUpdatePayload {
+  ids: number[]
+  applyStatus: boolean
+  vehicleStatus?: string | null
+  applyDailyRent: boolean
+  dailyRent?: number | null
+  applyDeposit: boolean
+  deposit?: number | null
+  applyBrand: boolean
+  brand?: string | null
+}
+
+/** 柜台线下开单（OrderDtos.cs → CreateOrderDto） */
+export interface CreateOrderPayload {
+  /** 0 = 线下新客户，改由 newCustomer* 传入资料，后端自动建档 */
+  customerId: number
+  vehicleId: number
+  /** datetime-local 的本地时间字符串，**不能**用 toISOString()（会整体差 8 小时） */
+  leaseStart: string
+  leaseEnd: string
+  payType?: string
+  /** 租车环节补录的实名资料（客户资料未完善时必填） */
+  idCard?: string
+  contactPhone?: string
+  fullName?: string
+  newCustomerName?: string
+  newCustomerIdCard?: string
+  newCustomerPhone?: string
+}
+
+/** 归还结算（OrderDtos.cs → SettleOrderDto）：逾期费由后端按实际还车时间算，前端不传 */
+export interface SettleOrderPayload {
+  orderId: number
+  damageFee: number
+  remark?: string | null
+  /** 线下 / 线上（仅本次结算产生补缴金额时有意义） */
+  supplementPayMethod?: string
 }

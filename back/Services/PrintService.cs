@@ -30,7 +30,7 @@ public class PrintService(AppDbContext db, ReportService reports)
         //打印时去掉页边距
         sb.Append("@media print{body{margin:0}}</style></head><body>");
         sb.Append("<h1>途电驿站租赁系统 · 经营报表</h1>");
-        sb.Append($"<p class=\"meta\">统计区间：{range}\u3000生成时间：{DateTime.Now:yyyy-MM-dd HH:mm}</p>");
+        sb.Append($"<p class=\"meta\">统计区间：{range}\u3000生成时间：{AppClock.Now:yyyy-MM-dd HH:mm}</p>");
         sb.Append("<table>");
         void Row(string k, string v) => sb.Append($"<tr><th>{k}</th><td>{v}</td></tr>");
         Row("累计营收（元）", r.TotalRevenue.ToString("N2"));
@@ -50,7 +50,7 @@ public class PrintService(AppDbContext db, ReportService reports)
         var sb = new StringBuilder();
         sb.AppendLine("========== 电动车租赁订单小票 ==========");
         sb.AppendLine($"订单号：{order.OrderNo}");
-        sb.AppendLine($"打印时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        sb.AppendLine($"打印时间：{AppClock.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine(Separator);
         sb.AppendLine($"客户姓名：{order.Customer?.FullName}");
         sb.AppendLine($"身份证号：{MaskIdCard(order.Customer?.IdCard)}");
@@ -78,7 +78,7 @@ public class PrintService(AppDbContext db, ReportService reports)
         var sb = new StringBuilder();
         sb.AppendLine("========== 还车结算小票 ==========");
         sb.AppendLine($"结算单号：JS{settle.SettleId:D6}");
-        sb.AppendLine($"打印时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        sb.AppendLine($"打印时间：{AppClock.Now:yyyy-MM-dd HH:mm:ss}");
         sb.AppendLine(Separator);
         sb.AppendLine($"订单号：{settle.RentalOrder?.OrderNo}");
         sb.AppendLine($"客户：{settle.RentalOrder?.Customer?.FullName}");

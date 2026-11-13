@@ -140,3 +140,44 @@ public class MaintenanceStatDto
     /// <summary>单台车辆维保费用排行（按费用降序，取前 10 台）</summary>
     public List<MaintenanceRankDto> TopVehicles { get; init; } = [];
 }
+
+/// <summary>「损坏赔付」与「维修成本」按月对照的一行</summary>
+public class DamageCostMonthDto
+{
+    /// <summary>月份（yyyy-MM）</summary>
+    public string Month { get; init; } = string.Empty;
+    /// <summary>当月收取的损坏费</summary>
+    public decimal DamageIncome { get; init; }
+    /// <summary>当月「归还损坏」工单的实际维修支出</summary>
+    public decimal RepairCost { get; init; }
+    /// <summary>当月差额（收入 - 成本，负数说明赔的钱不够修）</summary>
+    public decimal Gap { get; init; }
+}
+
+/// <summary>
+/// 损坏赔付 vs 维修成本。
+///
+/// 这张表回答一个很实际的问题：**收顾客的损坏费，到底够不够修这台车**。
+/// 只建工单不记成本，账上会好看（有赔偿收入、没有对应支出），实际却在亏；
+/// 反过来只记成本不看赔偿，又说不清哪类损坏该涨价。
+/// 两个月度序列放在同一行里，是为了让「这个月赔得多、修得更多」这种结构性亏损一眼可见。
+/// </summary>
+public class DamageCostDto
+{
+    public string From { get; init; } = string.Empty;
+    public string To { get; init; } = string.Empty;
+    /// <summary>区间内收取的损坏费合计</summary>
+    public decimal DamageIncome { get; init; }
+    /// <summary>区间内产生损坏费的结算单数</summary>
+    public int DamageSettleCount { get; init; }
+    /// <summary>区间内「归还损坏」工单的实际维修费合计（仅已完工）</summary>
+    public decimal RepairCost { get; init; }
+    /// <summary>区间内完工的「归还损坏」工单数</summary>
+    public int RepairOrderCount { get; init; }
+    /// <summary>差额（收入 - 成本）</summary>
+    public decimal Gap { get; init; }
+    /// <summary>成本覆盖率（%，收入 ÷ 成本；无成本时记 100）</summary>
+    public decimal Coverage { get; init; }
+    /// <summary>按月对照（缺月补 0，保证趋势连续）</summary>
+    public List<DamageCostMonthDto> Monthly { get; init; } = [];
+}

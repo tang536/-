@@ -75,7 +75,7 @@ public class AlipayService(AppDbContext db, PayConfigService payConfig, IOptions
             [AlipayParamFormat] = AlipayFormatJson,
             [AlipayParamCharset] = AlipayCharsetUtf8,
             [AlipayParamSignType] = Options.SignType,
-            [AlipayParamTimestamp] = DateTime.Now.ToString(DateFormatMinute),
+            [AlipayParamTimestamp] = AppClock.Now.ToString(DateFormatMinute),
             [AlipayParamVersion] = AlipayVersionV1,
             ["notify_url"] = string.IsNullOrWhiteSpace(notifyUrl) ? rt.NotifyUrl : notifyUrl.Trim(),
             ["return_url"] = string.IsNullOrWhiteSpace(returnUrl) ? rt.ReturnUrl : returnUrl.Trim(),
@@ -279,12 +279,12 @@ public class AlipayService(AppDbContext db, PayConfigService payConfig, IOptions
             if (record == null)
             {
                 var fresh = PaymentRecord.Create(order.OrderId, order.TotalRent + order.Deposit, payType, "order", null, "已支付");
-                fresh.MarkPaid(payType, DateTime.Now, tradeNo);
+                fresh.MarkPaid(payType, AppClock.Now, tradeNo);
                 _db.PaymentRecords.Add(fresh);
             }
             else
             {
-                record.MarkPaid(payType, DateTime.Now, tradeNo, expect);
+                record.MarkPaid(payType, AppClock.Now, tradeNo, expect);
             }
 
             await _db.SaveChangesAsync();
@@ -340,7 +340,7 @@ public class AlipayService(AppDbContext db, PayConfigService payConfig, IOptions
                 return (false, $"支付金额不符：通知 ¥{paid:0.00}，补缴应付 ¥{p.PayAmount:0.00}。");
             }
 
-            p.MarkPaid(payType, DateTime.Now, tradeNo);
+            p.MarkPaid(payType, AppClock.Now, tradeNo);
             await _db.SaveChangesAsync();
             await tx.CommitAsync();
 
@@ -577,7 +577,7 @@ public class AlipayService(AppDbContext db, PayConfigService payConfig, IOptions
         [AlipayParamCharset] = AlipayCharsetUtf8,
         [AlipayParamSignType] = Options.SignType,
         //支付宝要求 timestamp 用本地时间 yyyy-MM-dd HH:mm:ss
-        [AlipayParamTimestamp] = DateTime.Now.ToString(DateFormatMinute),
+        [AlipayParamTimestamp] = AppClock.Now.ToString(DateFormatMinute),
         [AlipayParamVersion] = AlipayVersionV1,
         [AlipayParamBizContent] = bizContent
     };
@@ -648,7 +648,7 @@ internal static class PayNotifyGuard
     private static readonly TimeSpan Window = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromMinutes(1);
     private static readonly ConcurrentDictionary<string, DateTime> Seen = new();
-    private static long _lastCleanupTicks = DateTime.UtcNow.Ticks;
+    private static long _lastCleanupTicks = AppClock.UtcNow.Ticks;
 
     ///<summary>严格解析金额：空串/空白/非法值一律失败</summary>
     public static bool TryParseAmount(string? text, out decimal value)
@@ -661,7 +661,7 @@ internal static class PayNotifyGuard
     ///<summary>登记报文键：窗口内首次出现返回 false（放行），重复出现返回 true（应忽略）</summary>
     public static bool IsDuplicate(string key)
     {
-        var now = DateTime.UtcNow;
+        var now = AppClock.UtcNow;
         MaybeCleanup(now);
 
         //原子登记：并发下只有一个线程 TryAdd 成功，其余线程命中「窗口内已存在」被判重复
